@@ -1,0 +1,48 @@
+# Restrict quorum pod traffic:
+#   Ingress: only from the ingress controller
+#   Egress:  DNS + PostgreSQL only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quorum
+  namespace: quorum
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: quorum
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # PostgreSQL — adjust selector to match your DB pod labels
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # SMTP (outbound email) — remove if email is not configured
+    - ports:
+        - port: 587
+          protocol: TCP
+    # PayPal and Stripe webhooks need outbound HTTPS for cert fetch / validation
+    - ports:
+        - port: 443
+          protocol: TCP

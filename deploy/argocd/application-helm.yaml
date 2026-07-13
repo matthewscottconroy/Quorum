@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: quorum-helm
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: quorum
+
+  source:
+    repoURL: git@github.com:your-org/quorum.git   # replace — source repo, not gitops repo
+    targetRevision: main
+    path: deploy/helm/quorum
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-production.yaml
+      # Override individual values here if needed (or use a sealed-secret / SOPS).
+      # parameters:
+      #   - name: image.tag
+      #     value: "abc1234"
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: quorum
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+
+  info:
+    - name: source-repo
+      value: git@github.com:your-org/quorum.git   # replace

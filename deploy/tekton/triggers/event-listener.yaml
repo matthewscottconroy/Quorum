@@ -1,0 +1,105 @@
+# Tekton Triggers: EventListener + TriggerTemplate + TriggerBinding
+# Expose the EventListener via a Service and point your GitHub/Gitea webhook at
+# http://<eventlistener-svc>:8080 with a shared HMAC secret token.
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: quorum-github-binding
+  namespace: tekton-pipelines
+spec:
+  params:
+    - name: source-revision
+      value: $(body.after)
+    - name: source-repo-url
+      value: $(body.repository.clone_url)
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: quorum-trigger-template
+  namespace: tekton-pipelines
+spec:
+  params:
+    - name: source-revision
+    - name: source-repo-url
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1
+      kind: PipelineRun
+      metadata:
+        generateName: quorum-build-
+        namespace: tekton-pipelines
+      spec:
+        pipelineRef:
+          name: quorum-build
+        params:
+          - name: source-repo-url
+            value: $(tt.params.source-repo-url)
+          - name: source-revision
+            value: $(tt.params.source-revision)
+          - name: image-repository
+            value: registry.example.com/quorum   # replace with your registry
+          - name: gitops-repo-url
+            value: git@github.com:your-org/quorum-gitops.git   # replace
+          - name: gitops-revision
+            value: main
+          - name: kustomize-overlay-path
+            value: deploy/kustomize/overlays/production
+        workspaces:
+          - name: source
+            volumeClaimTemplate:
+              spec:
+                accessModes: [ReadWriteOnce]
+                resources:
+                  requests:
+                    storage: 1Gi
+          - name: gitops
+            volumeClaimTemplate:
+              spec:
+                accessModes: [ReadWriteOnce]
+                resources:
+                  requests:
+                    storage: 256Mi
+          - name: docker-credentials
+            # The secret must contain .dockerconfigjson in Podman/Docker auth format.
+            # Generate with: podman login <registry> && cp ~/.config/containers/auth.json ...
+            # or:           docker login <registry>  && cp ~/.docker/config.json ...
+            secret:
+              secretName: registry-credentials
+          - name: git-credentials
+            secret:
+              secretName: gitops-ssh-key
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: Trigger
+metadata:
+  name: quorum-push-trigger
+  namespace: tekton-pipelines
+spec:
+  interceptors:
+    - ref:
+        name: github
+        kind: ClusterInterceptor
+      params:
+        - name: secretRef
+          value:
+            secretName: github-webhook-secret
+            secretKey: token
+        - name: eventTypes
+          value: [push]
+        - name: targetBranch
+          value: main
+  bindings:
+    - ref: quorum-github-binding
+  template:
+    ref: quorum-trigger-template
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: quorum-listener
+  namespace: tekton-pipelines
+spec:
+  serviceAccountName: tekton-triggers-sa
+  triggers:
+    - triggerRef: quorum-push-trigger

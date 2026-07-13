@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: quorum
+  namespace: argocd
+  # Finalizer ensures Argo CD cleans up resources when the Application is deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: quorum
+
+  source:
+    repoURL: git@github.com:your-org/quorum-gitops.git   # replace
+    targetRevision: main
+    path: deploy/kustomize/overlays/production
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: quorum
+
+  syncPolicy:
+    # Argo CD syncs automatically whenever the GitOps repo changes.
+    automated:
+      prune: true       # Remove resources that are no longer in git.
+      selfHeal: true    # Re-apply if someone edits resources manually in the cluster.
+      allowEmpty: false
+
+    syncOptions:
+      - CreateNamespace=true
+      # Apply server-side so large ConfigMaps don't hit the annotation size limit.
+      - ServerSideApply=true
+
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+
+  # Notify on sync failures (requires Argo CD Notifications to be configured).
+  info:
+    - name: source-repo
+      value: git@github.com:your-org/quorum.git   # replace

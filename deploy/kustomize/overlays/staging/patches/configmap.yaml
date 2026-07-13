@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quorum-config
+  namespace: quorum-staging
+data:
+  QUORUM_BASE_URL: "https://quorum-staging.example.com"
+  QUORUM_JWT_ACCESS_TTL: "15m"
+  QUORUM_JWT_REFRESH_TTL: "168h"

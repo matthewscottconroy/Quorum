@@ -1,0 +1,39 @@
+## Production overrides — merge with values.yaml.
+## helm upgrade quorum ./deploy/helm/quorum \
+##   -f deploy/helm/quorum/values.yaml \
+##   -f deploy/helm/quorum/values-production.yaml \
+##   --set image.tag=<commit-sha>
+
+replicaCount: 2
+
+image:
+  repository: registry.example.com/quorum
+  pullPolicy: Always
+  tag: ""   # set via --set image.tag=<sha>
+
+config:
+  baseUrl: "https://quorum.example.com"   # replace with your domain
+  smtpHost: "smtp.example.com"
+  emailFrom: "quorum@example.com"
+
+secrets:
+  existingSecret: quorum-secrets   # managed by Sealed Secrets / ESO
+
+resources:
+  requests:
+    cpu: "200m"
+    memory: "128Mi"
+  limits:
+    cpu: "1000m"
+    memory: "512Mi"
+
+ingress:
+  hosts:
+    - host: quorum.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: quorum-tls
+      hosts:
+        - quorum.example.com

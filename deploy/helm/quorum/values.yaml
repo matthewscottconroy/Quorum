@@ -1,0 +1,120 @@
+## Quorum Helm chart values.
+## Copy and edit this file; do not commit real secrets.
+## Override per-environment in values-production.yaml / values-staging.yaml.
+
+replicaCount: 1
+
+image:
+  repository: registry.example.com/quorum
+  pullPolicy: Always
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+
+imagePullSecrets:
+  - name: registry-credentials
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ── Application config (non-secret) ──────────────────────────────────────────
+config:
+  port: "8080"
+  baseUrl: "https://quorum.example.com"
+  jwtAccessTtl: "15m"
+  jwtRefreshTtl: "168h"
+  smtpHost: ""
+  smtpPort: "587"
+  smtpUser: ""
+  emailFrom: "quorum@example.com"
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# Prefer existingSecret in production — manage secrets via Sealed Secrets or ESO.
+# If existingSecret is set, the databaseUrl/jwtSecret/… fields are ignored.
+secrets:
+  # Name of a pre-existing Kubernetes Secret containing the keys:
+  #   QUORUM_DATABASE_URL, QUORUM_JWT_SECRET, QUORUM_SMTP_PASS,
+  #   QUORUM_STRIPE_WEBHOOK_SECRET, QUORUM_PAYPAL_WEBHOOK_ID
+  existingSecret: ""
+
+  # Only used when existingSecret is empty (development / CI).
+  databaseUrl: "postgres://quorum:CHANGEME@postgres:5432/quorum?sslmode=disable"
+  jwtSecret: "CHANGEME-generate-with-openssl-rand-hex-32-minimum-32-chars"
+  smtpPass: ""
+  stripeWebhookSecret: ""
+  paypalWebhookId: ""
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+  hosts:
+    - host: quorum.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: quorum-tls
+      hosts:
+        - quorum.example.com
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: "100m"
+    memory: "64Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+# ── Network policy ────────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # Namespace label for the ingress controller (allows inbound traffic).
+  ingressControllerNamespace: ingress-nginx
+  # Label selector for the PostgreSQL pod (allows DB egress).
+  postgresqlPodSelector:
+    app.kubernetes.io/name: postgresql
+  # Allow outbound SMTP (port 587).
+  smtpEnabled: true
+
+# ── Pod security ──────────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# ── Health checks ─────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /api/v1/auth/bootstrap
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/auth/bootstrap
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  failureThreshold: 2

@@ -1,0 +1,31 @@
+# Requires an ingress controller (e.g. ingress-nginx) and cert-manager for TLS.
+# Replace quorum.example.com with your domain and adjust the issuer annotation
+# to match your cert-manager ClusterIssuer name.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quorum
+  namespace: quorum
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    # Forward the real client IP so the login rate limiter works correctly.
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - quorum.example.com
+      secretName: quorum-tls
+  rules:
+    - host: quorum.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: quorum
+                port:
+                  name: http

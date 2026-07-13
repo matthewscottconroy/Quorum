@@ -1,0 +1,203 @@
+# Custom Tekton Tasks for the Quorum pipeline.
+# The git-clone Task is sourced from the Tekton Hub (tekton.dev/task/git-clone).
+# Apply these alongside the standard Tekton catalog tasks.
+---
+# ── Task: Go test ──────────────────────────────────────────────────────────────
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: quorum-go-test
+  namespace: tekton-pipelines
+spec:
+  description: Runs `go test -race ./...` for the Quorum module.
+  workspaces:
+    - name: source
+      description: Checked-out source repository.
+  steps:
+    - name: test
+      image: golang:1.23-alpine
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CGO_ENABLED
+          value: "0"
+        - name: GOFLAGS
+          value: "-mod=readonly"
+        - name: GOCACHE
+          value: /tmp/gocache
+        - name: GOPATH
+          value: /tmp/gopath
+      script: |
+        #!/bin/sh
+        set -e
+        go test -race -count=1 -timeout=120s ./...
+---
+# ── Task: Buildah build and push ───────────────────────────────────────────────
+# Buildah is the OCI image build engine that underpins Podman.
+# It builds images from a Containerfile/Dockerfile without a Docker daemon,
+# making it fully compatible with Podman-based environments and Kubernetes clusters.
+#
+# Security note: this task runs privileged to access the overlay storage driver.
+# For clusters with kernel.unprivileged_userns_clone=1, set storageDriver=vfs
+# and remove `privileged: true` to run rootless.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: quorum-buildah-build
+  namespace: tekton-pipelines
+spec:
+  description: |
+    Builds a container image from the Dockerfile/Containerfile using Buildah
+    (the Podman build engine) and pushes it to the configured registry with
+    two tags: the full commit SHA and `latest`.
+  params:
+    - name: image
+      type: string
+      description: "Full image ref with commit-SHA tag, e.g. registry.example.com/quorum:abc1234"
+    - name: image-latest
+      type: string
+      description: "Full image ref with the 'latest' tag."
+    - name: dockerfile
+      type: string
+      default: Dockerfile
+      description: Path to the Dockerfile/Containerfile relative to the workspace root.
+    - name: context
+      type: string
+      default: .
+      description: Build context path relative to the workspace root.
+    - name: storage-driver
+      type: string
+      default: overlay
+      description: "Buildah storage driver. Use 'vfs' for rootless builds."
+  workspaces:
+    - name: source
+      description: Checked-out source repository containing the Dockerfile.
+    - name: docker-credentials
+      description: |
+        Volume containing a Docker/Podman auth config. The secret must have a
+        key `.dockerconfigjson` which is mapped to `config.json` in the volume.
+  results:
+    - name: image-digest
+      description: SHA256 digest of the built image.
+  steps:
+    - name: build
+      image: quay.io/buildah/stable:v1.35
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        privileged: true   # required for overlay storage; replace with vfs for rootless
+      env:
+        - name: STORAGE_DRIVER
+          value: $(params.storage-driver)
+        - name: BUILDAH_ISOLATION
+          value: chroot
+      script: |
+        #!/bin/bash
+        set -eu
+
+        buildah --storage-driver="${STORAGE_DRIVER}" bud \
+          --format=oci \
+          --file=$(params.dockerfile) \
+          --tag=$(params.image) \
+          --tag=$(params.image-latest) \
+          $(params.context)
+
+    - name: push
+      image: quay.io/buildah/stable:v1.35
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        privileged: true
+      env:
+        - name: STORAGE_DRIVER
+          value: $(params.storage-driver)
+      script: |
+        #!/bin/bash
+        set -eu
+
+        AUTH="$(workspaces.docker-credentials.path)/config.json"
+
+        buildah --storage-driver="${STORAGE_DRIVER}" push \
+          --authfile="${AUTH}" \
+          --digestfile=/tmp/image-digest \
+          $(params.image)
+
+        buildah --storage-driver="${STORAGE_DRIVER}" push \
+          --authfile="${AUTH}" \
+          $(params.image-latest)
+
+        cat /tmp/image-digest | tee $(results.image-digest.path)
+  volumes:
+    - name: docker-credentials
+      projected:
+        sources:
+          - secret:
+              name: registry-credentials
+              items:
+                - key: .dockerconfigjson
+                  path: config.json
+---
+# ── Task: Update Kustomize overlay image tag ───────────────────────────────────
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: quorum-update-manifest
+  namespace: tekton-pipelines
+spec:
+  description: |
+    Clones the GitOps repository, updates the image tag in the Kustomize
+    production overlay using `kustomize edit set image`, commits, and pushes.
+    Argo CD detects this push and syncs the cluster.
+  params:
+    - name: gitops-repo-url
+      type: string
+    - name: gitops-revision
+      type: string
+      default: main
+    - name: image-repository
+      type: string
+      description: "Base image name without tag, e.g. registry.example.com/quorum"
+    - name: image-tag
+      type: string
+      description: "New image tag (commit SHA)."
+    - name: kustomize-overlay-path
+      type: string
+      default: deploy/kustomize/overlays/production
+      description: "Path inside the GitOps repo to the Kustomize overlay directory."
+    - name: commit-sha
+      type: string
+      description: Source commit SHA, embedded in the git commit message.
+  workspaces:
+    - name: gitops
+      description: Workspace for the cloned GitOps repository.
+    - name: git-credentials
+      description: SSH key or token for pushing to the GitOps repository.
+  steps:
+    - name: clone
+      image: alpine/git:2.43.0
+      workingDir: $(workspaces.gitops.path)
+      script: |
+        #!/bin/sh
+        set -eu
+        git config --global user.email "tekton@quorum-ci"
+        git config --global user.name  "Tekton Pipeline"
+        git clone --depth=1 --branch=$(params.gitops-revision) \
+          $(params.gitops-repo-url) .
+
+    - name: update-image-tag
+      # kustomize CLI to update the images block in the overlay kustomization.yaml
+      image: registry.k8s.io/kustomize/kustomize:v5.3.0
+      workingDir: $(workspaces.gitops.path)/$(params.kustomize-overlay-path)
+      script: |
+        #!/bin/sh
+        set -eu
+        kustomize edit set image \
+          "$(params.image-repository)=$(params.image-repository):$(params.image-tag)"
+
+    - name: commit-and-push
+      image: alpine/git:2.43.0
+      workingDir: $(workspaces.gitops.path)
+      script: |
+        #!/bin/sh
+        set -eu
+        git add $(params.kustomize-overlay-path)/kustomization.yaml
+        git diff --cached --quiet && exit 0   # nothing changed, skip push
+        git commit -m "chore: deploy quorum $(params.commit-sha)"
+        git push origin $(params.gitops-revision)

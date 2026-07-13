@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS resources;
+DROP TABLE IF EXISTS contacts;
+DROP TABLE IF EXISTS plan_decisions;
+DROP TABLE IF EXISTS action_items;
+DROP TABLE IF EXISTS plans;
+DROP TABLE IF EXISTS meeting_decisions;
+DROP TABLE IF EXISTS meeting_attendees;
+DROP TABLE IF EXISTS meetings;
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS dues_invoices;
+DROP TABLE IF EXISTS refresh_tokens;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS members;

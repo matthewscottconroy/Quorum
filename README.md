@@ -1,0 +1,531 @@
+# Quorum
+
+Quorum is a self-hosted web application for managing organizational operations: dues collection, meeting notes, strategic plans, contacts, and resources.
+
+## Quick start
+
+**With Podman (recommended):**
+
+```sh
+# 1. Clone and enter the repo
+cd quorum
+
+# 2. Copy environment template
+cp .env.example .env
+# Edit .env — set QUORUM_DATABASE_URL and QUORUM_JWT_SECRET at minimum
+
+# 3. Generate a JWT secret
+make secret   # prints 64 random hex chars; paste into .env
+
+# 4. Start the database and app with Podman Compose
+make pod-up
+
+# 5. Create the first admin user (run once)
+make bootstrap
+```
+
+**With Docker Compose:**
+
+```sh
+cp .env.example .env && make secret  # fill in .env
+make docker-up
+make bootstrap
+```
+
+The app is now available at `http://localhost:8080`.
+
+---
+
+## Local development (without Docker)
+
+Requires: Go 1.23+, PostgreSQL 16.
+
+```sh
+# Start a local Postgres database separately, then:
+make dev          # reads .env, runs go run ./cmd/quorum
+```
+
+`make dev` reads `QUORUM_DATABASE_URL` and `QUORUM_JWT_SECRET` directly from `.env` using shell substitution so you don't need to source the file first.
+
+---
+
+## Configuration reference
+
+All settings are read from environment variables. Copy `.env.example` to `.env` and fill in values.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `QUORUM_DATABASE_URL` | yes | — | PostgreSQL DSN, e.g. `postgres://user:pass@host/db?sslmode=disable` |
+| `QUORUM_JWT_SECRET` | yes | — | HS256 signing key. Generate with `make secret`. |
+| `QUORUM_PORT` | no | `8080` | HTTP listen port |
+| `QUORUM_JWT_ACCESS_TTL` | no | `15m` | Access token lifetime (Go duration string) |
+| `QUORUM_JWT_REFRESH_TTL` | no | `168h` | Refresh token lifetime (7 days) |
+| `QUORUM_BASE_URL` | no | `http://localhost:8080` | Public URL used in email links |
+| `QUORUM_SMTP_HOST` | no | — | SMTP hostname for email reminders |
+| `QUORUM_SMTP_PORT` | no | `587` | SMTP port |
+| `QUORUM_SMTP_USER` | no | — | SMTP username |
+| `QUORUM_SMTP_PASS` | no | — | SMTP password |
+| `QUORUM_EMAIL_FROM` | no | `quorum@localhost` | From address for outbound email |
+| `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When set, all Stripe events must pass signature verification. |
+| `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID |
+| `DB_PASSWORD` | docker only | — | Password for the Postgres container |
+
+---
+
+## First login
+
+After `make bootstrap`, log in using the email and password you supplied:
+
+```
+POST /api/v1/auth/login
+{"email": "admin@example.com", "password": "yourpassword"}
+```
+
+The response contains an `access_token` (short-lived, ~15 min). A `quorum_refresh` HttpOnly cookie is also set automatically — it carries the long-lived refresh token (7 days) and is sent by the browser on every refresh request without JavaScript access.
+
+The browser app handles silent token refresh and session restoration automatically. API clients should store the access token in memory and POST to `/api/v1/auth/refresh` (the cookie is sent automatically by the browser; other clients must handle the cookie jar themselves).
+
+The bootstrap endpoint (`POST /api/v1/auth/bootstrap`) returns `403 Forbidden` once any user exists.
+
+---
+
+## API overview
+
+All API routes are under `/api/v1`. Authenticated routes require `Authorization: Bearer <access_token>`.
+
+### Authentication
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/auth/bootstrap` | — | Create the first admin (one-time) |
+| `POST` | `/auth/login` | — | Exchange credentials for access token + refresh cookie |
+| `POST` | `/auth/refresh` | — | Issue a new access token using the HttpOnly refresh cookie |
+| `POST` | `/auth/logout` | required | Revoke the refresh token and clear the cookie |
+| `GET` | `/auth/me` | required | Current user profile |
+| `PATCH` | `/auth/me/password` | required | Change own password (invalidates all existing sessions) |
+
+### Users (admin only)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/users` | List all users |
+| `POST` | `/users` | Create a new user |
+| `PATCH` | `/users/:id` | Update role |
+| `DELETE` | `/users/:id` | Delete user |
+
+### Members
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/members` | member | List/search members |
+| `POST` | `/members` | officer | Create member |
+| `GET` | `/members/:id` | member | Get member |
+| `PATCH` | `/members/:id` | officer | Update member |
+| `DELETE` | `/members/:id` | admin | Soft-delete (marks inactive) |
+| `GET` | `/members/:id/dues` | member | Member's invoices |
+| `GET` | `/members/:id/action-items` | member | Member's action items |
+
+Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offset`.
+
+### Dues
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/dues` | member | List invoices |
+| `POST` | `/dues` | officer | Create invoice(s) |
+| `GET` | `/dues/:id` | member | Get invoice + transactions |
+| `PATCH` | `/dues/:id` | officer | Update invoice status |
+| `POST` | `/dues/:id/transactions` | officer | Record a payment |
+| `GET` | `/dues/transactions` | member | List transactions |
+
+**Bulk invoice creation**: include `member_ids` (array) instead of `member_id` to create one invoice per member in a single request.
+
+### Meetings
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/meetings` | member | List meetings (`?upcoming=true` for future only) |
+| `POST` | `/meetings` | officer | Create meeting |
+| `GET` | `/meetings/:id` | member | Get meeting + attendees + decisions |
+| `PATCH` | `/meetings/:id` | officer | Update meeting |
+| `DELETE` | `/meetings/:id` | admin | Delete meeting |
+| `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list |
+| `POST` | `/meetings/:id/decisions` | officer | Add a decision |
+| `PATCH` | `/meetings/:id/decisions/:did` | officer | Update a decision |
+| `DELETE` | `/meetings/:id/decisions/:did` | officer | Delete a decision |
+
+### Plans
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/plans` | member | List plans |
+| `POST` | `/plans` | officer | Create plan |
+| `GET` | `/plans/:id` | member | Get plan + decision log |
+| `PATCH` | `/plans/:id` | officer | Update plan |
+| `DELETE` | `/plans/:id` | admin | Delete plan |
+| `POST` | `/plans/:id/decisions` | officer | Log a decision |
+| `PATCH` | `/plans/:id/decisions/:did` | officer | Edit a decision |
+| `DELETE` | `/plans/:id/decisions/:did` | officer | Delete a decision |
+
+### Action items
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/action-items` | member | List (`?status=`, `?assignee_id=`, etc.) |
+| `POST` | `/action-items` | officer | Create |
+| `PATCH` | `/action-items/:id` | officer | Update |
+| `DELETE` | `/action-items/:id` | admin | Delete |
+
+### Contacts
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/contacts` | member | List/search contacts |
+| `POST` | `/contacts` | officer | Create |
+| `GET` | `/contacts/:id` | member | Get |
+| `PATCH` | `/contacts/:id` | officer | Update |
+| `DELETE` | `/contacts/:id` | admin | Delete |
+
+### Resources
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/resources` | member | List/search resources |
+| `POST` | `/resources` | officer | Create |
+| `GET` | `/resources/:id` | member | Get |
+| `PATCH` | `/resources/:id` | officer | Update |
+| `DELETE` | `/resources/:id` | admin | Delete |
+
+### Dashboard
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/dashboard/summary` | Overdue/pending counts, upcoming meetings, open action items |
+
+### Webhooks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/stripe` | Stripe event receiver |
+| `POST` | `/webhooks/paypal` | PayPal event receiver |
+
+Webhook endpoints are not authenticated with JWT. Stripe events are validated via HMAC-SHA256 signature verification; PayPal events via RSA certificate-based signature. See [SECURITY.md](SECURITY.md) for details.
+
+---
+
+## Role-based access control
+
+Three roles with ascending privileges:
+
+| Role | Can do |
+|------|--------|
+| `member` | Read-only access to all resources |
+| `officer` | Read + write most resources; cannot manage users or delete core records |
+| `admin` | Full access including user management and destructive operations |
+
+Roles are encoded in the JWT and enforced per-route in middleware. Users can be assigned any role during creation or via `PATCH /users/:id`.
+
+---
+
+## Payment integration
+
+Quorum does not process payments itself — it records the result of payments made through Stripe or PayPal.
+
+### Stripe
+
+1. Create a webhook endpoint in the Stripe dashboard pointing to `https://your-domain/api/v1/webhooks/stripe`.
+2. Select events: `payment_intent.succeeded` and/or `charge.succeeded`.
+3. Copy the signing secret (`whsec_…`) into `QUORUM_STRIPE_WEBHOOK_SECRET`.
+4. In your payment metadata, include `quorum_invoice_id` and `quorum_member_id` to link payments to invoices automatically.
+
+When `QUORUM_STRIPE_WEBHOOK_SECRET` is empty, signature verification is skipped (useful for local testing with Stripe CLI).
+
+### PayPal
+
+1. Point a PayPal webhook at `https://your-domain/api/v1/webhooks/paypal`.
+2. Subscribe to `PAYMENT.CAPTURE.COMPLETED`.
+3. Set `custom_id` to `invoice:<uuid>` in your PayPal order to auto-link the payment.
+
+All webhook events are deduplicated via the `processed_events` table, so retries from the provider are safe.
+
+### Manual recording
+
+Officers can also record payments manually via `POST /api/v1/dues/:id/transactions`, which automatically recomputes the invoice status after recording.
+
+---
+
+## Email reminders
+
+When `QUORUM_SMTP_HOST` is set, Quorum sends overdue invoice reminders on a nightly schedule. The email list is built from all invoices with status `overdue` that have a member email address on file.
+
+---
+
+## Architecture
+
+```
+cmd/quorum/         main entry point
+internal/
+  auth/             JWT, bcrypt, refresh token helpers
+  config/           environment variable loading
+  db/               pgxpool connection, advisory-locked migration runner
+    migrations/     numbered *.up.sql migration files
+  handler/          HTTP handlers and middleware
+  model/            shared data types
+  repo/             PostgreSQL repository implementations
+static.go           embeds web/ into the binary
+web/                vanilla JS frontend (no build step)
+  app.js            router, API client, auth state
+  css/base.css      design tokens and shared component styles
+  components/       one Web Component per page/feature
+```
+
+**Database**: PostgreSQL 16 with pgxpool. Migrations run automatically at startup using an advisory lock to prevent parallel execution. All UUID columns are cast to `::text` in SELECT statements to allow scanning into Go strings without requiring pgx UUID types.
+
+**Frontend**: Pure ES modules, Web Components (Custom Elements v1), hash-based client-side routing. No build step, no npm, no framework. The entire `web/` directory is embedded into the binary via `//go:embed`.
+
+**Authentication**: HS256 JWTs (15-minute access tokens) + opaque refresh tokens (SHA-256 hashed before storage, 7-day TTL). Refresh tokens are revoked on logout and validated against the database on each refresh.
+
+---
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for a full description of the authentication model, authorisation controls, injection prevention, webhook verification, and operator responsibilities.
+
+---
+
+## Development guide
+
+```sh
+# Build the binary
+make build
+
+# Run tests (also available as: make test)
+go test ./...
+
+# Run tests with race detector
+go test -race ./...
+
+# Lint (requires golangci-lint; also available as: make lint)
+golangci-lint run
+
+# Check for known CVEs in dependencies
+govulncheck ./...
+
+# Generate a random JWT secret
+make secret
+
+# Container workflow (Podman)
+make pod-build    # build image
+make pod-up       # start stack
+make pod-down     # stop stack
+```
+
+### Testing approach
+
+Handler tests live alongside source in `internal/handler/*_test.go`. They use lightweight function-field mocks (defined in `testhelpers_test.go`) that satisfy the package-private interfaces in `interfaces.go`. No database is required to run the test suite.
+
+```sh
+# Run only handler tests with verbose output
+go test -v ./internal/handler/...
+```
+
+New handlers should follow the existing pattern:
+1. Add a mock struct for the new repo to `testhelpers_test.go`.
+2. Create `<handler>_test.go` covering: success path, validation errors, repo errors, and any filter/query parameter passthrough.
+
+### Adding a migration
+
+Create a numbered file in `internal/db/migrations/`:
+
+```
+internal/db/migrations/0002_add_my_table.up.sql
+```
+
+The migration runner applies files in numeric order and skips already-applied ones. Restart the server to apply new migrations.
+
+### Project structure conventions
+
+- Repository types (`*repo.XRepo`) implement package-private interfaces defined in `internal/handler/interfaces.go`, enabling handler unit tests without a database.
+- Handler tests use `mockXRepo` structs (function-field mocks) defined in `testhelpers_test.go`.
+- All nullable PostgreSQL columns map to pointer types (`*string`, `*time.Time`, etc.) in Go model structs.
+
+---
+
+## Deployment
+
+### Podman (local / self-hosted)
+
+Quorum uses Podman as its primary container engine. `make pod-*` targets wrap `podman compose` and `podman build`:
+
+```sh
+make pod-up       # Start PostgreSQL + app (podman compose up --build -d)
+make pod-down     # Stop and remove containers
+make pod-build    # Build the image: IMAGE=localhost/quorum:dev
+make pod-push     # Push to a registry: IMAGE=registry.example.com/quorum:latest make pod-push
+make pod-run      # Run the app container standalone (no compose)
+```
+
+`IMAGE` defaults to `localhost/quorum:dev`. Override on the command line:
+
+```sh
+IMAGE=registry.example.com/quorum:v1.2.3 make pod-push
+```
+
+Data is persisted in the `pgdata` named volume. The app container binds only to `127.0.0.1:8080` — put a reverse proxy (nginx, Caddy) in front for TLS.
+
+### Docker Compose (alternative)
+
+`make docker-up` / `make docker-down` are provided as aliases for teams still on Docker.
+
+### Binary-only
+
+```sh
+make build
+QUORUM_DATABASE_URL=postgres://... QUORUM_JWT_SECRET=... ./quorum
+```
+
+The binary includes all migrations and frontend assets — no external files needed.
+
+### Reverse proxy (nginx example)
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name quorum.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+}
+```
+
+Set `QUORUM_BASE_URL=https://quorum.example.com` so email links are correct.
+
+---
+
+### Kubernetes
+
+Three deployment methods are provided in `deploy/`. Choose one:
+
+| Method | When to use |
+|--------|-------------|
+| **Kustomize + Tekton + Argo CD** | GitOps, auto-deploy on push (recommended) |
+| **Helm** | Imperative install or Argo CD Helm-source mode |
+| **Raw manifests** (`deploy/k8s/`) | Simple one-off installs |
+
+#### Kustomize structure
+
+```
+deploy/kustomize/
+  base/                          # References deploy/k8s/ resources
+  overlays/
+    production/                  # 2 replicas, production domain, higher limits
+      patches/configmap.yaml
+      patches/replicas.yaml
+      kustomization.yaml
+    staging/                     # 1 replica, staging domain, minimal limits
+      patches/configmap.yaml
+      patches/resources.yaml
+      kustomization.yaml
+```
+
+Apply an overlay directly:
+
+```sh
+kubectl apply -k deploy/kustomize/overlays/production
+kubectl apply -k deploy/kustomize/overlays/staging
+```
+
+#### Helm chart
+
+```sh
+# Install into the quorum namespace
+helm upgrade --install quorum deploy/helm/quorum \
+  -f deploy/helm/quorum/values.yaml \
+  -f deploy/helm/quorum/values-production.yaml \
+  --namespace quorum --create-namespace
+
+# Uninstall (Secrets with helm.sh/resource-policy: keep are retained)
+helm uninstall quorum -n quorum
+```
+
+The chart supports `secrets.existingSecret` to reference a pre-existing secret (created by Sealed Secrets or ESO) instead of letting Helm manage credentials:
+
+```yaml
+# values-production.yaml (excerpt)
+secrets:
+  existingSecret: quorum-secrets   # Helm will not create/delete this secret
+```
+
+#### Tekton CI pipeline (Buildah / Podman)
+
+The pipeline builds images with **Buildah** (the Podman build engine) — no Docker daemon required.
+
+```
+Git push → GitHub/Gitea webhook
+  └─► Tekton EventListener
+        └─► quorum-build Pipeline
+              1. git-clone      — clone source
+              2. quorum-go-test — go test -race ./...
+              3. quorum-buildah-build — buildah bud + push (commit-sha + latest tags)
+              4. quorum-update-manifest — kustomize edit set image → commit → push GitOps repo
+                    └─► Argo CD detects GitOps commit → syncs cluster
+```
+
+**Setup:**
+
+```sh
+# 1. Store registry credentials (Podman/Docker auth format)
+#    podman login registry.example.com
+#    kubectl create secret generic registry-credentials \
+#      --from-file=.dockerconfigjson=$HOME/.config/containers/auth.json \
+#      -n tekton-pipelines
+
+# 2. Store GitOps SSH deploy key
+#    kubectl create secret generic gitops-ssh-key \
+#      --from-file=id_ed25519=/path/to/deploy_key \
+#      -n tekton-pipelines
+
+# 3. Store webhook HMAC secret
+#    kubectl create secret generic github-webhook-secret \
+#      --from-literal=token=<your-hmac-token> \
+#      -n tekton-pipelines
+
+# 4. Apply RBAC, tasks, pipeline, and triggers
+kubectl apply -f deploy/tekton/rbac.yaml
+kubectl apply -f deploy/tekton/tasks.yaml
+kubectl apply -f deploy/tekton/pipeline.yaml
+kubectl apply -f deploy/tekton/triggers/event-listener.yaml
+```
+
+Edit `deploy/tekton/triggers/event-listener.yaml` to set `image-repository`, `gitops-repo-url`, and `kustomize-overlay-path` for your environment.
+
+**Rootless builds:** Set `storageDriver: vfs` in the `quorum-buildah-build` task params and remove `privileged: true` from the step's `securityContext` (requires `kernel.unprivileged_userns_clone=1` on the node).
+
+#### Argo CD
+
+Two Application manifests are provided:
+
+| File | Source | Use case |
+|------|--------|----------|
+| `deploy/argocd/application.yaml` | Kustomize production overlay | GitOps auto-deploy (Tekton writes image tag here) |
+| `deploy/argocd/application-helm.yaml` | Helm chart in source repo | Direct Helm-managed deploy |
+
+```sh
+# Register the AppProject first, then choose one Application
+kubectl apply -f deploy/argocd/project.yaml
+kubectl apply -f deploy/argocd/application.yaml        # Kustomize (default)
+# — or —
+kubectl apply -f deploy/argocd/application-helm.yaml   # Helm chart
+```
+
+Both files contain `# replace` comments for repository URLs that must be updated before applying.
+
+#### Secrets management
+
+`deploy/k8s/secret.yaml` is a **template only** — never commit real secrets. In production, manage `quorum-secrets` via:
+
+- [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets) — encrypt client-side, store SealedSecret in git.
+- [External Secrets Operator](https://external-secrets.io) — sync from Vault, AWS Secrets Manager, etc.

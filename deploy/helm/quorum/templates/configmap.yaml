@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quorum.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "quorum.labels" . | nindent 4 }}
+data:
+  QUORUM_PORT:            {{ .Values.config.port | quote }}
+  QUORUM_BASE_URL:        {{ .Values.config.baseUrl | quote }}
+  QUORUM_JWT_ACCESS_TTL:  {{ .Values.config.jwtAccessTtl | quote }}
+  QUORUM_JWT_REFRESH_TTL: {{ .Values.config.jwtRefreshTtl | quote }}
+  QUORUM_SMTP_HOST:       {{ .Values.config.smtpHost | quote }}
+  QUORUM_SMTP_PORT:       {{ .Values.config.smtpPort | quote }}
+  QUORUM_SMTP_USER:       {{ .Values.config.smtpUser | quote }}
+  QUORUM_EMAIL_FROM:      {{ .Values.config.emailFrom | quote }}
