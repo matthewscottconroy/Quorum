@@ -43,11 +43,23 @@ func TestCheckPassword_EmptyInputs(t *testing.T) {
 	}
 }
 
+// ---- DummyCheckPassword ----
+
+func TestDummyCheckPassword_AlwaysFalse(t *testing.T) {
+	// The dummy comparison exists only to equalize timing on the
+	// unknown-email login path; it must never report a match.
+	for _, pw := range []string{"", "password", "correct-horse-battery"} {
+		if auth.DummyCheckPassword(pw) {
+			t.Errorf("DummyCheckPassword(%q) = true, want false", pw)
+		}
+	}
+}
+
 // ---- IssueAccessToken / ParseToken ----
 
 func TestIssueAndParseToken(t *testing.T) {
 	secret := "test-secret-value"
-	tok, err := auth.IssueAccessToken("user-123", "admin", secret, time.Minute)
+	tok, err := auth.IssueAccessToken("user-123", "admin", "member-77", secret, time.Minute)
 	if err != nil {
 		t.Fatalf("IssueAccessToken: %v", err)
 	}
@@ -61,10 +73,30 @@ func TestIssueAndParseToken(t *testing.T) {
 	if claims.Role != "admin" {
 		t.Errorf("Role: got %q, want %q", claims.Role, "admin")
 	}
+	if claims.MemberID != "member-77" {
+		t.Errorf("MemberID: got %q, want %q", claims.MemberID, "member-77")
+	}
+}
+
+// TestIssueAndParseToken_EmptyMemberID verifies an unlinked account round-trips
+// with an empty MemberID (the omitempty JSON tag must not corrupt parsing).
+func TestIssueAndParseToken_EmptyMemberID(t *testing.T) {
+	secret := "test-secret-value"
+	tok, err := auth.IssueAccessToken("user-9", "restricted", "", secret, time.Minute)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	claims, err := auth.ParseToken(tok, secret)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if claims.MemberID != "" {
+		t.Errorf("MemberID: got %q, want empty", claims.MemberID)
+	}
 }
 
 func TestParseToken_WrongSecret(t *testing.T) {
-	tok, _ := auth.IssueAccessToken("u1", "member", "secret-a", time.Minute)
+	tok, _ := auth.IssueAccessToken("u1", "member", "", "secret-a", time.Minute)
 	_, err := auth.ParseToken(tok, "secret-b")
 	if err == nil {
 		t.Error("expected error when verifying with wrong secret")
@@ -72,7 +104,7 @@ func TestParseToken_WrongSecret(t *testing.T) {
 }
 
 func TestParseToken_Expired(t *testing.T) {
-	tok, _ := auth.IssueAccessToken("u1", "member", "secret", -time.Second)
+	tok, _ := auth.IssueAccessToken("u1", "member", "", "secret", -time.Second)
 	_, err := auth.ParseToken(tok, "secret")
 	if err == nil {
 		t.Error("expected error for expired token")

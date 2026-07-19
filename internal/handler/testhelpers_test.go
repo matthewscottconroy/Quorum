@@ -12,6 +12,23 @@ import (
 	"quorum/internal/repo"
 )
 
+// fakeNotifier captures the arguments of the most recent NotifyDeletion call.
+type fakeNotifier struct {
+	called     bool
+	actor      string
+	entityType string
+	entityName string
+	affected   []string
+}
+
+func (f *fakeNotifier) NotifyDeletion(_ context.Context, actorUserID, entityType, entityName string, affectedEmails []string) {
+	f.called = true
+	f.actor = actorUserID
+	f.entityType = entityType
+	f.entityName = entityName
+	f.affected = affectedEmails
+}
+
 // ---- mockAuthRepo ----
 
 type mockAuthRepo struct {
@@ -23,6 +40,7 @@ type mockAuthRepo struct {
 	StoreRefreshTokenFn             func(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	GetRefreshTokenFn               func(ctx context.Context, hash string) (string, bool, time.Time, error)
 	RevokeRefreshTokenFn            func(ctx context.Context, hash string) error
+	CountUsersFn                    func(ctx context.Context) (int, error)
 	ListUsersFn                     func(ctx context.Context) ([]model.User, error)
 	UpdateUserRoleFn                func(ctx context.Context, id, role string) (*model.User, error)
 	DeleteUserFn                    func(ctx context.Context, id string) error
@@ -54,6 +72,12 @@ func (m *mockAuthRepo) GetRefreshToken(ctx context.Context, hash string) (string
 }
 func (m *mockAuthRepo) RevokeRefreshToken(ctx context.Context, hash string) error {
 	return m.RevokeRefreshTokenFn(ctx, hash)
+}
+func (m *mockAuthRepo) CountUsers(ctx context.Context) (int, error) {
+	if m.CountUsersFn != nil {
+		return m.CountUsersFn(ctx)
+	}
+	return 0, nil
 }
 func (m *mockAuthRepo) ListUsers(ctx context.Context) ([]model.User, error) {
 	return m.ListUsersFn(ctx)
@@ -108,18 +132,17 @@ func (m *mockMembersRepo) Count(ctx context.Context) (int, error) { return m.Cou
 // ---- mockDuesRepo ----
 
 type mockDuesRepo struct {
-	ListInvoicesFn           func(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
-	GetInvoiceFn             func(ctx context.Context, id string) (*model.DuesInvoice, error)
-	CreateInvoiceFn          func(ctx context.Context, inv *model.DuesInvoice) (*model.DuesInvoice, error)
-	CreateInvoiceBatchFn     func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
-	UpdateInvoiceStatusFn    func(ctx context.Context, id, status string, notes *string) error
-	RecomputeInvoiceStatusFn func(ctx context.Context, id string) error
-	CountByStatusFn          func(ctx context.Context, status string) (int, error)
-	ListTransactionsFn       func(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
-	CreateTransactionFn      func(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
+	ListInvoicesFn             func(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
+	GetInvoiceFn               func(ctx context.Context, id string) (*model.DuesInvoice, error)
+	CreateInvoiceBatchFn       func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
+	UpdateInvoiceStatusFn      func(ctx context.Context, id, status string, notes *string) error
+	RecomputeInvoiceStatusFn   func(ctx context.Context, id string) error
+	CountByStatusFn            func(ctx context.Context, status string) (int, error)
+	ListTransactionsFn         func(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
+	CreateTransactionFn        func(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
 	FindInvoiceByProviderRefFn func(ctx context.Context, ref string) (string, error)
-	EventProcessedFn         func(ctx context.Context, eventID string) (bool, error)
-	MarkEventProcessedFn     func(ctx context.Context, eventID string) error
+	MarkEventProcessedFn       func(ctx context.Context, eventID string) error
+	RecordWebhookPaymentFn     func(ctx context.Context, eventID string, t *model.Transaction) (bool, error)
 }
 
 func (m *mockDuesRepo) ListInvoices(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error) {
@@ -127,9 +150,6 @@ func (m *mockDuesRepo) ListInvoices(ctx context.Context, f repo.InvoiceFilter) (
 }
 func (m *mockDuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error) {
 	return m.GetInvoiceFn(ctx, id)
-}
-func (m *mockDuesRepo) CreateInvoice(ctx context.Context, inv *model.DuesInvoice) (*model.DuesInvoice, error) {
-	return m.CreateInvoiceFn(ctx, inv)
 }
 func (m *mockDuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error) {
 	return m.CreateInvoiceBatchFn(ctx, invs)
@@ -152,11 +172,11 @@ func (m *mockDuesRepo) CreateTransaction(ctx context.Context, t *model.Transacti
 func (m *mockDuesRepo) FindInvoiceByProviderRef(ctx context.Context, ref string) (string, error) {
 	return m.FindInvoiceByProviderRefFn(ctx, ref)
 }
-func (m *mockDuesRepo) EventProcessed(ctx context.Context, eventID string) (bool, error) {
-	return m.EventProcessedFn(ctx, eventID)
-}
 func (m *mockDuesRepo) MarkEventProcessed(ctx context.Context, eventID string) error {
 	return m.MarkEventProcessedFn(ctx, eventID)
+}
+func (m *mockDuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *model.Transaction) (bool, error) {
+	return m.RecordWebhookPaymentFn(ctx, eventID, t)
 }
 
 // ---- mockMeetingsRepo ----
@@ -168,6 +188,7 @@ type mockMeetingsRepo struct {
 	UpdateFn         func(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
 	DeleteFn         func(ctx context.Context, id string) error
 	GetAttendeesFn   func(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
+	AttendeeEmailsFn func(ctx context.Context, meetingID string) ([]string, error)
 	SetAttendeesFn   func(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
 	CreateDecisionFn func(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
 	UpdateDecisionFn func(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
@@ -193,6 +214,12 @@ func (m *mockMeetingsRepo) Delete(ctx context.Context, id string) error {
 func (m *mockMeetingsRepo) GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error) {
 	return m.GetAttendeesFn(ctx, meetingID)
 }
+func (m *mockMeetingsRepo) AttendeeEmails(ctx context.Context, meetingID string) ([]string, error) {
+	if m.AttendeeEmailsFn != nil {
+		return m.AttendeeEmailsFn(ctx, meetingID)
+	}
+	return nil, nil
+}
 func (m *mockMeetingsRepo) SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error {
 	return m.SetAttendeesFn(ctx, meetingID, attendees)
 }
@@ -212,14 +239,19 @@ func (m *mockMeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting
 // ---- mockActionItemsRepo ----
 
 type mockActionItemsRepo struct {
-	ListFn   func(ctx context.Context, f repo.ActionItemFilter) ([]model.ActionItem, int, error)
-	CreateFn func(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error)
-	UpdateFn func(ctx context.Context, id string, fields map[string]any) (*model.ActionItem, error)
-	DeleteFn func(ctx context.Context, id string) error
+	ListFn          func(ctx context.Context, f repo.ActionItemFilter) ([]model.ActionItem, int, error)
+	GetFn           func(ctx context.Context, id string) (*model.ActionItem, error)
+	CreateFn        func(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error)
+	UpdateFn        func(ctx context.Context, id string, fields map[string]any) (*model.ActionItem, error)
+	DeleteFn        func(ctx context.Context, id string) error
+	AssigneeEmailFn func(ctx context.Context, id string) (string, error)
 }
 
 func (m *mockActionItemsRepo) List(ctx context.Context, f repo.ActionItemFilter) ([]model.ActionItem, int, error) {
 	return m.ListFn(ctx, f)
+}
+func (m *mockActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem, error) {
+	return m.GetFn(ctx, id)
 }
 func (m *mockActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error) {
 	return m.CreateFn(ctx, item, createdBy)
@@ -230,6 +262,12 @@ func (m *mockActionItemsRepo) Update(ctx context.Context, id string, fields map[
 func (m *mockActionItemsRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
 }
+func (m *mockActionItemsRepo) AssigneeEmail(ctx context.Context, id string) (string, error) {
+	if m.AssigneeEmailFn != nil {
+		return m.AssigneeEmailFn(ctx, id)
+	}
+	return "", nil
+}
 
 // ---- mockContactsRepo ----
 
@@ -237,7 +275,7 @@ type mockContactsRepo struct {
 	ListFn   func(ctx context.Context, f repo.ContactFilter) ([]model.Contact, int, error)
 	GetFn    func(ctx context.Context, id string) (*model.Contact, error)
 	CreateFn func(ctx context.Context, c *model.Contact, createdBy string) (*model.Contact, error)
-	UpdateFn func(ctx context.Context, id string, c *model.Contact) (*model.Contact, error)
+	UpdateFn func(ctx context.Context, id string, fields map[string]any) (*model.Contact, error)
 	DeleteFn func(ctx context.Context, id string) error
 }
 
@@ -250,8 +288,8 @@ func (m *mockContactsRepo) Get(ctx context.Context, id string) (*model.Contact, 
 func (m *mockContactsRepo) Create(ctx context.Context, c *model.Contact, createdBy string) (*model.Contact, error) {
 	return m.CreateFn(ctx, c, createdBy)
 }
-func (m *mockContactsRepo) Update(ctx context.Context, id string, c *model.Contact) (*model.Contact, error) {
-	return m.UpdateFn(ctx, id, c)
+func (m *mockContactsRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Contact, error) {
+	return m.UpdateFn(ctx, id, fields)
 }
 func (m *mockContactsRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
@@ -263,7 +301,7 @@ type mockResourcesRepo struct {
 	ListFn   func(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error)
 	GetFn    func(ctx context.Context, id string) (*model.Resource, error)
 	CreateFn func(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
-	UpdateFn func(ctx context.Context, id string, res *model.Resource) (*model.Resource, error)
+	UpdateFn func(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
 	DeleteFn func(ctx context.Context, id string) error
 }
 
@@ -276,8 +314,8 @@ func (m *mockResourcesRepo) Get(ctx context.Context, id string) (*model.Resource
 func (m *mockResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error) {
 	return m.CreateFn(ctx, res, addedBy)
 }
-func (m *mockResourcesRepo) Update(ctx context.Context, id string, res *model.Resource) (*model.Resource, error) {
-	return m.UpdateFn(ctx, id, res)
+func (m *mockResourcesRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error) {
+	return m.UpdateFn(ctx, id, fields)
 }
 func (m *mockResourcesRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
@@ -304,6 +342,7 @@ type mockPlansRepo struct {
 	CreateFn         func(ctx context.Context, p *model.Plan, createdBy string) (*model.Plan, error)
 	UpdateFn         func(ctx context.Context, id string, fields map[string]any) (*model.Plan, error)
 	DeleteFn         func(ctx context.Context, id string) error
+	OwnerEmailFn     func(ctx context.Context, planID string) (string, error)
 	CreateDecisionFn func(ctx context.Context, d *model.PlanDecision, decidedBy string) (*model.PlanDecision, error)
 	UpdateDecisionFn func(ctx context.Context, id string, summary, rationale *string) (*model.PlanDecision, error)
 	DeleteDecisionFn func(ctx context.Context, id string) error
@@ -323,6 +362,12 @@ func (m *mockPlansRepo) Update(ctx context.Context, id string, fields map[string
 }
 func (m *mockPlansRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
+}
+func (m *mockPlansRepo) OwnerEmail(ctx context.Context, planID string) (string, error) {
+	if m.OwnerEmailFn != nil {
+		return m.OwnerEmailFn(ctx, planID)
+	}
+	return "", nil
 }
 func (m *mockPlansRepo) CreateDecision(ctx context.Context, d *model.PlanDecision, decidedBy string) (*model.PlanDecision, error) {
 	return m.CreateDecisionFn(ctx, d, decidedBy)

@@ -1,4 +1,6 @@
-import { api } from '../app.js';
+import { api, isSuperadmin } from '../app.js';
+import { esc, fmtDate, confirmDelete } from '../utils.js';
+import { toast } from './toast-notification.js';
 
 class PageDashboard extends HTMLElement {
   async connectedCallback() {
@@ -6,12 +8,36 @@ class PageDashboard extends HTMLElement {
     try {
       const data = await api('GET', '/dashboard');
       this.render(data);
+      this.wire();
     } catch {
       this.innerHTML = '<p class="empty-state">Failed to load dashboard.</p>';
     }
   }
 
+  // Wire the superadmin-only action-item delete controls (type-to-confirm).
+  wire() {
+    this.querySelectorAll('.del-ai').forEach(btn => {
+      btn.addEventListener('click', () => {
+        confirmDelete({
+          noun: 'action item',
+          name: btn.dataset.title,
+          onConfirm: async (typed) => {
+            try {
+              await api('DELETE', `/action-items/${btn.dataset.id}?confirm=${encodeURIComponent(typed)}`);
+              toast('Action item deleted', 'success');
+              this.connectedCallback();
+            } catch (err) {
+              toast(err?.error ?? 'Delete failed', 'error');
+              throw err; // keep the confirm dialog open
+            }
+          },
+        });
+      });
+    });
+  }
+
   render(d) {
+    const canDelete = isSuperadmin();
     this.innerHTML = `
       <div class="page-header"><h1>Dashboard</h1></div>
 
@@ -45,8 +71,8 @@ class PageDashboard extends HTMLElement {
                   ${d.upcoming_meetings.map(m => `
                     <tr>
                       <td><a href="#/meetings">${esc(m.title)}</a></td>
-                      <td>${fmtDate(m.scheduled_at)}</td>
-                      <td><span class="badge badge-${m.status}">${m.status}</span></td>
+                      <td>${fmtDate(m.scheduled_at, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
+                      <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
                     </tr>`).join('')}
                 </tbody>
                </table>`}
@@ -57,13 +83,14 @@ class PageDashboard extends HTMLElement {
           ${d.open_action_items.length === 0
             ? '<p class="empty-state" style="padding:1rem">No open items</p>'
             : `<table>
-                <thead><tr><th>Item</th><th>Assignee</th><th>Priority</th></tr></thead>
+                <thead><tr><th>Item</th><th>Assignee</th><th>Priority</th>${canDelete ? '<th></th>' : ''}</tr></thead>
                 <tbody>
                   ${d.open_action_items.map(a => `
                     <tr>
                       <td>${esc(a.title)}</td>
                       <td>${esc(a.assignee_name ?? '—')}</td>
-                      <td><span class="badge badge-${a.priority === 'high' ? 'overdue' : a.priority === 'low' ? 'none' : 'open'}">${a.priority}</span></td>
+                      <td><span class="badge badge-${a.priority === 'high' ? 'overdue' : a.priority === 'low' ? 'none' : 'open'}">${esc(a.priority)}</span></td>
+                      ${canDelete ? `<td class="ai-actions"><button type="button" class="del-ai" data-id="${esc(a.id)}" data-title="${esc(a.title)}" aria-label="Delete action item">Delete</button></td>` : ''}
                     </tr>`).join('')}
                 </tbody>
                </table>`}
@@ -79,15 +106,12 @@ class PageDashboard extends HTMLElement {
         .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .panel-header { padding: .75rem 1rem; border-bottom: 1px solid var(--color-border); }
         .panel-header h2 { font-size: 1rem; font-weight: 700; }
+        .ai-actions { text-align: right; }
+        .del-ai { background: none; border: none; color: var(--color-danger); cursor: pointer; font-size: .8rem; padding: .1rem .3rem; }
+        .del-ai:hover { text-decoration: underline; }
         @media (max-width: 700px) { .dash-grid { grid-template-columns: 1fr; } }
       </style>
     `;
   }
 }
 customElements.define('page-dashboard', PageDashboard);
-
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}

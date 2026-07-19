@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -117,8 +118,14 @@ func (r *AuthRepo) UpdateUserRole(ctx context.Context, id, role string) (*model.
 }
 
 func (r *AuthRepo) DeleteUser(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (r *AuthRepo) GetPasswordHash(ctx context.Context, id string) (string, error) {
@@ -135,15 +142,34 @@ func (r *AuthRepo) UpdatePasswordHash(ctx context.Context, id, hash string) erro
 // CreateFirstUser atomically inserts the initial admin user only when the users
 // table is empty. Returns pgx.ErrNoRows if a user already exists, which the
 // bootstrap handler treats as "already bootstrapped" (403).
+//
+// A transaction-scoped advisory lock serializes concurrent bootstrap attempts:
+// under READ COMMITTED the bare `WHERE NOT EXISTS` guard is not sufficient
+// because two racing statements with different emails would each see an empty
+// table and both insert. The lock forces the second caller to wait until the
+// first commits, after which its NOT EXISTS check fails and it gets ErrNoRows.
 func (r *AuthRepo) CreateFirstUser(ctx context.Context, email, hash, role string) (*model.User, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(8675310)`); err != nil {
+		return nil, err
+	}
+
 	var u model.User
-	err := r.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO users (email, password_hash, role)
 		SELECT $1, $2, $3 WHERE NOT EXISTS (SELECT 1 FROM users)
 		RETURNING id::text, email, role, member_id::text, created_at, last_login_at`,
 		email, hash, role).
 		Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.CreatedAt, &u.LastLoginAt)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &u, nil

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"quorum/internal/model"
 	"quorum/internal/repo"
 )
@@ -122,7 +124,7 @@ func TestContactsGet_Success(t *testing.T) {
 			return testContact(id, "Alice"), nil
 		},
 	})
-	req := chiRequest("GET", "/contacts/c1", "", map[string]string{"id": "c1"})
+	req := chiRequest("GET", "/contacts/"+testUUID, "", map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Get(rr, req)
 	if rr.Code != 200 {
@@ -136,7 +138,7 @@ func TestContactsGet_NotFound(t *testing.T) {
 			return nil, errors.New("not found")
 		},
 	})
-	req := chiRequest("GET", "/contacts/missing", "", map[string]string{"id": "missing"})
+	req := chiRequest("GET", "/contacts/"+testUUID2, "", map[string]string{"id": testUUID2})
 	rr := httptest.NewRecorder()
 	h.Get(rr, req)
 	if rr.Code != 404 {
@@ -144,17 +146,26 @@ func TestContactsGet_NotFound(t *testing.T) {
 	}
 }
 
+func TestContactsGet_BadUUID(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	req := chiRequest("GET", "/contacts/c1", "", map[string]string{"id": "c1"})
+	rr := httptest.NewRecorder()
+	h.Get(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID id", rr.Code)
+	}
+}
+
 // ---- Update ----
 
 func TestContactsUpdate_Success(t *testing.T) {
 	h := NewContactsHandler(&mockContactsRepo{
-		UpdateFn: func(_ context.Context, id string, c *model.Contact) (*model.Contact, error) {
-			c.ID = id
-			return c, nil
+		UpdateFn: func(_ context.Context, id string, fields map[string]any) (*model.Contact, error) {
+			return testContact(id, "Updated Name"), nil
 		},
 	})
 	body := `{"name":"Updated Name"}`
-	req := chiRequest("PATCH", "/contacts/c1", body, map[string]string{"id": "c1"})
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Update(rr, req)
 	if rr.Code != 200 {
@@ -162,14 +173,130 @@ func TestContactsUpdate_Success(t *testing.T) {
 	}
 }
 
-func TestContactsUpdate_MissingName(t *testing.T) {
-	h := NewContactsHandler(&mockContactsRepo{})
+func TestContactsUpdate_PartialEmailOnly(t *testing.T) {
+	// A body with only "email" is a valid partial update: omitted fields stay put.
+	var capturedFields map[string]any
+	h := NewContactsHandler(&mockContactsRepo{
+		UpdateFn: func(_ context.Context, id string, fields map[string]any) (*model.Contact, error) {
+			capturedFields = fields
+			return testContact(id, "Alice"), nil
+		},
+	})
 	body := `{"email":"x@example.com"}`
-	req := chiRequest("PATCH", "/contacts/c1", body, map[string]string{"id": "c1"})
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status: got %d, want 200; body: %s", rr.Code, rr.Body)
+	}
+	if len(capturedFields) != 1 {
+		t.Errorf("fields: got %v, want only email", capturedFields)
+	}
+	if capturedFields["email"] != "x@example.com" {
+		t.Errorf("email field: got %v, want x@example.com", capturedFields["email"])
+	}
+}
+
+func TestContactsUpdate_NoValidFields(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	body := `{"unknown_field":"value"}`
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Update(rr, req)
 	if rr.Code != 400 {
-		t.Errorf("status: got %d, want 400", rr.Code)
+		t.Errorf("status: got %d, want 400 when no valid fields", rr.Code)
+	}
+}
+
+func TestContactsUpdate_EmptyName(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	body := `{"name":""}`
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for empty name", rr.Code)
+	}
+}
+
+func TestContactsUpdate_NonStringName(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	body := `{"name":42}`
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-string name", rr.Code)
+	}
+}
+
+func TestContactsUpdate_BadTags(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	body := `{"tags":[1,2,3]}`
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-string tags", rr.Code)
+	}
+}
+
+func TestContactsUpdate_TagsConverted(t *testing.T) {
+	var capturedFields map[string]any
+	h := NewContactsHandler(&mockContactsRepo{
+		UpdateFn: func(_ context.Context, id string, fields map[string]any) (*model.Contact, error) {
+			capturedFields = fields
+			return testContact(id, "Alice"), nil
+		},
+	})
+	body := `{"tags":["a","b"]}`
+	req := chiRequest("PATCH", "/contacts/"+testUUID, body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	tags, ok := capturedFields["tags"].([]string)
+	if !ok || len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
+		t.Errorf("tags field: got %#v, want []string{a, b}", capturedFields["tags"])
+	}
+}
+
+func TestContactsUpdate_BadUUID(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	req := chiRequest("PATCH", "/contacts/c1", `{"name":"X"}`, map[string]string{"id": "c1"})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID id", rr.Code)
+	}
+}
+
+func TestContactsUpdate_NotFound(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{
+		UpdateFn: func(_ context.Context, _ string, _ map[string]any) (*model.Contact, error) {
+			return nil, pgx.ErrNoRows
+		},
+	})
+	req := chiRequest("PATCH", "/contacts/"+testUUID2, `{"name":"X"}`, map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
+func TestContactsUpdate_RepoError(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{
+		UpdateFn: func(_ context.Context, _ string, _ map[string]any) (*model.Contact, error) {
+			return nil, errors.New("db error")
+		},
+	})
+	req := chiRequest("PATCH", "/contacts/"+testUUID, `{"name":"X"}`, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 500 {
+		t.Errorf("status: got %d, want 500", rr.Code)
 	}
 }
 
@@ -178,27 +305,83 @@ func TestContactsUpdate_MissingName(t *testing.T) {
 func TestContactsDelete_Success(t *testing.T) {
 	deleted := false
 	h := NewContactsHandler(&mockContactsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Contact, error) {
+			return &model.Contact{ID: id, Name: "Acme"}, nil
+		},
 		DeleteFn: func(_ context.Context, _ string) error { deleted = true; return nil },
 	})
-	req := chiRequest("DELETE", "/contacts/c1", "", map[string]string{"id": "c1"})
+	req := chiRequest("DELETE", "/contacts/"+testUUID+"?confirm=Acme", "", map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Delete(rr, req)
 	if rr.Code != 204 {
-		t.Errorf("status: got %d, want 204", rr.Code)
+		t.Errorf("status: got %d, want 204; body: %s", rr.Code, rr.Body)
 	}
 	if !deleted {
 		t.Error("expected Delete to be called")
 	}
 }
 
+func TestContactsDelete_BadUUID(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{})
+	req := chiRequest("DELETE", "/contacts/c1", "", map[string]string{"id": "c1"})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID id", rr.Code)
+	}
+}
+
+func TestContactsDelete_NotFound(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Contact, error) { return nil, pgx.ErrNoRows },
+	})
+	req := chiRequest("DELETE", "/contacts/"+testUUID2+"?confirm=Acme", "", map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
 func TestContactsDelete_RepoError(t *testing.T) {
 	h := NewContactsHandler(&mockContactsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Contact, error) {
+			return &model.Contact{ID: id, Name: "Acme"}, nil
+		},
 		DeleteFn: func(_ context.Context, _ string) error { return errors.New("db error") },
 	})
-	req := chiRequest("DELETE", "/contacts/c1", "", map[string]string{"id": "c1"})
+	req := chiRequest("DELETE", "/contacts/"+testUUID+"?confirm=Acme", "", map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Delete(rr, req)
 	if rr.Code != 500 {
 		t.Errorf("status: got %d, want 500", rr.Code)
+	}
+}
+
+func TestContactsDelete_MissingConfirm(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Contact, error) {
+			return &model.Contact{ID: id, Name: "Acme"}, nil
+		},
+	})
+	req := chiRequest("DELETE", "/contacts/"+testUUID, "", map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 || errCode(t, rr) != "confirmation_required" {
+		t.Errorf("status/code: got %d/%s, want 400/confirmation_required", rr.Code, rr.Body)
+	}
+}
+
+func TestContactsDelete_MismatchedConfirm(t *testing.T) {
+	h := NewContactsHandler(&mockContactsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Contact, error) {
+			return &model.Contact{ID: id, Name: "Acme"}, nil
+		},
+	})
+	req := chiRequest("DELETE", "/contacts/"+testUUID+"?confirm=Wrong", "", map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 || errCode(t, rr) != "confirmation_mismatch" {
+		t.Errorf("status/code: got %d/%s, want 400/confirmation_mismatch", rr.Code, rr.Body)
 	}
 }

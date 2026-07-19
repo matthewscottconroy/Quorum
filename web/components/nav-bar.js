@@ -1,30 +1,37 @@
-import { getUser, clearAuth, api, navigate } from '../app.js';
+import { getUser, clearAuth, api, navigate, hasRole } from '../app.js';
+import { esc } from '../utils.js';
 
+// `minRole` is the lowest ladder role that may see each item.
+// My Account (minRole 'restricted') is visible to everyone; for a restricted
+// user it is the ONLY visible item since every other entry requires member+.
 const LINKS = [
-  { hash: '#/dashboard', label: 'Dashboard',  icon: '⊞' },
-  { hash: '#/members',   label: 'Members',    icon: '👥' },
-  { hash: '#/dues',      label: 'Dues',       icon: '💳' },
-  { hash: '#/meetings',  label: 'Meetings',   icon: '📅' },
-  { hash: '#/plans',     label: 'Plans',      icon: '📋' },
-  { hash: '#/contacts',  label: 'Contacts',   icon: '📇' },
-  { hash: '#/resources', label: 'Resources',  icon: '🔗' },
-  { hash: '#/settings',  label: 'Settings',   icon: '⚙' },
+  { hash: '#/my-account', label: 'My Account', icon: '👤', minRole: 'restricted' },
+  { hash: '#/dashboard',  label: 'Dashboard',  icon: '⊞',  minRole: 'member' },
+  { hash: '#/members',    label: 'Members',    icon: '👥', minRole: 'member' },
+  { hash: '#/dues',       label: 'Dues',       icon: '💳', minRole: 'officer' },
+  { hash: '#/meetings',   label: 'Meetings',   icon: '📅', minRole: 'member' },
+  { hash: '#/plans',      label: 'Plans',      icon: '📋', minRole: 'member' },
+  { hash: '#/contacts',   label: 'Contacts',   icon: '📇', minRole: 'member' },
+  { hash: '#/resources',  label: 'Resources',  icon: '🔗', minRole: 'member' },
+  { hash: '#/settings',   label: 'Settings',   icon: '⚙',  minRole: 'admin' },
 ];
 
 class NavBar extends HTMLElement {
   connectedCallback() {
+    // No document-level route-changed listener here: app-shell recreates the
+    // nav-bar on every route change, so such a listener would leak per navigation.
     this.render();
-    document.addEventListener('route-changed', () => this.render());
   }
 
   render() {
     const current = location.hash || '#/dashboard';
     const user = getUser();
+    const links = LINKS.filter(l => hasRole(l.minRole));
     this.innerHTML = `
       <nav class="sidebar">
         <div class="sidebar-brand">Quorum</div>
         <ul class="sidebar-nav">
-          ${LINKS.map(l => `
+          ${links.map(l => `
             <li>
               <a href="${l.hash}" class="${current === l.hash ? 'active' : ''}">
                 <span class="icon">${l.icon}</span> ${l.label}
@@ -39,7 +46,8 @@ class NavBar extends HTMLElement {
     `;
 
     this.querySelector('#logout-btn').addEventListener('click', async () => {
-      try { await api('POST', '/auth/logout', { refresh_token: localStorage.getItem('quorum_refresh') }); }
+      // The refresh token lives in an HttpOnly cookie sent automatically; no body needed.
+      try { await api('POST', '/auth/logout'); }
       catch {}
       clearAuth();
       document.dispatchEvent(new CustomEvent('auth-changed'));
@@ -92,5 +100,3 @@ class NavBar extends HTMLElement {
   }
 }
 customElements.define('nav-bar', NavBar);
-
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

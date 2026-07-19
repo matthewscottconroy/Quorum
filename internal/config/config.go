@@ -41,6 +41,13 @@ type Config struct {
 	// PayPal webhook ID for verification. Optional.
 	PayPalWebhookID string
 
+	// AllowUnsignedWebhooks permits webhook processing without signature
+	// verification when the provider's secret is unset. Local development
+	// only (e.g. Stripe CLI); production deployments must leave this false,
+	// where unconfigured providers return 503 instead of accepting
+	// unverified events.
+	AllowUnsignedWebhooks bool
+
 	// Public base URL used in email links (default: http://localhost:8080).
 	BaseURL string
 
@@ -48,6 +55,13 @@ type Config struct {
 	// Set the Secure flag on HttpOnly cookies only when the service is reachable
 	// over HTTPS — r.TLS is always nil behind a reverse proxy.
 	SecureCookies bool
+
+	// TrustProxyHeaders makes the rate limiter key on the X-Real-IP /
+	// X-Forwarded-For header set by a trusted reverse proxy instead of the
+	// socket address. Enable ONLY behind a proxy that strips client-supplied
+	// forwarding headers (e.g. the k8s ingress); otherwise leave false so
+	// clients cannot spoof their rate-limit key.
+	TrustProxyHeaders bool
 }
 
 // Load reads configuration from environment variables and returns a validated Config.
@@ -66,6 +80,9 @@ func Load() (*Config, error) {
 
 		StripeWebhookSecret: getEnv("QUORUM_STRIPE_WEBHOOK_SECRET", ""),
 		PayPalWebhookID:     getEnv("QUORUM_PAYPAL_WEBHOOK_ID", ""),
+
+		AllowUnsignedWebhooks: getEnv("QUORUM_ALLOW_UNSIGNED_WEBHOOKS", "") == "true",
+		TrustProxyHeaders:     getEnv("QUORUM_TRUST_PROXY_HEADERS", "") == "true",
 	}
 
 	cfg.SecureCookies = strings.HasPrefix(cfg.BaseURL, "https://")
@@ -78,6 +95,12 @@ func Load() (*Config, error) {
 	}
 	if len(cfg.JWTSecret) < 32 {
 		return nil, fmt.Errorf("QUORUM_JWT_SECRET must be at least 32 characters")
+	}
+	// Refuse well-known placeholder secrets from deployment templates: they
+	// pass the length check but are public knowledge, letting anyone forge
+	// admin tokens.
+	if strings.Contains(strings.ToUpper(cfg.JWTSecret), "CHANGEME") {
+		return nil, fmt.Errorf("QUORUM_JWT_SECRET is a placeholder value; generate a real secret (e.g. `make secret`)")
 	}
 
 	var err error

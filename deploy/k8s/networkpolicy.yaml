@@ -38,11 +38,16 @@ spec:
       ports:
         - port: 5432
           protocol: TCP
-    # SMTP (outbound email) — remove if email is not configured
-    - ports:
-        - port: 587
-          protocol: TCP
-    # PayPal and Stripe webhooks need outbound HTTPS for cert fetch / validation
+    # SMTP (outbound email) — disabled by default, mirroring the Helm chart's
+    # networkPolicy.smtpEnabled: false. Uncomment when QUORUM_SMTP_HOST is
+    # configured and outbound email is actually in use.
+    # - ports:
+    #     - port: 587
+    #       protocol: TCP
+    # HTTPS — intentionally broad (any destination on 443): Stripe and PayPal
+    # publish no stable CIDRs for their API/webhook-verification endpoints, so
+    # this cannot be narrowed with ipBlock. To tighten it, route outbound
+    # HTTPS through an egress proxy and restrict this rule to the proxy.
     - ports:
         - port: 443
           protocol: TCP

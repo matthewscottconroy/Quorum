@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,14 +81,24 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 	var total int
 	for rows.Next() {
 		var inv model.DuesInvoice
-		if err := rows.Scan(&total, &inv.ID, &inv.MemberID, &inv.Amount, &inv.Currency,
+		if err := rows.Scan(&total, &inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
 			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName); err != nil {
 			return nil, 0, err
 		}
 		invoices = append(invoices, inv)
 	}
-	return invoices, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(invoices) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM dues_invoices di JOIN members m ON m.id = di.member_id " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return invoices, total, nil
 }
 
 func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error) {
@@ -99,7 +110,7 @@ func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoic
 		FROM dues_invoices di
 		JOIN members m ON m.id = di.member_id
 		WHERE di.id = $1::uuid`, id).
-		Scan(&inv.ID, &inv.MemberID, &inv.Amount, &inv.Currency,
+		Scan(&inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
 			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName)
 	if err != nil {
@@ -111,19 +122,6 @@ func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoic
 	}
 	inv.Transactions = txs
 	return &inv, nil
-}
-
-func (r *DuesRepo) CreateInvoice(ctx context.Context, inv *model.DuesInvoice) (*model.DuesInvoice, error) {
-	var created model.DuesInvoice
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status, notes)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
-		RETURNING id::text, member_id::text, amount, currency, period_label, due_date, status, notes, created_at, updated_at`,
-		inv.MemberID, inv.Amount, inv.Currency, inv.PeriodLabel, inv.DueDate, inv.Status, inv.Notes).
-		Scan(&created.ID, &created.MemberID, &created.Amount, &created.Currency,
-			&created.PeriodLabel, &created.DueDate, &created.Status, &created.Notes,
-			&created.CreatedAt, &created.UpdatedAt)
-	return &created, err
 }
 
 func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error) {
@@ -140,8 +138,8 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 			INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status, notes)
 			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
 			RETURNING id::text, member_id::text, amount, currency, period_label, due_date, status, notes, created_at, updated_at`,
-			inv.MemberID, inv.Amount, inv.Currency, inv.PeriodLabel, inv.DueDate, inv.Status, inv.Notes).
-			Scan(&c.ID, &c.MemberID, &c.Amount, &c.Currency, &c.PeriodLabel, &c.DueDate, &c.Status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
+			inv.MemberID, inv.AmountMinor, inv.Currency, inv.PeriodLabel, inv.DueDate, inv.Status, inv.Notes).
+			Scan(&c.ID, &c.MemberID, &c.AmountMinor, &c.Currency, &c.PeriodLabel, &c.DueDate, &c.Status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -155,25 +153,33 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 }
 
 func (r *DuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error {
-	_, err := r.db.Exec(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE dues_invoices SET status = $1, notes = coalesce($2, notes), updated_at = now()
 		WHERE id = $3::uuid`, status, notes, id)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
+const recomputeInvoiceStatusSQL = `
+	UPDATE dues_invoices SET
+		status = CASE
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
+			     >= amount THEN 'paid'
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
+			     > 0 THEN 'partial'
+			WHEN due_date < CURRENT_DATE AND status NOT IN ('paid','waived') THEN 'overdue'
+			ELSE status
+		END,
+		updated_at = now()
+	WHERE id = $1::uuid AND status NOT IN ('paid','waived')`
+
 func (r *DuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE dues_invoices SET
-			status = CASE
-				WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
-				     >= amount THEN 'paid'
-				WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
-				     > 0 THEN 'partial'
-				WHEN due_date < CURRENT_DATE AND status NOT IN ('paid','waived') THEN 'overdue'
-				ELSE status
-			END,
-			updated_at = now()
-		WHERE id = $1::uuid AND status NOT IN ('paid','waived')`, id)
+	_, err := r.db.Exec(ctx, recomputeInvoiceStatusSQL, id)
 	return err
 }
 
@@ -251,14 +257,24 @@ func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([
 	var total int
 	for rows.Next() {
 		var t model.Transaction
-		if err := rows.Scan(&total, &t.ID, &t.InvoiceID, &t.MemberID, &t.Amount, &t.Currency,
+		if err := rows.Scan(&total, &t.ID, &t.InvoiceID, &t.MemberID, &t.AmountMinor, &t.Currency,
 			&t.Provider, &t.ProviderReferenceID, &t.ProviderStatus, &t.PaymentMethodType,
 			&t.RecordedBy, &t.OccurredAt, &t.Notes, &t.MemberName); err != nil {
 			return nil, 0, err
 		}
 		txs = append(txs, t)
 	}
-	return txs, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(txs) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM transactions t " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return txs, total, nil
 }
 
 func (r *DuesRepo) CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error) {
@@ -272,10 +288,10 @@ func (r *DuesRepo) CreateTransaction(ctx context.Context, t *model.Transaction) 
 		RETURNING id::text, invoice_id::text, member_id::text, amount, currency,
 		          provider, provider_reference_id, provider_status, payment_method_type,
 		          recorded_by::text, occurred_at, notes`,
-		t.InvoiceID, t.MemberID, t.Amount, t.Currency, t.Provider,
+		t.InvoiceID, t.MemberID, t.AmountMinor, t.Currency, t.Provider,
 		t.ProviderReferenceID, t.ProviderStatus, t.PaymentMethodType,
 		t.RecordedBy, t.OccurredAt, t.Notes).
-		Scan(&created.ID, &created.InvoiceID, &created.MemberID, &created.Amount, &created.Currency,
+		Scan(&created.ID, &created.InvoiceID, &created.MemberID, &created.AmountMinor, &created.Currency,
 			&created.Provider, &created.ProviderReferenceID, &created.ProviderStatus, &created.PaymentMethodType,
 			&created.RecordedBy, &created.OccurredAt, &created.Notes)
 	return &created, err
@@ -290,14 +306,98 @@ func (r *DuesRepo) FindInvoiceByProviderRef(ctx context.Context, providerRef str
 	return id, err
 }
 
-func (r *DuesRepo) EventProcessed(ctx context.Context, eventID string) (bool, error) {
-	var exists bool
-	err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM processed_events WHERE provider_event_id = $1)`, eventID).Scan(&exists)
-	return exists, err
+// RecordWebhookPayment atomically claims a provider event and records its
+// transaction. The event claim, transaction insert, and invoice status
+// recompute commit together: a failure leaves the event unclaimed so the
+// provider's retry can succeed, and a concurrent duplicate delivery observes
+// the claim and reports already=true without inserting anything.
+func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *model.Transaction) (already bool, err error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (provider_event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return true, nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO transactions
+		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,
+		     provider_status, payment_method_type, recorded_by, occurred_at, notes)
+		VALUES
+		    ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)`,
+		t.InvoiceID, t.MemberID, t.AmountMinor, t.Currency, t.Provider,
+		t.ProviderReferenceID, t.ProviderStatus, t.PaymentMethodType,
+		t.RecordedBy, t.OccurredAt, t.Notes); err != nil {
+		return false, err
+	}
+
+	if t.InvoiceID != nil {
+		if _, err := tx.Exec(ctx, recomputeInvoiceStatusSQL, *t.InvoiceID); err != nil {
+			return false, err
+		}
+	}
+	return false, tx.Commit(ctx)
 }
 
 func (r *DuesRepo) MarkEventProcessed(ctx context.Context, eventID string) error {
 	_, err := r.db.Exec(ctx, `INSERT INTO processed_events (provider_event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
+	return err
+}
+
+// OverdueReminder is an overdue invoice with the data needed to email its
+// member a dues reminder and track escalation.
+type OverdueReminder struct {
+	InvoiceID     string
+	MemberName    string
+	MemberEmail   string
+	AmountMinor   int64
+	Currency      string
+	PeriodLabel   string
+	DueDate       time.Time
+	ReminderStage int
+}
+
+// OverdueForReminders returns overdue invoices whose member has an email on
+// file, along with the reminder stage already sent, for the nightly escalation.
+func (r *DuesRepo) OverdueForReminders(ctx context.Context) ([]OverdueReminder, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT di.id::text, m.display_name, m.email, di.amount, di.currency,
+		       di.period_label, di.due_date, di.reminder_stage
+		FROM dues_invoices di
+		JOIN members m ON m.id = di.member_id
+		WHERE di.status = 'overdue' AND m.email IS NOT NULL AND m.email <> ''
+		ORDER BY di.due_date
+		LIMIT 1000`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OverdueReminder
+	for rows.Next() {
+		var rem OverdueReminder
+		if err := rows.Scan(&rem.InvoiceID, &rem.MemberName, &rem.MemberEmail,
+			&rem.AmountMinor, &rem.Currency, &rem.PeriodLabel, &rem.DueDate, &rem.ReminderStage); err != nil {
+			return nil, err
+		}
+		out = append(out, rem)
+	}
+	return out, rows.Err()
+}
+
+// AdvanceReminderStage records that the given reminder stage was sent for an
+// invoice, stamping the send time so the next escalation is spaced correctly.
+func (r *DuesRepo) AdvanceReminderStage(ctx context.Context, invoiceID string, stage int) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE dues_invoices SET reminder_stage = $2, last_reminder_at = now() WHERE id = $1::uuid`,
+		invoiceID, stage)
 	return err
 }
 
@@ -318,7 +418,7 @@ func (r *DuesRepo) OverdueInvoicesForEmail(ctx context.Context) ([]model.DuesInv
 	var invs []model.DuesInvoice
 	for rows.Next() {
 		var inv model.DuesInvoice
-		if err := rows.Scan(&inv.ID, &inv.MemberID, &inv.Amount, &inv.Currency,
+		if err := rows.Scan(&inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
 			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName); err != nil {
 			return nil, err

@@ -2,9 +2,11 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -66,7 +68,17 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 		}
 		plans = append(plans, p)
 	}
-	return plans, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(plans) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM plans p " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return plans, total, nil
 }
 
 func (r *PlansRepo) Get(ctx context.Context, id string) (*model.Plan, error) {
@@ -136,8 +148,28 @@ func (r *PlansRepo) Update(ctx context.Context, id string, fields map[string]any
 }
 
 func (r *PlansRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM plans WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM plans WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// OwnerEmail returns the plan owner's email, or "" if the plan has no owner or
+// the owner has no email on file. Used to notify the affected member on delete.
+func (r *PlansRepo) OwnerEmail(ctx context.Context, planID string) (string, error) {
+	var email string
+	err := r.db.QueryRow(ctx, `
+		SELECT m.email FROM plans p
+		JOIN members m ON m.id = p.owner_id
+		WHERE p.id = $1::uuid AND m.email IS NOT NULL AND m.email <> ''`, planID).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return email, err
 }
 
 func (r *PlansRepo) GetDecisions(ctx context.Context, planID string) ([]model.PlanDecision, error) {
@@ -184,8 +216,14 @@ func (r *PlansRepo) UpdateDecision(ctx context.Context, id string, summary, rati
 }
 
 func (r *PlansRepo) DeleteDecision(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM plan_decisions WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM plan_decisions WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func scanPlan(row scannable) (model.Plan, error) {

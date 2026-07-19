@@ -26,11 +26,35 @@ export function isAuthenticated()   { return !!_token; }
 /** Returns the authenticated user's role string, defaulting to 'member'. */
 export function userRole()          { return _user?.role ?? 'member'; }
 
-/** Returns true when the current user has officer-level access or above. */
-export function canWrite()          { return ['officer','admin'].includes(userRole()); }
+/**
+ * Role ladder rank map. Higher rank == more privilege.
+ * restricted < member < officer < admin < superadmin.
+ */
+const ROLE_RANK = { restricted: 1, member: 2, officer: 3, admin: 4, superadmin: 5 };
 
-/** Returns true when the current user has admin-level access. */
-export function isAdmin()           { return userRole() === 'admin'; }
+/** Returns the current user's role string (alias of userRole, defaults to 'member'). */
+export function currentRole()       { return _user?.role ?? 'member'; }
+
+/** Returns the current user's linked member id, or null when unlinked. */
+export function currentMemberId()   { return _user?.member_id ?? null; }
+
+/**
+ * Returns true when the current role ranks at or above `min` on the ladder.
+ * @param {'restricted'|'member'|'officer'|'admin'|'superadmin'} min - Minimum role required.
+ */
+export function hasRole(min)        { return (ROLE_RANK[currentRole()] ?? 0) >= (ROLE_RANK[min] ?? Infinity); }
+
+/** Returns true when the current user is restricted (self-service only). */
+export function isRestricted()      { return currentRole() === 'restricted'; }
+
+/** Returns true when the current user is a superadmin. */
+export function isSuperadmin()      { return currentRole() === 'superadmin'; }
+
+/** Returns true when the current user has officer-level access or above. */
+export function canWrite()          { return hasRole('officer'); }
+
+/** Returns true when the current user has admin-level access or above. */
+export function isAdmin()           { return hasRole('admin'); }
 
 /**
  * Stores the access token and user profile in memory.
@@ -106,7 +130,7 @@ export async function api(method, path, body) {
       } finally {
         clearTimeout(t2);
       }
-      if (!retry.ok) throw await retry.json();
+      if (!retry.ok) throw await retry.json().catch(() => ({ error: retry.statusText }));
       return retry.status === 204 ? null : retry.json();
     }
     clearAuth();
@@ -118,7 +142,17 @@ export async function api(method, path, body) {
   return res.status === 204 ? null : res.json();
 }
 
-async function silentRefresh() {
+// Single-flight guard: concurrent 401s share one in-flight /auth/refresh call.
+let _refreshPromise = null;
+
+function silentRefresh() {
+  if (!_refreshPromise) {
+    _refreshPromise = doSilentRefresh().finally(() => { _refreshPromise = null; });
+  }
+  return _refreshPromise;
+}
+
+async function doSilentRefresh() {
   let res;
   try {
     res = await fetch('/api/v1/auth/refresh', {
@@ -131,10 +165,11 @@ async function silentRefresh() {
   }
   if (res.status === 401) return false; // Refresh token expired or revoked.
   if (!res.ok) return false;            // Unexpected server error; stay logged in optimistically.
-  const data = await res.json();
+  const data = await res.json().catch(() => null);
+  if (!data || !data.access_token) return false; // Malformed/empty 200 body.
   _token          = data.access_token;
   _user           = data.user;
-  _tokenExpiresAt = 0; // Refresh response doesn't include expires_at; reset to unknown.
+  _tokenExpiresAt = data.expires_at ? new Date(data.expires_at).getTime() : 0;
   return true;
 }
 
@@ -159,14 +194,20 @@ const routes = {
   '#/contacts':  '<page-contacts>',
   '#/resources': '<page-resources>',
   '#/settings':  '<page-settings>',
+  '#/my-account':'<page-my-account>',
   '#/404':       '<page-not-found>',
 };
 
 function resolveRoute() {
   const hash = location.hash || '#/dashboard';
-  if (hash in routes) return routes[hash];
-  navigate('#/404');
-  return routes['#/404'];
+  // Restricted users may only view their own account. Any other (org-wide) route
+  // is redirected to #/my-account so the UI never renders a view the backend
+  // would 403 anyway.
+  if (isRestricted() && hash !== '#/my-account' && hash !== '#/login') {
+    if (location.hash !== '#/my-account') location.hash = '#/my-account';
+    return routes['#/my-account'];
+  }
+  return routes[hash] ?? routes['#/404'];
 }
 
 window.addEventListener('hashchange', () => {
@@ -185,6 +226,7 @@ import './components/page-plans.js';
 import './components/page-contacts.js';
 import './components/page-resources.js';
 import './components/page-settings.js';
+import './components/page-my-account.js';
 import './components/payment-status-badge.js';
 import './components/confirm-dialog.js';
 import './components/toast-notification.js';
@@ -192,12 +234,22 @@ import './components/page-not-found.js';
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
 async function boot() {
-  await silentRefresh();
+  const refreshed = await silentRefresh();
 
+  const prevHash = location.hash;
   if (!isAuthenticated() && location.hash !== '#/login') {
     location.hash = '#/login';
   } else if (isAuthenticated() && (!location.hash || location.hash === '#/login')) {
-    location.hash = '#/dashboard';
+    location.hash = isRestricted() ? '#/my-account' : '#/dashboard';
+  }
+
+  // Re-notify the app-shell after a successful session restore. When boot()
+  // changed the hash a `hashchange` → `route-changed` will render the shell, so
+  // dispatching auth-changed too would cause a second full render / duplicate
+  // fetch. Only dispatch in the deep-link case (hash unchanged, no hashchange
+  // fires) where otherwise the shell would keep showing the login view.
+  if (refreshed && location.hash === prevHash) {
+    document.dispatchEvent(new CustomEvent('auth-changed'));
   }
 }
 

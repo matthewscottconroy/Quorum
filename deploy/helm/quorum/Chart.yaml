@@ -3,7 +3,7 @@ name: quorum
 description: Self-hosted web application for organizational operations — dues, meetings, plans, contacts, and resources.
 type: application
 version: 0.1.0
-appVersion: "latest"
+appVersion: "0.1.0"
 keywords:
   - organization
   - dues

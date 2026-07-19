@@ -20,6 +20,9 @@ const bcryptCost = 12
 type Claims struct {
 	UserID string `json:"user_id"`
 	Role   string `json:"role"`
+	// MemberID links the account to a member record, or "" if unlinked. Used to
+	// scope what a `restricted` user may read (only their own record).
+	MemberID string `json:"member_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -34,11 +37,25 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
-// IssueAccessToken signs an HS256 JWT carrying userID and role, expiring after ttl.
-func IssueAccessToken(userID, role, secret string, ttl time.Duration) (string, error) {
+// dummyHash is a valid cost-12 bcrypt hash of an unguessable random value,
+// used to equalize login timing when the email does not exist.
+const dummyHash = "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW"
+
+// DummyCheckPassword burns the same bcrypt work as a real comparison and
+// always returns false. Call it on the unknown-user login path so response
+// timing does not reveal whether an email is registered.
+func DummyCheckPassword(password string) bool {
+	bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password)) //nolint:errcheck
+	return false
+}
+
+// IssueAccessToken signs an HS256 JWT carrying userID, role, and the linked
+// memberID (may be empty), expiring after ttl.
+func IssueAccessToken(userID, role, memberID, secret string, ttl time.Duration) (string, error) {
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:   userID,
+		Role:     role,
+		MemberID: memberID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

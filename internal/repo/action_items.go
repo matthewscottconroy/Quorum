@@ -2,9 +2,11 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -98,7 +100,17 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		}
 		items = append(items, item)
 	}
-	return items, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(items) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM action_items ai " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return items, total, nil
 }
 
 func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem, error) {
@@ -167,14 +179,29 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 }
 
 func (r *ActionItemsRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM action_items WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM action_items WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
-func (r *ActionItemsRepo) OpenCount(ctx context.Context) (int, error) {
-	var n int
-	err := r.db.QueryRow(ctx, `SELECT count(*) FROM action_items WHERE status IN ('open','in_progress')`).Scan(&n)
-	return n, err
+// AssigneeEmail returns the assignee's email, or "" if the item is unassigned
+// or the assignee has no email on file. Used to notify the affected member on
+// delete.
+func (r *ActionItemsRepo) AssigneeEmail(ctx context.Context, id string) (string, error) {
+	var email string
+	err := r.db.QueryRow(ctx, `
+		SELECT m.email FROM action_items ai
+		JOIN members m ON m.id = ai.assignee_id
+		WHERE ai.id = $1::uuid AND m.email IS NOT NULL AND m.email <> ''`, id).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return email, err
 }
 
 func scanActionItem(row scannable) (model.ActionItem, error) {

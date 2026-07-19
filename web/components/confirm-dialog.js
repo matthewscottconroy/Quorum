@@ -10,15 +10,12 @@
  *   await api('DELETE', `/members/${id}`);
  * }
  */
-
-/** @customElement confirm-dialog — shell element; logic is in the {@link confirm} helper. */
-class ConfirmDialog extends HTMLElement {}
-customElements.define('confirm-dialog', ConfirmDialog);
+import { esc, openModal } from '../utils.js';
 
 /**
  * Shows a modal confirmation dialog and returns a Promise that resolves to the
- * user's choice. The dialog is appended to `document.body` and removed on close.
- * Clicking the backdrop resolves to `false`.
+ * user's choice. Built on the shared {@link openModal} helper, so dismissing
+ * the dialog (Escape or the header close button) resolves to `false`.
  *
  * @param {string} message       - Body text to display inside the dialog.
  * @param {string} [title='Confirm'] - Title shown in the modal header.
@@ -26,13 +23,10 @@ customElements.define('confirm-dialog', ConfirmDialog);
  */
 export function confirm(message, title = 'Confirm') {
   return new Promise(resolve => {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    backdrop.innerHTML = `
-      <div class="modal" style="max-width:400px">
-        <div class="modal-header">
-          <h2>${esc(title)}</h2>
-        </div>
+    const { dialog, close } = openModal({
+      title,
+      maxWidth: '400px',
+      body: `
         <div class="modal-body">
           <p>${esc(message)}</p>
         </div>
@@ -40,22 +34,14 @@ export function confirm(message, title = 'Confirm') {
           <button id="cancel-btn" class="btn-secondary">Cancel</button>
           <button id="confirm-btn" class="btn-danger">Confirm</button>
         </div>
-      </div>
-    `;
-    document.body.appendChild(backdrop);
+      `,
+    });
 
-    backdrop.querySelector('#cancel-btn').addEventListener('click', () => {
-      backdrop.remove();
-      resolve(false);
-    });
-    backdrop.querySelector('#confirm-btn').addEventListener('click', () => {
-      backdrop.remove();
-      resolve(true);
-    });
-    backdrop.addEventListener('click', e => {
-      if (e.target === backdrop) { backdrop.remove(); resolve(false); }
-    });
+    let confirmed = false;
+    dialog.querySelector('#confirm-btn').addEventListener('click', () => { confirmed = true; close(); });
+    dialog.querySelector('#cancel-btn').addEventListener('click', () => close());
+    // Clicking the backdrop dismisses the dialog (targets the <dialog> itself).
+    dialog.addEventListener('click', e => { if (e.target === dialog) close(); });
+    dialog.addEventListener('close', () => resolve(confirmed), { once: true });
   });
 }
-
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

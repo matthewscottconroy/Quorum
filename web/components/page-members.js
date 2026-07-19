@@ -1,12 +1,10 @@
 import { api, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
+import { esc, openModal, guardButton } from '../utils.js';
 
 const TIERS = ['standard','associate','honorary','lifetime','other'];
 const STATUSES = ['active','inactive','suspended'];
-
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString() : '—'; }
 
 class PageMembers extends HTMLElement {
   constructor() {
@@ -14,27 +12,18 @@ class PageMembers extends HTMLElement {
     this._members = [];
     this._search  = '';
     this._status  = '';
+    this._seq     = 0;
   }
 
-  async connectedCallback() {
-    await this.load();
+  connectedCallback() {
+    this.render();
+    this.load();
   }
 
-  async load() {
-    this.renderList('<tr><td colspan="5"><span class="spinner"></span></td></tr>');
-    try {
-      const params = new URLSearchParams();
-      if (this._search) params.set('search', this._search);
-      if (this._status) params.set('status', this._status);
-      const _mPage = await api('GET', '/members?' + params);
-      this._members = _mPage?.data ?? _mPage ?? [];
-      this.renderList();
-    } catch {
-      toast('Failed to load members', 'error');
-    }
-  }
+  _cols() { return canWrite() ? 6 : 5; }
 
-  renderList(loadingRows) {
+  /** Renders the static page shell once; load() only touches #tbody. */
+  render() {
     this.innerHTML = `
       <div class="page-header">
         <h1>Members</h1>
@@ -50,11 +39,8 @@ class PageMembers extends HTMLElement {
       <div class="card" style="overflow:hidden">
         <table>
           <thead><tr><th>Name</th><th>Email</th><th>Tier</th><th>Status</th><th>Dues</th>${canWrite()?'<th></th>':''}</tr></thead>
-          <tbody id="tbody">
-            ${loadingRows ?? this._rows()}
-          </tbody>
+          <tbody id="tbody"></tbody>
         </table>
-        ${this._members.length === 0 && !loadingRows ? '<div class="empty-state"><p>No members found.</p></div>' : ''}
       </div>
     `;
 
@@ -68,15 +54,27 @@ class PageMembers extends HTMLElement {
       this.load();
     });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
-    this.querySelectorAll('.edit-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const m = this._members.find(x => x.id === btn.dataset.id);
-        if (m) this.openModal(m);
-      });
-    });
-    this.querySelectorAll('.del-btn').forEach(btn => {
-      btn.addEventListener('click', () => this.deleteMember(btn.dataset.id, btn.dataset.name));
-    });
+  }
+
+  async load() {
+    const seq = ++this._seq;
+    const tbody = this.querySelector('#tbody');
+    tbody.innerHTML = `<tr><td colspan="${this._cols()}" style="text-align:center"><span class="spinner"></span></td></tr>`;
+    try {
+      const params = new URLSearchParams();
+      if (this._search) params.set('search', this._search);
+      if (this._status) params.set('status', this._status);
+      const _mPage = await api('GET', '/members?' + params);
+      if (seq !== this._seq) return; // A newer load() superseded this one.
+      this._members = _mPage?.data ?? _mPage ?? [];
+      tbody.innerHTML = this._rows()
+        || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No members found.</p></div></td></tr>`;
+      this._wireRows(tbody);
+    } catch {
+      if (seq !== this._seq) return;
+      tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load members.</p></div></td></tr>`;
+      toast('Failed to load members', 'error');
+    }
   }
 
   _rows() {
@@ -86,13 +84,25 @@ class PageMembers extends HTMLElement {
         <td><strong>${esc(m.display_name)}</strong></td>
         <td>${esc(m.email ?? '—')}</td>
         <td>${esc(m.tier)}</td>
-        <td><span class="badge badge-${m.status}">${m.status}</span></td>
+        <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
         <td><payment-status-badge status="${esc(m.dues_status)}"></payment-status-badge></td>
         ${canWrite() ? `<td style="text-align:right">
-          <button class="btn-ghost edit-btn" data-id="${m.id}">Edit</button>
-          <button class="btn-ghost del-btn" data-id="${m.id}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>
+          <button class="btn-ghost edit-btn" data-id="${esc(m.id)}">Edit</button>
+          <button class="btn-ghost del-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>
         </td>` : ''}
       </tr>`).join('');
+  }
+
+  _wireRows(tbody) {
+    tbody.querySelectorAll('.edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const m = this._members.find(x => x.id === btn.dataset.id);
+        if (m) this.openModal(m);
+      });
+    });
+    tbody.querySelectorAll('.del-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.deleteMember(btn.dataset.id, btn.dataset.name));
+    });
   }
 
   async deleteMember(id, name) {
@@ -106,22 +116,17 @@ class PageMembers extends HTMLElement {
 
   openModal(member) {
     const isNew = !member;
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    backdrop.innerHTML = `
-      <div class="modal">
-        <div class="modal-header">
-          <h2>${isNew ? 'Add member' : 'Edit member'}</h2>
-          <button class="btn-ghost" id="close-btn">✕</button>
-        </div>
+    const { dialog, close } = openModal({
+      title: isNew ? 'Add member' : 'Edit member',
+      body: `
         <div class="modal-body">
           <div class="form-row">
             <div class="form-group">
-              <label>Display name *</label>
+              <label for="f-name">Display name *</label>
               <input id="f-name" value="${esc(member?.display_name ?? '')}">
             </div>
             <div class="form-group">
-              <label>Tier</label>
+              <label for="f-tier">Tier</label>
               <select id="f-tier">
                 ${TIERS.map(t => `<option value="${t}" ${(member?.tier??'standard')===t?'selected':''}>${t}</option>`).join('')}
               </select>
@@ -129,32 +134,32 @@ class PageMembers extends HTMLElement {
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label>Email</label>
+              <label for="f-email">Email</label>
               <input id="f-email" type="email" value="${esc(member?.email ?? '')}">
             </div>
             <div class="form-group">
-              <label>Phone</label>
+              <label for="f-phone">Phone</label>
               <input id="f-phone" value="${esc(member?.phone ?? '')}">
             </div>
           </div>
           <div class="form-group">
-            <label>Address</label>
+            <label for="f-address">Address</label>
             <input id="f-address" value="${esc(member?.address ?? '')}">
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label>Status</label>
+              <label for="f-status">Status</label>
               <select id="f-status">
                 ${STATUSES.map(s => `<option value="${s}" ${(member?.status??'active')===s?'selected':''}>${s}</option>`).join('')}
               </select>
             </div>
             <div class="form-group">
-              <label>Joined date</label>
-              <input id="f-joined" type="date" value="${member?.joined_at ? member.joined_at.slice(0,10) : new Date().toISOString().slice(0,10)}">
+              <label for="f-joined">Joined date</label>
+              <input id="f-joined" type="date" value="${member?.joined_at ? esc(member.joined_at.slice(0,10)) : new Date().toISOString().slice(0,10)}">
             </div>
           </div>
           <div class="form-group">
-            <label>Notes</label>
+            <label for="f-notes">Notes</label>
             <textarea id="f-notes">${esc(member?.notes ?? '')}</textarea>
           </div>
         </div>
@@ -162,24 +167,22 @@ class PageMembers extends HTMLElement {
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
           <button class="btn-primary" id="save-btn">Save</button>
         </div>
-      </div>
-    `;
-    document.body.appendChild(backdrop);
+      `,
+    });
 
-    const close = () => backdrop.remove();
-    backdrop.querySelector('#close-btn').addEventListener('click', close);
-    backdrop.querySelector('#cancel-btn').addEventListener('click', close);
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
 
-    backdrop.querySelector('#save-btn').addEventListener('click', async () => {
+    const saveBtn = dialog.querySelector('#save-btn');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const body = {
-        display_name: backdrop.querySelector('#f-name').value.trim(),
-        email:        backdrop.querySelector('#f-email').value.trim() || null,
-        phone:        backdrop.querySelector('#f-phone').value.trim() || null,
-        address:      backdrop.querySelector('#f-address').value.trim() || null,
-        tier:         backdrop.querySelector('#f-tier').value,
-        status:       backdrop.querySelector('#f-status').value,
-        joined_at:    backdrop.querySelector('#f-joined').value || null,
-        notes:        backdrop.querySelector('#f-notes').value.trim() || null,
+        display_name: dialog.querySelector('#f-name').value.trim(),
+        email:        dialog.querySelector('#f-email').value.trim() || null,
+        phone:        dialog.querySelector('#f-phone').value.trim() || null,
+        address:      dialog.querySelector('#f-address').value.trim() || null,
+        tier:         dialog.querySelector('#f-tier').value,
+        status:       dialog.querySelector('#f-status').value,
+        joined_at:    dialog.querySelector('#f-joined').value || null,
+        notes:        dialog.querySelector('#f-notes').value.trim() || null,
       };
       if (!body.display_name) { toast('Name is required', 'error'); return; }
       try {
@@ -189,7 +192,7 @@ class PageMembers extends HTMLElement {
         close();
         this.load();
       } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
-    });
+    }));
   }
 }
 customElements.define('page-members', PageMembers);

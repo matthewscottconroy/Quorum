@@ -163,6 +163,11 @@ tr:last-child td { border-bottom: none; }
 .badge-done     { background: #dcfce7; color: #166534; }
 .badge-draft    { background: #f1f5f9; color: #475569; }
 .badge-none     { background: #f1f5f9; color: #94a3b8; }
+.badge-scheduled { background: #dbeafe; color: #1e40af; }
+.badge-completed { background: #dcfce7; color: #166534; }
+.badge-cancelled { background: #fee2e2; color: #991b1b; }
+.badge-suspended { background: #fee2e2; color: #991b1b; }
+.badge-archived  { background: #f1f5f9; color: #475569; }
 
 .empty-state {
   text-align: center;
@@ -178,11 +183,13 @@ tr:last-child td { border-bottom: none; }
 }
 .search-bar input { max-width: 320px; }
 
-.modal-backdrop {
-  position: fixed; inset: 0;
+dialog.modal {
+  border: none;
+  padding: 0;
+  margin: auto;
+}
+dialog.modal::backdrop {
   background: rgba(0,0,0,.45);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 100;
 }
 .modal {
   background: var(--color-surface);
@@ -213,7 +220,20 @@ tr:last-child td { border-bottom: none; }
   display: flex;
   flex-direction: column;
   gap: .5rem;
-  z-index: 200;
+  z-index: 200; /* fallback stacking for browsers without the Popover API */
+  /* The container is a [popover="manual"] so it renders in the top layer,
+     above <dialog> backdrops. Undo the UA popover styles (inset:0,
+     margin:auto, border, padding, canvas background, fit-content sizing)
+     so it keeps its bottom-right placement and transparent look. */
+  top: auto;
+  left: auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
 }
 .toast {
   padding: .75rem 1.1rem;
@@ -227,6 +247,7 @@ tr:last-child td { border-bottom: none; }
 .toast-success { background: var(--color-success); }
 .toast-error   { background: var(--color-danger); }
 .toast-info    { background: var(--color-primary); }
+.toast-warning { background: var(--color-warning); }
 
 @keyframes slide-in {
   from { transform: translateX(120%); opacity: 0; }

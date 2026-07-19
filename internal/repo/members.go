@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -97,7 +98,18 @@ func (r *MembersRepo) List(ctx context.Context, f MemberFilter) ([]model.Member,
 		}
 		members = append(members, m)
 	}
-	return members, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page, which would report
+	// total=0 for an offset past the end; fall back to a plain count.
+	if len(members) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM members m " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return members, total, nil
 }
 
 func (r *MembersRepo) Get(ctx context.Context, id string) (*model.Member, error) {
@@ -174,8 +186,14 @@ func (r *MembersRepo) Update(ctx context.Context, id string, fields map[string]a
 }
 
 func (r *MembersRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `UPDATE members SET status = 'inactive', updated_at = now() WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `UPDATE members SET status = 'inactive', updated_at = now() WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (r *MembersRepo) Count(ctx context.Context) (int, error) {

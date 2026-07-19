@@ -2,13 +2,20 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
+	"time"
 
 	"quorum/internal/config"
 	"quorum/internal/model"
 )
+
+// smtpTimeout bounds the entire SMTP conversation so a hung relay cannot
+// pile up scheduler goroutines indefinitely.
+const smtpTimeout = 30 * time.Second
 
 type userLister interface {
 	ListUsers(ctx context.Context) ([]model.User, error)
@@ -27,9 +34,29 @@ func (s *EmailService) configured() bool {
 	return s.cfg.SMTPHost != "" && s.cfg.EmailFrom != ""
 }
 
+func (s *EmailService) baseURL() string {
+	return s.cfg.BaseURL
+}
+
+func containsCRLF(s string) bool {
+	return strings.ContainsAny(s, "\r\n")
+}
+
 func (s *EmailService) Send(to []string, subject, body string) error {
 	if !s.configured() {
 		return nil
+	}
+
+	// Guard against header injection: recipients and subject become header
+	// values, so a CR/LF in them could forge additional headers. Bodies are
+	// safe (they follow the header/body separator).
+	if containsCRLF(subject) {
+		return fmt.Errorf("email subject contains a newline")
+	}
+	for _, addr := range to {
+		if containsCRLF(addr) {
+			return fmt.Errorf("email recipient contains a newline")
+		}
 	}
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, s.cfg.SMTPPort)
@@ -47,7 +74,60 @@ func (s *EmailService) Send(to []string, subject, body string) error {
 		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
 	}
 
-	return smtp.SendMail(addr, auth, s.cfg.EmailFrom, to, msg)
+	return sendMailWithTimeout(addr, s.cfg.SMTPHost, auth, s.cfg.EmailFrom, to, msg)
+}
+
+// sendMailWithTimeout mirrors smtp.SendMail (STARTTLS when offered, then
+// optional auth) but bounds the whole exchange with connect and I/O deadlines,
+// which net/smtp itself does not support.
+func sendMailWithTimeout(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	conn, err := net.DialTimeout("tcp", addr, smtpTimeout)
+	if err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Now().Add(smtpTimeout)); err != nil {
+		conn.Close()
+		return err
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer c.Close()
+
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+			return err
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(auth); err != nil {
+				return err
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	wc, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := wc.Write(msg); err != nil {
+		wc.Close()
+		return err
+	}
+	if err := wc.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
 func (s *EmailService) SendToAdmins(ctx context.Context, subject, body string) error {
@@ -57,7 +137,7 @@ func (s *EmailService) SendToAdmins(ctx context.Context, subject, body string) e
 	}
 	var adminEmails []string
 	for _, u := range users {
-		if u.Role == "admin" {
+		if (u.Role == "admin" || u.Role == "superadmin") && u.Email != "" {
 			adminEmails = append(adminEmails, u.Email)
 		}
 	}

@@ -1,4 +1,4 @@
-import { isAuthenticated, resolveRoute, navigate } from '../app.js';
+import { isAuthenticated, resolveRoute } from '../app.js';
 
 class AppShell extends HTMLElement {
   connectedCallback() {

@@ -1,25 +1,20 @@
-import { api, canWrite } from '../app.js';
+import { api, canWrite, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { confirm } from './confirm-dialog.js';
+import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function safeUrl(u) { try { const p = new URL(u); return (p.protocol==='https:'||p.protocol==='http:') ? u : null; } catch { return null; } }
 
 class PageResources extends HTMLElement {
-  constructor() { super(); this._resources = []; this._search = ''; this._category = ''; }
+  constructor() { super(); this._resources = []; this._search = ''; this._category = ''; this._seq = 0; }
 
-  async connectedCallback() { await this.load(); }
-
-  async load() {
-    const params = new URLSearchParams();
-    if (this._search)   params.set('search', this._search);
-    if (this._category) params.set('category', this._category);
-    try { const _rePage = await api('GET', '/resources?' + params);
-    this._resources = _rePage?.data ?? _rePage ?? []; }
-    catch { toast('Failed to load resources','error'); }
+  connectedCallback() {
     this.render();
+    this.load();
   }
 
+  _cols() { return canWrite() ? 5 : 4; }
+
+  /** Renders the static page shell once; load() only touches #tbody. */
   render() {
     this.innerHTML = `
       <div class="page-header">
@@ -33,24 +28,7 @@ class PageResources extends HTMLElement {
       <div class="card" style="overflow:hidden">
         <table>
           <thead><tr><th>Title</th><th>Category</th><th>Tags</th><th>Link</th>${canWrite()?'<th></th>':''}</tr></thead>
-          <tbody>
-            ${this._resources?.length
-              ? this._resources.map(r => `
-                  <tr>
-                    <td>
-                      <div style="font-weight:600">${esc(r.title)}</div>
-                      ${r.description?`<div style="font-size:.8rem;color:var(--color-text-muted)">${esc(r.description.slice(0,80))}${r.description.length>80?'…':''}</div>`:''}
-                    </td>
-                    <td>${esc(r.category??'—')}</td>
-                    <td style="font-size:.8rem">${(r.tags??[]).map(t=>`<span class="badge badge-none" style="margin:1px">${esc(t)}</span>`).join(' ')||'—'}</td>
-                    <td>${safeUrl(r.url)?`<a href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>`:'—'}</td>
-                    ${canWrite()?`<td style="text-align:right">
-                      <button class="btn-ghost edit-btn" data-id="${r.id}">Edit</button>
-                      <button class="btn-ghost del-btn" data-id="${r.id}" data-title="${esc(r.title)}" style="color:var(--color-danger)">Del</button>
-                    </td>`:''}
-                  </tr>`).join('')
-              : '<tr><td colspan="5"><div class="empty-state"><p>No resources yet.</p></div></td></tr>'}
-          </tbody>
+          <tbody id="tbody"></tbody>
         </table>
       </div>
     `;
@@ -62,56 +40,103 @@ class PageResources extends HTMLElement {
     });
     this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this.load(); });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
-    this.querySelectorAll('.edit-btn').forEach(btn => {
+  }
+
+  async load() {
+    const seq = ++this._seq;
+    const tbody = this.querySelector('#tbody');
+    tbody.innerHTML = `<tr><td colspan="${this._cols()}" style="text-align:center"><span class="spinner"></span></td></tr>`;
+    const params = new URLSearchParams();
+    if (this._search)   params.set('search', this._search);
+    if (this._category) params.set('category', this._category);
+    try {
+      const _rePage = await api('GET', '/resources?' + params);
+      if (seq !== this._seq) return; // A newer load() superseded this one.
+      this._resources = _rePage?.data ?? _rePage ?? [];
+      tbody.innerHTML = this._rows()
+        || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No resources yet.</p></div></td></tr>`;
+      this._wireRows(tbody);
+    } catch {
+      if (seq !== this._seq) return;
+      tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load resources.</p></div></td></tr>`;
+      toast('Failed to load resources','error');
+    }
+  }
+
+  _rows() {
+    if (!this._resources?.length) return '';
+    return this._resources.map(r => `
+      <tr>
+        <td>
+          <div style="font-weight:600">${esc(r.title)}</div>
+          ${r.description?`<div style="font-size:.8rem;color:var(--color-text-muted)">${esc(r.description.slice(0,80))}${r.description.length>80?'…':''}</div>`:''}
+        </td>
+        <td>${esc(r.category??'—')}</td>
+        <td style="font-size:.8rem">${(r.tags??[]).map(t=>`<span class="badge badge-none" style="margin:1px">${esc(t)}</span>`).join(' ')||'—'}</td>
+        <td>${safeUrl(r.url)?`<a href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>`:'—'}</td>
+        ${canWrite()?`<td style="text-align:right">
+          <button class="btn-ghost edit-btn" data-id="${esc(r.id)}">Edit</button>
+          ${isSuperadmin()?`<button class="btn-ghost del-btn" data-id="${esc(r.id)}" data-title="${esc(r.title)}" style="color:var(--color-danger)">Del</button>`:''}
+        </td>`:''}
+      </tr>`).join('');
+  }
+
+  _wireRows(tbody) {
+    tbody.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const r = this._resources.find(x => x.id === btn.dataset.id);
         if (r) this.openModal(r);
       });
     });
-    this.querySelectorAll('.del-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (!await confirm(`Delete "${btn.dataset.title}"?`,'Delete resource')) return;
-        try { await api('DELETE', `/resources/${btn.dataset.id}`); toast('Deleted','success'); this.load(); }
-        catch { toast('Delete failed','error'); }
+    tbody.querySelectorAll('.del-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        confirmDelete({
+          noun: 'resource',
+          name: btn.dataset.title ?? '',
+          onConfirm: async (confirmVal) => {
+            try {
+              await api('DELETE', `/resources/${btn.dataset.id}?confirm=${encodeURIComponent(confirmVal)}`);
+              toast('Deleted','success');
+              this.load();
+            } catch (err) { toast(err.error ?? 'Delete failed','error'); throw err; }
+          },
+        });
       });
     });
   }
 
   openModal(resource) {
     const isNew = !resource;
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    backdrop.innerHTML = `
-      <div class="modal">
-        <div class="modal-header"><h2>${isNew?'Add resource':'Edit resource'}</h2><button class="btn-ghost" id="close-btn">✕</button></div>
+    const { dialog, close } = openModal({
+      title: isNew ? 'Add resource' : 'Edit resource',
+      body: `
         <div class="modal-body">
-          <div class="form-group"><label>Title *</label><input id="f-title" value="${esc(resource?.title??'')}"></div>
-          <div class="form-group"><label>Description</label><textarea id="f-desc">${esc(resource?.description??'')}</textarea></div>
-          <div class="form-group"><label>URL</label><input id="f-url" type="url" value="${esc(resource?.url??'')}" placeholder="https://…"></div>
+          <div class="form-group"><label for="f-title">Title *</label><input id="f-title" value="${esc(resource?.title??'')}"></div>
+          <div class="form-group"><label for="f-desc">Description</label><textarea id="f-desc">${esc(resource?.description??'')}</textarea></div>
+          <div class="form-group"><label for="f-url">URL</label><input id="f-url" type="url" value="${esc(resource?.url??'')}" placeholder="https://…"></div>
           <div class="form-row">
-            <div class="form-group"><label>Category</label><input id="f-category" value="${esc(resource?.category??'')}" placeholder="policy, legal, finance…"></div>
-            <div class="form-group"><label>Tags (comma-separated)</label><input id="f-tags" value="${esc((resource?.tags??[]).join(', '))}"></div>
+            <div class="form-group"><label for="f-category">Category</label><input id="f-category" value="${esc(resource?.category??'')}" placeholder="policy, legal, finance…"></div>
+            <div class="form-group"><label for="f-tags">Tags (comma-separated)</label><input id="f-tags" value="${esc((resource?.tags??[]).join(', '))}"></div>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
           <button class="btn-primary" id="save-btn">Save</button>
         </div>
-      </div>
-    `;
-    document.body.appendChild(backdrop);
-    const close = () => backdrop.remove();
-    backdrop.querySelector('#close-btn').addEventListener('click', close);
-    backdrop.querySelector('#cancel-btn').addEventListener('click', close);
-    backdrop.querySelector('#save-btn').addEventListener('click', async () => {
-      const title = backdrop.querySelector('#f-title').value.trim();
+      `,
+    });
+
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const saveBtn = dialog.querySelector('#save-btn');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const title = dialog.querySelector('#f-title').value.trim();
       if (!title) { toast('Title required','error'); return; }
       const body = {
         title,
-        description: backdrop.querySelector('#f-desc').value.trim()||null,
-        url:         backdrop.querySelector('#f-url').value.trim()||null,
-        category:    backdrop.querySelector('#f-category').value.trim()||null,
-        tags:        backdrop.querySelector('#f-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
+        description: dialog.querySelector('#f-desc').value.trim()||null,
+        url:         dialog.querySelector('#f-url').value.trim()||null,
+        category:    dialog.querySelector('#f-category').value.trim()||null,
+        tags:        dialog.querySelector('#f-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
       };
       try {
         if (isNew) await api('POST', '/resources', body);
@@ -119,7 +144,7 @@ class PageResources extends HTMLElement {
         toast(isNew?'Resource added':'Resource updated','success');
         close(); this.load();
       } catch (err) { toast(err.error??'Save failed','error'); }
-    });
+    }));
   }
 }
 customElements.define('page-resources', PageResources);

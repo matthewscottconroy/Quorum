@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"quorum/internal/model"
 	"quorum/internal/repo"
@@ -195,7 +196,7 @@ func TestMembersGet_Success(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
 		GetFn: func(_ context.Context, id string) (*model.Member, error) { return testMember(id, "Alice"), nil },
 	})
-	req := chiRequest("GET", "/members/m1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := withCtxUser(chiRequest("GET", "/members/m1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"}), "u1", "member")
 	rr := httptest.NewRecorder()
 	h.Get(rr, req)
 	if rr.Code != 200 {
@@ -207,7 +208,7 @@ func TestMembersGet_NotFound(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
 		GetFn: func(_ context.Context, _ string) (*model.Member, error) { return nil, errors.New("not found") },
 	})
-	req := chiRequest("GET", "/members/ghost", "", map[string]string{"id": "00000000-0000-0000-0000-000000000000"})
+	req := withCtxUser(chiRequest("GET", "/members/ghost", "", map[string]string{"id": "00000000-0000-0000-0000-000000000000"}), "u1", "officer")
 	rr := httptest.NewRecorder()
 	h.Get(rr, req)
 	if rr.Code != 404 {
@@ -238,6 +239,87 @@ func TestMembersUpdate_NoValidFields(t *testing.T) {
 	h.Update(rr, req)
 	if rr.Code != 400 {
 		t.Errorf("status: got %d, want 400", rr.Code)
+	}
+}
+
+func TestMembersUpdate_BadUUID(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{})
+	req := chiRequest("PATCH", "/members/m1", `{"display_name":"X"}`, map[string]string{"id": "m1"})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID id", rr.Code)
+	}
+}
+
+func TestMembersUpdate_InvalidStatus(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{})
+	req := chiRequest("PATCH", "/members/m1", `{"status":"retired"}`, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for invalid status", rr.Code)
+	}
+}
+
+func TestMembersUpdate_BadJoinedAt(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{})
+	req := chiRequest("PATCH", "/members/m1", `{"joined_at":"01/15/2023"}`, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for bad joined_at", rr.Code)
+	}
+}
+
+func TestMembersUpdate_AllowsJoinedAtAndMetadata(t *testing.T) {
+	var capturedFields map[string]any
+	h := membersHandler(&mockMembersRepo{
+		UpdateFn: func(_ context.Context, _ string, fields map[string]any) (*model.Member, error) {
+			capturedFields = fields
+			return testMember(testUUID, "X"), nil
+		},
+	})
+	body := `{"joined_at":"2023-01-15","metadata":{"badge":"gold"}}`
+	req := chiRequest("PATCH", "/members/m1", body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status: got %d, want 200; body: %s", rr.Code, rr.Body)
+	}
+	if capturedFields["joined_at"] != "2023-01-15" {
+		t.Errorf("joined_at: got %v", capturedFields["joined_at"])
+	}
+	if _, ok := capturedFields["metadata"]; !ok {
+		t.Error("metadata should be in the allowlist and passed through")
+	}
+}
+
+func TestMembersUpdate_NotFound(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{
+		UpdateFn: func(_ context.Context, _ string, _ map[string]any) (*model.Member, error) {
+			return nil, pgx.ErrNoRows
+		},
+	})
+	req := chiRequest("PATCH", "/members/m1", `{"display_name":"X"}`, map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
+func TestMembersUpdate_RepoError(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{
+		UpdateFn: func(_ context.Context, _ string, _ map[string]any) (*model.Member, error) {
+			return nil, errors.New("db error")
+		},
+	})
+	req := chiRequest("PATCH", "/members/m1", `{"display_name":"X"}`, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 500 {
+		t.Errorf("status: got %d, want 500", rr.Code)
 	}
 }
 
@@ -274,6 +356,18 @@ func TestMembersDelete_Success(t *testing.T) {
 	}
 }
 
+func TestMembersDelete_NotFound(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{
+		DeleteFn: func(_ context.Context, _ string) error { return pgx.ErrNoRows },
+	})
+	req := chiRequest("DELETE", "/members/m1", "", map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
 func TestMembersDelete_Error(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
 		DeleteFn: func(_ context.Context, _ string) error { return errors.New("constraint") },
@@ -298,7 +392,7 @@ func TestMembersGetDues(t *testing.T) {
 		},
 	}
 	h := NewMembersHandler(&mockMembersRepo{}, &mockActionItemsRepo{}, dois)
-	req := chiRequest("GET", "/members/m1/dues", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := withCtxUser(chiRequest("GET", "/members/m1/dues", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"}), "u1", "member")
 	rr := httptest.NewRecorder()
 	h.GetDues(rr, req)
 	if rr.Code != 200 {
@@ -316,10 +410,102 @@ func TestMembersGetActionItems(t *testing.T) {
 		},
 	}
 	h := NewMembersHandler(&mockMembersRepo{}, ais, &mockDuesRepo{})
-	req := chiRequest("GET", "/members/m1/action-items", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := withCtxUser(chiRequest("GET", "/members/m1/action-items", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"}), "u1", "member")
 	rr := httptest.NewRecorder()
 	h.GetActionItems(rr, req)
 	if rr.Code != 200 {
 		t.Errorf("status: got %d", rr.Code)
+	}
+}
+
+// ---- restricted read-scoping ----
+
+// restrictedMembersHandler returns a handler whose sub-resource repos succeed,
+// so any non-200 must originate from the scoping gate rather than the repo.
+func restrictedMembersHandler() *MembersHandler {
+	return NewMembersHandler(
+		&mockMembersRepo{
+			GetFn: func(_ context.Context, id string) (*model.Member, error) { return testMember(id, "Self"), nil },
+		},
+		&mockActionItemsRepo{
+			ListFn: func(_ context.Context, _ repo.ActionItemFilter) ([]model.ActionItem, int, error) { return nil, 0, nil },
+		},
+		&mockDuesRepo{
+			ListInvoicesFn: func(_ context.Context, _ repo.InvoiceFilter) ([]model.DuesInvoice, int, error) { return nil, 0, nil },
+		},
+	)
+}
+
+func TestMembersGet_RestrictedOwnRecordAllowed(t *testing.T) {
+	h := restrictedMembersHandler()
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID, "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID)
+	rr := httptest.NewRecorder()
+	h.Get(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("restricted caller viewing own record: got %d, want 200", rr.Code)
+	}
+}
+
+func TestMembersGet_RestrictedOtherRecordForbidden(t *testing.T) {
+	h := restrictedMembersHandler()
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID, "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID2)
+	rr := httptest.NewRecorder()
+	h.Get(rr, req)
+	if rr.Code != 403 {
+		t.Errorf("restricted caller viewing another record: got %d, want 403", rr.Code)
+	}
+}
+
+func TestMembersGet_RestrictedNoLinkedMemberForbidden(t *testing.T) {
+	h := restrictedMembersHandler()
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID, "", map[string]string{"id": testUUID}), "u1", "restricted", "")
+	rr := httptest.NewRecorder()
+	h.Get(rr, req)
+	if rr.Code != 403 {
+		t.Errorf("restricted caller with no linked member: got %d, want 403", rr.Code)
+	}
+}
+
+func TestMembersGetDues_RestrictedScoping(t *testing.T) {
+	h := restrictedMembersHandler()
+	// own record → allowed
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID+"/dues", "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID)
+	rr := httptest.NewRecorder()
+	h.GetDues(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("restricted own dues: got %d, want 200", rr.Code)
+	}
+	// other record → 403
+	req = withCtxUserMember(chiRequest("GET", "/members/"+testUUID+"/dues", "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID2)
+	rr = httptest.NewRecorder()
+	h.GetDues(rr, req)
+	if rr.Code != 403 {
+		t.Errorf("restricted other dues: got %d, want 403", rr.Code)
+	}
+}
+
+func TestMembersGetActionItems_RestrictedScoping(t *testing.T) {
+	h := restrictedMembersHandler()
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID+"/action-items", "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID)
+	rr := httptest.NewRecorder()
+	h.GetActionItems(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("restricted own action items: got %d, want 200", rr.Code)
+	}
+	req = withCtxUserMember(chiRequest("GET", "/members/"+testUUID+"/action-items", "", map[string]string{"id": testUUID}), "u1", "restricted", testUUID2)
+	rr = httptest.NewRecorder()
+	h.GetActionItems(rr, req)
+	if rr.Code != 403 {
+		t.Errorf("restricted other action items: got %d, want 403", rr.Code)
+	}
+}
+
+func TestMembersGetDues_OfficerSeesAny(t *testing.T) {
+	h := restrictedMembersHandler()
+	req := withCtxUserMember(chiRequest("GET", "/members/"+testUUID+"/dues", "", map[string]string{"id": testUUID}), "u1", "officer", "")
+	rr := httptest.NewRecorder()
+	h.GetDues(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("officer viewing any member's dues: got %d, want 200", rr.Code)
 	}
 }

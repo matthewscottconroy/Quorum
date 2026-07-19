@@ -355,8 +355,8 @@ kubectl rollout status deployment/quorum -n quorum-staging
 kubectl logs -n quorum-staging -l app.kubernetes.io/name=quorum -f
 
 # Quick health check
-curl -s https://quorum-staging.example.com/api/v1/auth/bootstrap | python3 -m json.tool
-# Expect: {"error":"forbidden"} or {"message":"..."} — not a 5xx
+curl -s https://quorum-staging.example.com/readyz | python3 -m json.tool
+# Expect: {"status":"ready"} — a 503 means the app cannot reach its database
 
 # Run bootstrap on staging (first time only)
 curl -s -X POST https://quorum-staging.example.com/api/v1/auth/bootstrap \
@@ -643,14 +643,9 @@ tkn pipelinerun logs -f -n tekton-pipelines $(kubectl get pipelineruns -n tekton
 
 #### Rootless Buildah (no privileged containers)
 
-By default, `quorum-buildah-build` runs privileged to use the `overlay` storage driver. To run rootless on nodes with `kernel.unprivileged_userns_clone=1`:
+`quorum-buildah-build` runs rootless by default — no privileged containers. The build and push steps run as the buildah image's unprivileged `build` user (UID 1000) with the `vfs` storage driver, `BUILDAH_ISOLATION=chroot`, and only the `SETFCAP` capability added. This requires nodes with `kernel.unprivileged_userns_clone=1` (the default on modern kernels).
 
-1. In `deploy/tekton/tasks.yaml`, find `quorum-buildah-build` and change:
-   - `storageDriver` default from `overlay` → `vfs`
-   - Remove `securityContext: privileged: true` from both steps
-2. Re-apply: `kubectl apply -f deploy/tekton/tasks.yaml`
-
-VFS is slower than overlay for large images but requires no kernel privileges.
+VFS is slower than overlay for large images. To speed up builds while staying rootless, override the `storage-driver` param to `overlay` on clusters where fuse-overlayfs is available to the task pod (mount `/dev/fuse`); reverting to privileged overlay builds is not recommended.
 
 ### 4.6 Argo CD GitOps setup
 
@@ -779,7 +774,7 @@ With 2 production replicas, a deploy sequence is:
 3. Second new pod starts and passes readiness checks.
 4. Second old pod is terminated.
 
-Traffic is only routed to pods that pass the readiness probe (`GET /api/v1/auth/bootstrap` returns non-5xx).
+Traffic is only routed to pods that pass the readiness probe (`GET /readyz` returns `200`, which requires a healthy database connection).
 
 **Rollback via Argo CD:**
 
@@ -910,7 +905,7 @@ Quorum does not ship a metrics endpoint or structured log formatter by default. 
 
 **Tracing** — The chi router is compatible with OpenTelemetry middleware. Add `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` and configure an OTLP exporter.
 
-**Health checks** — Both liveness and readiness probes hit `GET /api/v1/auth/bootstrap`. This endpoint returns `200` (pre-bootstrap) or `403` (bootstrapped) — both are non-5xx and indicate the server is healthy. The probe uses `failureThreshold: 3` with `periodSeconds: 15` for liveness, giving 45 seconds before a pod is restarted.
+**Health checks** — The liveness probe hits `GET /healthz` (returns `200` whenever the process is up) and the readiness probe hits `GET /readyz` (pings the database; returns `200` when healthy, `503` when the database is unreachable, so pods with a broken DB connection are removed from service endpoints). Both endpoints are unauthenticated. The liveness probe uses `failureThreshold: 3` with `periodSeconds: 15`, giving 45 seconds before a pod is restarted.
 
 ---
 
@@ -958,7 +953,12 @@ Images are built by Buildah in the Tekton pipeline and pushed with two tags:
 | Commit SHA | `registry.example.com/quorum:abc1234f` | Immutable — pinned in the GitOps overlay |
 | `latest` | `registry.example.com/quorum:latest` | Convenience tag for local pulls |
 
-The production Kustomize overlay always pins the commit SHA tag. The `latest` tag is never used in production to ensure deploys are reproducible and auditable.
+The production Kustomize overlay pins the commit SHA tag. The `latest` tag is never used in production to ensure deploys are reproducible and auditable. Two mechanisms enforce this:
+
+- The committed `newTag` in `deploy/kustomize/overlays/production/kustomization.yaml` is a non-resolving placeholder (`set-by-ci-pipeline`) until the first CI run rewrites it — a manual apply before then fails with `ImagePullBackOff` rather than silently deploying `latest`. To deploy manually before CI has ever run, pin a real tag first with `kustomize edit set image`.
+- The `quorum-update-manifest` Tekton task refuses to write a `latest` tag into the overlay and fails the pipeline instead.
+
+The Helm chart enforces the same rule: rendering fails if the image tag resolves to `latest`.
 
 **Building locally with Podman:**
 

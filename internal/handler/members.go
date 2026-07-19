@@ -113,6 +113,9 @@ func (h *MembersHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !canViewMemberScoped(w, r, id) {
+		return
+	}
 	member, err := h.repo.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, 404, "member not found", "not_found")
@@ -133,7 +136,7 @@ func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := map[string]bool{
 		"display_name": true, "email": true, "phone": true, "address": true,
-		"tier": true, "status": true, "notes": true,
+		"tier": true, "status": true, "joined_at": true, "notes": true, "metadata": true,
 	}
 	fields := map[string]any{}
 	for k, v := range body {
@@ -145,9 +148,27 @@ func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "no valid fields provided", "bad_request")
 		return
 	}
+	if status, present := fields["status"]; present {
+		s, ok := status.(string)
+		if !ok || (s != "active" && s != "inactive" && s != "suspended") {
+			writeError(w, 400, "invalid status: must be active, inactive, or suspended", "bad_request")
+			return
+		}
+	}
+	if joinedAt, present := fields["joined_at"]; present {
+		s, ok := joinedAt.(string)
+		if !ok {
+			writeError(w, 400, "joined_at must be YYYY-MM-DD", "bad_request")
+			return
+		}
+		if _, err := time.Parse("2006-01-02", s); err != nil {
+			writeError(w, 400, "joined_at must be YYYY-MM-DD", "bad_request")
+			return
+		}
+	}
 	updated, err := h.repo.Update(r.Context(), id, fields)
 	if err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "member not found", "update error")
 		return
 	}
 	writeJSON(w, 200, updated)
@@ -159,7 +180,7 @@ func (h *MembersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeError(w, 500, "delete error", "internal_error")
+		writeRepoError(w, err, "member not found", "delete error")
 		return
 	}
 	w.WriteHeader(204)
@@ -168,6 +189,9 @@ func (h *MembersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
+		return
+	}
+	if !canViewMemberScoped(w, r, id) {
 		return
 	}
 	q := r.URL.Query()
@@ -192,6 +216,9 @@ func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 func (h *MembersHandler) GetActionItems(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
+		return
+	}
+	if !canViewMemberScoped(w, r, id) {
 		return
 	}
 	q := r.URL.Query()

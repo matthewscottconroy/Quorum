@@ -62,7 +62,7 @@ spec:
 
           livenessProbe:
             httpGet:
-              path: /api/v1/auth/bootstrap
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 15
@@ -70,7 +70,7 @@ spec:
 
           readinessProbe:
             httpGet:
-              path: /api/v1/auth/bootstrap
+              path: /readyz
               port: http
             initialDelaySeconds: 3
             periodSeconds: 10

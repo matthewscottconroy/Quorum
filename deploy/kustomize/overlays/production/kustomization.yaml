@@ -9,9 +9,16 @@ bases:
 # ── Image ─────────────────────────────────────────────────────────────────────
 # `newTag` is updated by the Tekton pipeline on every successful build:
 #   kustomize edit set image registry.example.com/quorum=registry.example.com/quorum:<sha>
+#
+# The committed value below is a deliberate placeholder: it does not resolve to
+# a real image, so a manual `kubectl apply -k` before the first CI run fails
+# loudly (ImagePullBackOff) instead of silently deploying a mutable `latest`
+# tag. After the first pipeline run this is always an immutable commit SHA.
+# To deploy manually before CI has ever run, pin a real tag first:
+#   kustomize edit set image registry.example.com/quorum=registry.example.com/quorum:<sha>
 images:
   - name: registry.example.com/quorum
-    newTag: latest   # Tekton replaces this with the commit SHA
+    newTag: set-by-ci-pipeline   # placeholder — Tekton replaces this with the commit SHA
 
 # ── Environment-specific patches ──────────────────────────────────────────────
 patches:

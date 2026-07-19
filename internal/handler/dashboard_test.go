@@ -107,35 +107,74 @@ func TestDashboardSummary_EmptySlices(t *testing.T) {
 	}
 }
 
-func TestDashboardSummary_PartialErrors(t *testing.T) {
-	// Repo errors should be logged and not cause a 500; partial data is returned.
-	h := dashboardHandler(
-		&mockDuesRepo{
-			CountByStatusFn: func(_ context.Context, _ string) (int, error) {
-				return 0, errors.New("db down")
-			},
+// healthyDashboardMocks returns mocks where every dependency succeeds; tests
+// override a single one to make it fail.
+func healthyDashboardMocks() (*mockDuesRepo, *mockMembersRepo, *mockMeetingsRepo, *mockActionItemsRepo) {
+	return &mockDuesRepo{
+			CountByStatusFn: func(_ context.Context, _ string) (int, error) { return 0, nil },
 		},
 		&mockMembersRepo{
-			CountFn: func(_ context.Context) (int, error) { return 0, errors.New("db down") },
+			CountFn: func(_ context.Context) (int, error) { return 0, nil },
 		},
 		&mockMeetingsRepo{
-			UpcomingFn: func(_ context.Context, _ int) ([]model.Meeting, error) {
-				return nil, errors.New("db down")
-			},
+			UpcomingFn: func(_ context.Context, _ int) ([]model.Meeting, error) { return nil, nil },
 		},
 		&mockActionItemsRepo{
 			ListFn: func(_ context.Context, _ repo.ActionItemFilter) ([]model.ActionItem, int, error) {
-				return nil, 0, errors.New("db down")
+				return nil, 0, nil
 			},
-		},
-	)
+		}
+}
 
-	req := httptest.NewRequest("GET", "/dashboard", nil)
-	rr := httptest.NewRecorder()
-	h.Summary(rr, req)
+func TestDashboardSummary_RepoErrors(t *testing.T) {
+	// Any failing dependency is a real error: zeroed counts behind a 200
+	// would mislead users, so every failure path must surface as 500.
+	dbErr := errors.New("db down")
+	cases := []struct {
+		name    string
+		breakFn func(d *mockDuesRepo, m *mockMembersRepo, mt *mockMeetingsRepo, ai *mockActionItemsRepo)
+	}{
+		{"overdue count fails", func(d *mockDuesRepo, _ *mockMembersRepo, _ *mockMeetingsRepo, _ *mockActionItemsRepo) {
+			d.CountByStatusFn = func(_ context.Context, status string) (int, error) {
+				if status == "overdue" {
+					return 0, dbErr
+				}
+				return 0, nil
+			}
+		}},
+		{"pending count fails", func(d *mockDuesRepo, _ *mockMembersRepo, _ *mockMeetingsRepo, _ *mockActionItemsRepo) {
+			d.CountByStatusFn = func(_ context.Context, status string) (int, error) {
+				if status == "pending" {
+					return 0, dbErr
+				}
+				return 0, nil
+			}
+		}},
+		{"member count fails", func(_ *mockDuesRepo, m *mockMembersRepo, _ *mockMeetingsRepo, _ *mockActionItemsRepo) {
+			m.CountFn = func(_ context.Context) (int, error) { return 0, dbErr }
+		}},
+		{"upcoming meetings fails", func(_ *mockDuesRepo, _ *mockMembersRepo, mt *mockMeetingsRepo, _ *mockActionItemsRepo) {
+			mt.UpcomingFn = func(_ context.Context, _ int) ([]model.Meeting, error) { return nil, dbErr }
+		}},
+		{"open action items fails", func(_ *mockDuesRepo, _ *mockMembersRepo, _ *mockMeetingsRepo, ai *mockActionItemsRepo) {
+			ai.ListFn = func(_ context.Context, _ repo.ActionItemFilter) ([]model.ActionItem, int, error) {
+				return nil, 0, dbErr
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, m, mt, ai := healthyDashboardMocks()
+			tc.breakFn(d, m, mt, ai)
+			h := dashboardHandler(d, m, mt, ai)
 
-	// Should still return 200 with zero values — dashboard is best-effort.
-	if rr.Code != 200 {
-		t.Errorf("status: got %d, want 200 even on partial errors", rr.Code)
+			req := httptest.NewRequest("GET", "/dashboard", nil)
+			rr := httptest.NewRecorder()
+			h.Summary(rr, req)
+
+			if rr.Code != 500 {
+				t.Errorf("status: got %d, want 500 when a dependency fails", rr.Code)
+			}
+		})
 	}
 }

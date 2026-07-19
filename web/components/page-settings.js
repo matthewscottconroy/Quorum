@@ -1,7 +1,18 @@
-import { api, getUser, isAdmin } from '../app.js';
+import { api, getUser, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
+import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+/**
+ * Builds <option> markup for the role ladder. `superadmin` is offered only to a
+ * superadmin (the backend 403s otherwise); an already-assigned role outside the
+ * assignable set is still included so the current value renders correctly.
+ */
+function roleOptions(selected) {
+  const roles = ['restricted','member','officer','admin'];
+  if (isSuperadmin()) roles.push('superadmin');
+  if (selected && !roles.includes(selected)) roles.push(selected);
+  return roles.map(r => `<option value="${r}" ${selected===r?'selected':''}>${r}</option>`).join('');
+}
 
 class PageSettings extends HTMLElement {
   async connectedCallback() {
@@ -12,7 +23,10 @@ class PageSettings extends HTMLElement {
     const me = getUser();
     let users = [];
     if (isAdmin()) {
-      try { users = await api('GET', '/users'); } catch {}
+      try {
+        const page = await api('GET', '/users');
+        users = page?.data ?? page ?? [];
+      } catch {}
     }
 
     this.innerHTML = `
@@ -24,9 +38,9 @@ class PageSettings extends HTMLElement {
           <p style="font-size:.9rem;margin-bottom:.25rem"><strong>Email:</strong> ${esc(me?.email ?? '')}</p>
           <p style="font-size:.9rem;margin-bottom:1rem"><strong>Role:</strong> ${esc(me?.role ?? '')}</p>
           <h3 style="font-size:.9rem;margin-bottom:.75rem">Change password</h3>
-          <div class="form-group"><label>Current password</label><input id="f-pw-cur" type="password" autocomplete="current-password"></div>
-          <div class="form-group"><label>New password</label><input id="f-pw" type="password" autocomplete="new-password"></div>
-          <div class="form-group"><label>Confirm password</label><input id="f-pw2" type="password" autocomplete="new-password"></div>
+          <div class="form-group"><label for="f-pw-cur">Current password</label><input id="f-pw-cur" type="password" autocomplete="current-password"></div>
+          <div class="form-group"><label for="f-pw">New password</label><input id="f-pw" type="password" autocomplete="new-password"></div>
+          <div class="form-group"><label for="f-pw2">Confirm password</label><input id="f-pw2" type="password" autocomplete="new-password"></div>
           <button class="btn-primary" id="pw-btn">Update password</button>
         </section>
 
@@ -42,11 +56,12 @@ class PageSettings extends HTMLElement {
               ${users.map(u => `
                 <tr>
                   <td style="font-size:.9rem">${esc(u.email)}</td>
-                  <td><span class="badge badge-${u.role==='admin'?'overdue':u.role==='officer'?'open':'none'}">${u.role}</span></td>
-                  <td>
-                    <select class="role-sel" data-id="${u.id}" style="width:auto;padding:.2rem .4rem;font-size:.8rem">
-                      ${['member','officer','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r}</option>`).join('')}
+                  <td><span class="badge badge-${u.role==='admin'||u.role==='superadmin'?'overdue':u.role==='officer'?'open':'none'}">${esc(u.role)}</span></td>
+                  <td style="text-align:right;white-space:nowrap">
+                    <select class="role-sel" data-id="${esc(u.id)}" style="width:auto;padding:.2rem .4rem;font-size:.8rem">
+                      ${roleOptions(u.role)}
                     </select>
+                    ${isSuperadmin() && u.id !== me?.id ? `<button class="btn-ghost del-user-btn" data-id="${esc(u.id)}" data-email="${esc(u.email)}" style="color:var(--color-danger);font-size:.8rem">Del</button>` : ''}
                   </td>
                 </tr>`).join('')}
             </tbody>
@@ -74,48 +89,66 @@ class PageSettings extends HTMLElement {
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
 
     this.querySelectorAll('.role-sel').forEach(sel => {
+      const original = sel.value;
       sel.addEventListener('change', async () => {
         try {
           await api('PATCH', `/users/${sel.dataset.id}`, { role: sel.value });
           toast('Role updated','success');
-        } catch { toast('Update failed','error'); }
+        } catch (err) {
+          sel.value = original; // Revert the dropdown when the backend rejects the change.
+          toast(err.error ?? 'Update failed','error');
+        }
+      });
+    });
+
+    this.querySelectorAll('.del-user-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        confirmDelete({
+          noun: 'user account',
+          name: btn.dataset.email ?? '',
+          onConfirm: async (confirmVal) => {
+            try {
+              await api('DELETE', `/users/${btn.dataset.id}?confirm=${encodeURIComponent(confirmVal)}`);
+              toast('User deleted','success');
+              this.render();
+            } catch (err) { toast(err.error ?? 'Delete failed','error'); throw err; }
+          },
+        });
       });
     });
   }
 
   openAddUserModal() {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    backdrop.innerHTML = `
-      <div class="modal" style="max-width:400px">
-        <div class="modal-header"><h2>Add user</h2><button class="btn-ghost" id="close-btn">✕</button></div>
+    const { dialog, close } = openModal({
+      title: 'Add user',
+      maxWidth: '400px',
+      body: `
         <div class="modal-body">
-          <div class="form-group"><label>Email *</label><input id="f-email" type="email"></div>
-          <div class="form-group"><label>Password *</label><input id="f-pw" type="password"></div>
-          <div class="form-group"><label>Role</label>
-            <select id="f-role"><option value="member">member</option><option value="officer">officer</option><option value="admin">admin</option></select>
+          <div class="form-group"><label for="f-email">Email *</label><input id="f-email" type="email"></div>
+          <div class="form-group"><label for="f-user-pw">Password *</label><input id="f-user-pw" type="password"></div>
+          <div class="form-group"><label for="f-role">Role</label>
+            <select id="f-role">${roleOptions('member')}</select>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
           <button class="btn-primary" id="save-btn">Create</button>
         </div>
-      </div>
-    `;
-    document.body.appendChild(backdrop);
-    const close = () => backdrop.remove();
-    backdrop.querySelector('#close-btn').addEventListener('click', close);
-    backdrop.querySelector('#cancel-btn').addEventListener('click', close);
-    backdrop.querySelector('#save-btn').addEventListener('click', async () => {
+      `,
+    });
+
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const saveBtn = dialog.querySelector('#save-btn');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       try {
         await api('POST', '/users', {
-          email:    backdrop.querySelector('#f-email').value,
-          password: backdrop.querySelector('#f-pw').value,
-          role:     backdrop.querySelector('#f-role').value,
+          email:    dialog.querySelector('#f-email').value,
+          password: dialog.querySelector('#f-user-pw').value,
+          role:     dialog.querySelector('#f-role').value,
         });
         toast('User created','success'); close(); this.render();
       } catch (err) { toast(err.error??'Failed','error'); }
-    });
+    }));
   }
 }
 customElements.define('page-settings', PageSettings);

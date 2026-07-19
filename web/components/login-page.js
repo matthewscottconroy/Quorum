@@ -1,4 +1,4 @@
-import { api, setAuth, navigate } from '../app.js';
+import { api, setAuth, navigate, isRestricted } from '../app.js';
 import { toast } from './toast-notification.js';
 
 class LoginPage extends HTMLElement {
@@ -14,11 +14,11 @@ class LoginPage extends HTMLElement {
           <p class="login-sub">Sign in to your organization</p>
           <form id="login-form">
             <div class="form-group">
-              <label>Email</label>
+              <label for="email">Email</label>
               <input type="email" id="email" autocomplete="username" required>
             </div>
             <div class="form-group">
-              <label>Password</label>
+              <label for="password">Password</label>
               <input type="password" id="password" autocomplete="current-password" required>
             </div>
             <button type="submit" class="btn-primary" style="width:100%">Sign in</button>
@@ -51,9 +51,9 @@ class LoginPage extends HTMLElement {
           email:    this.querySelector('#email').value,
           password: this.querySelector('#password').value,
         });
-        setAuth(data.access_token, data.user);
+        setAuth(data.access_token, data.user, data.expires_at);
         document.dispatchEvent(new CustomEvent('auth-changed'));
-        navigate('#/dashboard');
+        navigate(isRestricted() ? '#/my-account' : '#/dashboard');
       } catch (err) {
         errEl.textContent = err.error ?? 'Login failed';
         errEl.style.display = 'block';

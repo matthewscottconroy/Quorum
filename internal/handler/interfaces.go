@@ -18,6 +18,7 @@ type authRepo interface {
 	StoreRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt time.Time, err error)
 	RevokeRefreshToken(ctx context.Context, hash string) error
+	CountUsers(ctx context.Context) (int, error)
 	ListUsers(ctx context.Context) ([]model.User, error)
 	UpdateUserRole(ctx context.Context, id, role string) (*model.User, error)
 	DeleteUser(ctx context.Context, id string) error
@@ -40,7 +41,6 @@ type membersRepo interface {
 type duesRepo interface {
 	ListInvoices(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
 	GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error)
-	CreateInvoice(ctx context.Context, inv *model.DuesInvoice) (*model.DuesInvoice, error)
 	CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
 	UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error
 	RecomputeInvoiceStatus(ctx context.Context, id string) error
@@ -48,8 +48,8 @@ type duesRepo interface {
 	ListTransactions(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
 	CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
 	FindInvoiceByProviderRef(ctx context.Context, providerRef string) (string, error)
-	EventProcessed(ctx context.Context, eventID string) (bool, error)
 	MarkEventProcessed(ctx context.Context, eventID string) error
+	RecordWebhookPayment(ctx context.Context, eventID string, t *model.Transaction) (already bool, err error)
 }
 
 // meetingsRepo is satisfied by *repo.MeetingsRepo.
@@ -60,6 +60,7 @@ type meetingsRepo interface {
 	Update(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
 	Delete(ctx context.Context, id string) error
 	GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
+	AttendeeEmails(ctx context.Context, meetingID string) ([]string, error)
 	SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
 	CreateDecision(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
 	UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
@@ -74,6 +75,7 @@ type plansRepo interface {
 	Create(ctx context.Context, p *model.Plan, createdBy string) (*model.Plan, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Plan, error)
 	Delete(ctx context.Context, id string) error
+	OwnerEmail(ctx context.Context, planID string) (string, error)
 	CreateDecision(ctx context.Context, d *model.PlanDecision, decidedBy string) (*model.PlanDecision, error)
 	UpdateDecision(ctx context.Context, id string, summary, rationale *string) (*model.PlanDecision, error)
 	DeleteDecision(ctx context.Context, id string) error
@@ -84,7 +86,7 @@ type contactsRepo interface {
 	List(ctx context.Context, f repo.ContactFilter) ([]model.Contact, int, error)
 	Get(ctx context.Context, id string) (*model.Contact, error)
 	Create(ctx context.Context, c *model.Contact, createdBy string) (*model.Contact, error)
-	Update(ctx context.Context, id string, c *model.Contact) (*model.Contact, error)
+	Update(ctx context.Context, id string, fields map[string]any) (*model.Contact, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -93,16 +95,18 @@ type resourcesRepo interface {
 	List(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error)
 	Get(ctx context.Context, id string) (*model.Resource, error)
 	Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
-	Update(ctx context.Context, id string, res *model.Resource) (*model.Resource, error)
+	Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
 	Delete(ctx context.Context, id string) error
 }
 
 // actionItemsRepo is satisfied by *repo.ActionItemsRepo.
 type actionItemsRepo interface {
 	List(ctx context.Context, f repo.ActionItemFilter) ([]model.ActionItem, int, error)
+	Get(ctx context.Context, id string) (*model.ActionItem, error)
 	Create(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.ActionItem, error)
 	Delete(ctx context.Context, id string) error
+	AssigneeEmail(ctx context.Context, id string) (string, error)
 }
 
 // auditRepo is satisfied by *repo.AuditRepo.

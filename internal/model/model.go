@@ -43,12 +43,12 @@ var ValidInvoiceStatuses = map[string]bool{
 // DuesInvoice is a dues bill issued to a Member for a given period.
 // Status values: "pending", "paid", "partial", "overdue", "waived".
 // Transactions is populated only when fetching a single invoice via GetInvoice.
-// Amount uses float64 for JSON marshalling; the DB column is NUMERIC(10,2) which
-// prevents accumulation of floating-point error at the storage layer.
+// AmountMinor is the amount in the currency's minor units (e.g. cents); see
+// money.go. Divide by 10^CurrencyExponent(Currency) for the major-unit value.
 type DuesInvoice struct {
 	ID           string        `json:"id"`
 	MemberID     string        `json:"member_id"`
-	Amount       float64       `json:"amount"`
+	AmountMinor  int64         `json:"amount_minor"`
 	Currency     string        `json:"currency"`
 	PeriodLabel  string        `json:"period_label"`
 	DueDate      time.Time     `json:"due_date"`
@@ -62,12 +62,12 @@ type DuesInvoice struct {
 
 // Transaction records a single payment event against a DuesInvoice.
 // Transactions may originate from Stripe/PayPal webhooks or be entered manually.
-// Amount is always stored in the major currency unit (e.g. dollars, not cents).
+// AmountMinor is the amount in the currency's minor units (e.g. cents).
 type Transaction struct {
 	ID                  string    `json:"id"`
 	InvoiceID           *string   `json:"invoice_id,omitempty"`
 	MemberID            *string   `json:"member_id,omitempty"`
-	Amount              float64   `json:"amount"`
+	AmountMinor         int64     `json:"amount_minor"`
 	Currency            string    `json:"currency"`
 	Provider            string    `json:"provider"`
 	ProviderReferenceID *string   `json:"provider_reference_id,omitempty"`
@@ -193,15 +193,6 @@ type Resource struct {
 	AddedBy     string    `json:"added_by"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-}
-
-// AuditEntry is a record of a user action stored in the audit log.
-type AuditEntry struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Action    string    `json:"action"`
-	EntityID  string    `json:"entity_id"`
-	CreatedAt time.Time `json:"created_at"`
 }
 
 // Page is a paginated response envelope.

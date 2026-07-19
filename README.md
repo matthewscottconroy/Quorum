@@ -61,13 +61,15 @@ All settings are read from environment variables. Copy `.env.example` to `.env` 
 | `QUORUM_JWT_ACCESS_TTL` | no | `15m` | Access token lifetime (Go duration string) |
 | `QUORUM_JWT_REFRESH_TTL` | no | `168h` | Refresh token lifetime (7 days) |
 | `QUORUM_BASE_URL` | no | `http://localhost:8080` | Public URL used in email links |
+| `QUORUM_TRUST_PROXY_HEADERS` | no | `false` | Key rate limiting on `X-Real-IP`/`X-Forwarded-For`. Enable only behind a trusted proxy/ingress that strips client-supplied forwarding headers. |
 | `QUORUM_SMTP_HOST` | no | — | SMTP hostname for email reminders |
 | `QUORUM_SMTP_PORT` | no | `587` | SMTP port |
 | `QUORUM_SMTP_USER` | no | — | SMTP username |
 | `QUORUM_SMTP_PASS` | no | — | SMTP password |
 | `QUORUM_EMAIL_FROM` | no | `quorum@localhost` | From address for outbound email |
-| `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When set, all Stripe events must pass signature verification. |
-| `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID |
+| `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When unset, the Stripe webhook endpoint returns 503. |
+| `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID. When unset, the PayPal webhook endpoint returns 503. |
+| `QUORUM_ALLOW_UNSIGNED_WEBHOOKS` | no | `false` | Local development only: process webhook events without signature verification when the provider's secret is unset. Never enable in production. |
 | `DB_PASSWORD` | docker only | — | Password for the Postgres container |
 
 ---
@@ -104,14 +106,14 @@ All API routes are under `/api/v1`. Authenticated routes require `Authorization:
 | `GET` | `/auth/me` | required | Current user profile |
 | `PATCH` | `/auth/me/password` | required | Change own password (invalidates all existing sessions) |
 
-### Users (admin only)
+### Users
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/users` | List all users |
-| `POST` | `/users` | Create a new user |
-| `PATCH` | `/users/:id` | Update role |
-| `DELETE` | `/users/:id` | Delete user |
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/users` | admin | List all users |
+| `POST` | `/users` | admin | Create a new user (assigning `superadmin` requires `superadmin`) |
+| `PATCH` | `/users/:id` | admin | Update role (granting/revoking `superadmin` requires `superadmin`; cannot change your own role) |
+| `DELETE` | `/users/:id` | superadmin | Delete user — requires `?confirm=<email>` and notifies admins |
 
 ### Members
 
@@ -119,11 +121,13 @@ All API routes are under `/api/v1`. Authenticated routes require `Authorization:
 |--------|------|----------|-------------|
 | `GET` | `/members` | member | List/search members |
 | `POST` | `/members` | officer | Create member |
-| `GET` | `/members/:id` | member | Get member |
+| `GET` | `/members/:id` | member¹ | Get member |
 | `PATCH` | `/members/:id` | officer | Update member |
 | `DELETE` | `/members/:id` | admin | Soft-delete (marks inactive) |
-| `GET` | `/members/:id/dues` | member | Member's invoices |
-| `GET` | `/members/:id/action-items` | member | Member's action items |
+| `GET` | `/members/:id/dues` | member¹ | Member's invoices |
+| `GET` | `/members/:id/action-items` | member¹ | Member's action items |
+
+¹ A `restricted` user may call these three endpoints, but only for their own linked member record (the id must match their account's member link); `member` and above may view any member.
 
 Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offset`.
 
@@ -131,12 +135,16 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 
 | Method | Path | Min role | Description |
 |--------|------|----------|-------------|
-| `GET` | `/dues` | member | List invoices |
+| `GET` | `/dues` | officer | List invoices |
 | `POST` | `/dues` | officer | Create invoice(s) |
-| `GET` | `/dues/:id` | member | Get invoice + transactions |
+| `GET` | `/dues/:id` | officer | Get invoice + transactions |
 | `PATCH` | `/dues/:id` | officer | Update invoice status |
 | `POST` | `/dues/:id/transactions` | officer | Record a payment |
-| `GET` | `/dues/transactions` | member | List transactions |
+| `GET` | `/dues/transactions` | officer | List transactions |
+
+Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints above are the officer-facing billing views.
+
+**Money is integer minor units.** Amounts are carried as the integer field `amount_minor` (the smallest unit of the currency — cents for USD, whole yen for JPY) plus `currency`, both in responses and in create/transaction request bodies. Convert to a display value by dividing by 10^exponent, where the exponent is 2 for most currencies, 0 for zero-decimal currencies (JPY, KRW, …), and 3 for a few (BHD, KWD, …). This keeps all arithmetic exact.
 
 **Bulk invoice creation**: include `member_ids` (array) instead of `member_id` to create one invoice per member in a single request.
 
@@ -148,7 +156,7 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `POST` | `/meetings` | officer | Create meeting |
 | `GET` | `/meetings/:id` | member | Get meeting + attendees + decisions |
 | `PATCH` | `/meetings/:id` | officer | Update meeting |
-| `DELETE` | `/meetings/:id` | admin | Delete meeting |
+| `DELETE` | `/meetings/:id` | superadmin | Delete meeting — requires `?confirm=<title>`, notifies admins |
 | `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list |
 | `POST` | `/meetings/:id/decisions` | officer | Add a decision |
 | `PATCH` | `/meetings/:id/decisions/:did` | officer | Update a decision |
@@ -162,7 +170,7 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `POST` | `/plans` | officer | Create plan |
 | `GET` | `/plans/:id` | member | Get plan + decision log |
 | `PATCH` | `/plans/:id` | officer | Update plan |
-| `DELETE` | `/plans/:id` | admin | Delete plan |
+| `DELETE` | `/plans/:id` | superadmin | Delete plan — requires `?confirm=<title>`, notifies admins |
 | `POST` | `/plans/:id/decisions` | officer | Log a decision |
 | `PATCH` | `/plans/:id/decisions/:did` | officer | Edit a decision |
 | `DELETE` | `/plans/:id/decisions/:did` | officer | Delete a decision |
@@ -174,7 +182,7 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `GET` | `/action-items` | member | List (`?status=`, `?assignee_id=`, etc.) |
 | `POST` | `/action-items` | officer | Create |
 | `PATCH` | `/action-items/:id` | officer | Update |
-| `DELETE` | `/action-items/:id` | admin | Delete |
+| `DELETE` | `/action-items/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
 
 ### Contacts
 
@@ -184,7 +192,7 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `POST` | `/contacts` | officer | Create |
 | `GET` | `/contacts/:id` | member | Get |
 | `PATCH` | `/contacts/:id` | officer | Update |
-| `DELETE` | `/contacts/:id` | admin | Delete |
+| `DELETE` | `/contacts/:id` | superadmin | Delete — requires `?confirm=<name>`, notifies admins |
 
 ### Resources
 
@@ -194,13 +202,13 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `POST` | `/resources` | officer | Create |
 | `GET` | `/resources/:id` | member | Get |
 | `PATCH` | `/resources/:id` | officer | Update |
-| `DELETE` | `/resources/:id` | admin | Delete |
+| `DELETE` | `/resources/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
 
 ### Dashboard
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/dashboard/summary` | Overdue/pending counts, upcoming meetings, open action items |
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/dashboard` | member | Overdue/pending counts, upcoming meetings, open action items |
 
 ### Webhooks
 
@@ -209,21 +217,38 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `POST` | `/webhooks/stripe` | Stripe event receiver |
 | `POST` | `/webhooks/paypal` | PayPal event receiver |
 
+### Health probes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/healthz` | Liveness: 200 while the process is running |
+| `GET` | `/readyz` | Readiness: 200 when the database responds, 503 otherwise |
+
+Health endpoints are unauthenticated and live at the root (not under `/api/v1`).
+
 Webhook endpoints are not authenticated with JWT. Stripe events are validated via HMAC-SHA256 signature verification; PayPal events via RSA certificate-based signature. See [SECURITY.md](SECURITY.md) for details.
 
 ---
 
 ## Role-based access control
 
-Three roles with ascending privileges:
+Five roles with ascending privileges:
 
 | Role | Can do |
 |------|--------|
-| `member` | Read-only access to all resources |
-| `officer` | Read + write most resources; cannot manage users or delete core records |
-| `admin` | Full access including user management and destructive operations |
+| `restricted` | Sees only its own linked member record — own profile, dues, and assigned action items. No access to the directory, meetings, plans, contacts, resources, or the dashboard. |
+| `member` | Read-only access to all shared resources (directory, meetings, plans, contacts, resources, dashboard). |
+| `officer` | Read + write most resources; cannot manage users or delete core records. |
+| `admin` | Officer plus user management (create/list/update users) and member deactivation. |
+| `superadmin` | Full access, including permanent deletion of core records and user accounts. |
 
-Roles are encoded in the JWT and enforced per-route in middleware. Users can be assigned any role during creation or via `PATCH /users/:id`.
+Roles are encoded in the JWT and enforced per-route in middleware.
+
+**A `restricted` user** must be linked to a member record (`member_id`) to see anything; link it when creating the user or via the member's account. Everyone at `member` and above keeps full read visibility by default — `restricted` is opt-in per user for people who should only see their own data.
+
+**Assigning `superadmin`** is itself a superadmin-only action, and no one can change their own role (this prevents self-lockout and privilege self-escalation). The bootstrap (founder) account is created as `superadmin`; on upgrade of an existing install, the earliest-created admin is promoted to `superadmin` automatically.
+
+**Destructive deletes** of meetings, plans, contacts, resources, action items, and user accounts require `superadmin` and are heavily gated: the request must echo the record's exact name via `?confirm=<name>` (a type-to-confirm step in the UI), the action is written to the audit log, and — when SMTP is configured — a notification is emailed to all admins and superadmins. Member "deletion" is a reversible soft-delete (deactivation) and remains an `admin` action.
 
 ---
 
@@ -238,7 +263,7 @@ Quorum does not process payments itself — it records the result of payments ma
 3. Copy the signing secret (`whsec_…`) into `QUORUM_STRIPE_WEBHOOK_SECRET`.
 4. In your payment metadata, include `quorum_invoice_id` and `quorum_member_id` to link payments to invoices automatically.
 
-When `QUORUM_STRIPE_WEBHOOK_SECRET` is empty, signature verification is skipped (useful for local testing with Stripe CLI).
+When `QUORUM_STRIPE_WEBHOOK_SECRET` is empty, the webhook endpoint returns `503` (fail closed). For local testing with the Stripe CLI you can set `QUORUM_ALLOW_UNSIGNED_WEBHOOKS=true` to process events without verification — never enable this in production.
 
 ### PayPal
 
@@ -256,7 +281,16 @@ Officers can also record payments manually via `POST /api/v1/dues/:id/transactio
 
 ## Email reminders
 
-When `QUORUM_SMTP_HOST` is set, Quorum sends overdue invoice reminders on a nightly schedule. The email list is built from all invoices with status `overdue` that have a member email address on file.
+When `QUORUM_SMTP_HOST` is set, Quorum emails a nightly overdue-dues digest to admin users.
+
+## Nightly maintenance
+
+A background job runs nightly (2 AM local) and, when SMTP is configured:
+
+- **Ages** pending invoices whose due date has passed to `overdue`.
+- **Reminds members** whose dues are overdue, escalating through three notices — a first notice, a 7-day follow-up, and a 30-day final notice — tracked per invoice so each member gets each notice once. An invoice's stage only advances after a successful send, so a transient SMTP failure is retried the next night.
+- **Digests** the overdue picture to all admins and superadmins.
+- **Prunes** bookkeeping tables so they do not grow without bound: expired/revoked refresh tokens are deleted immediately, processed webhook events after 90 days, and audit-log entries after one year.
 
 ---
 

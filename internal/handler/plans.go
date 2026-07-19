@@ -5,15 +5,18 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"quorum/internal/model"
 	"quorum/internal/repo"
 )
 
+var validPlanStatuses = map[string]bool{
+	"draft": true, "active": true, "completed": true, "archived": true,
+}
+
 // PlansHandler handles strategic plan and plan decision endpoints.
 type PlansHandler struct {
-	repo plansRepo
+	repo     plansRepo
+	notifier deletionNotifier
 }
 
 // NewPlansHandler constructs a PlansHandler.
@@ -21,14 +24,14 @@ func NewPlansHandler(r plansRepo) *PlansHandler {
 	return &PlansHandler{repo: r}
 }
 
+// SetNotifier attaches an optional notifier used on gated deletes.
+func (h *PlansHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
+
 func (h *PlansHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.PlanFilter{
 		Status: q.Get("status"),
-		Limit:  100,
-	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
-		f.Limit = v
+		Limit:  clampLimit(q.Get("limit"), 100),
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
 		f.Offset = v
@@ -64,6 +67,14 @@ func (h *PlansHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "draft"
 	}
+	if !validPlanStatuses[status] {
+		writeError(w, 400, "invalid status: must be draft, active, completed, or archived", "bad_request")
+		return
+	}
+	if body.OwnerID != nil && !isValidUUID(*body.OwnerID) {
+		writeError(w, 400, "owner_id must be a UUID", "bad_request")
+		return
+	}
 	var targetDate *time.Time
 	if body.TargetDate != nil {
 		t, err := time.Parse("2006-01-02", *body.TargetDate)
@@ -89,7 +100,10 @@ func (h *PlansHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
 	pl, err := h.repo.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, 404, "plan not found", "not_found")
@@ -99,7 +113,10 @@ func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
 	var body map[string]any
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -112,25 +129,75 @@ func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
 			fields[k] = v
 		}
 	}
+	if len(fields) == 0 {
+		writeError(w, 400, "no valid fields provided", "bad_request")
+		return
+	}
+	if status, present := fields["status"]; present {
+		s, ok := status.(string)
+		if !ok || !validPlanStatuses[s] {
+			writeError(w, 400, "invalid status: must be draft, active, completed, or archived", "bad_request")
+			return
+		}
+	}
+	if ownerID, present := fields["owner_id"]; present && ownerID != nil {
+		s, ok := ownerID.(string)
+		if !ok || !isValidUUID(s) {
+			writeError(w, 400, "owner_id must be a UUID", "bad_request")
+			return
+		}
+	}
+	if targetDate, present := fields["target_date"]; present && targetDate != nil {
+		s, ok := targetDate.(string)
+		if !ok {
+			writeError(w, 400, "target_date must be YYYY-MM-DD", "bad_request")
+			return
+		}
+		if _, err := time.Parse("2006-01-02", s); err != nil {
+			writeError(w, 400, "target_date must be YYYY-MM-DD", "bad_request")
+			return
+		}
+	}
 	pl, err := h.repo.Update(r.Context(), id, fields)
 	if err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "plan not found", "update error")
 		return
 	}
 	writeJSON(w, 200, pl)
 }
 
 func (h *PlansHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeError(w, 500, "delete error", "internal_error")
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
 		return
+	}
+	pl, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "plan not found", "query error")
+		return
+	}
+	if !confirmMatches(w, r, pl.Title) {
+		return
+	}
+	var affected []string
+	if email, _ := h.repo.OwnerEmail(r.Context(), id); email != "" {
+		affected = []string{email}
+	}
+	if err := h.repo.Delete(r.Context(), id); err != nil {
+		writeRepoError(w, err, "plan not found", "delete error")
+		return
+	}
+	if h.notifier != nil {
+		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "plan", pl.Title, affected)
 	}
 	w.WriteHeader(204)
 }
 
 func (h *PlansHandler) CreateDecision(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
 	var body struct {
 		Summary   string  `json:"summary"`
 		Rationale *string `json:"rationale"`
@@ -152,7 +219,10 @@ func (h *PlansHandler) CreateDecision(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PlansHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
-	did := chi.URLParam(r, "did")
+	did, ok := requireUUID(w, r, "did")
+	if !ok {
+		return
+	}
 	var body struct {
 		Summary   *string `json:"summary"`
 		Rationale *string `json:"rationale"`
@@ -163,16 +233,19 @@ func (h *PlansHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	d, err := h.repo.UpdateDecision(r.Context(), did, body.Summary, body.Rationale)
 	if err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "decision not found", "update error")
 		return
 	}
 	writeJSON(w, 200, d)
 }
 
 func (h *PlansHandler) DeleteDecision(w http.ResponseWriter, r *http.Request) {
-	did := chi.URLParam(r, "did")
+	did, ok := requireUUID(w, r, "did")
+	if !ok {
+		return
+	}
 	if err := h.repo.DeleteDecision(r.Context(), did); err != nil {
-		writeError(w, 500, "delete error", "internal_error")
+		writeRepoError(w, err, "decision not found", "delete error")
 		return
 	}
 	w.WriteHeader(204)

@@ -26,6 +26,10 @@ config:
   smtpPort: "587"
   smtpUser: ""
   emailFrom: "quorum@example.com"
+  # Behind the ingress (which sets X-Forwarded-For / X-Real-IP), rate limiting
+  # keys on the real client IP rather than the ingress pod IP. Set to "false"
+  # only if exposing the Service directly without a trusted proxy.
+  trustProxyHeaders: "true"
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Prefer existingSecret in production — manage secrets via Sealed Secrets or ESO.
@@ -84,8 +88,10 @@ networkPolicy:
   # Label selector for the PostgreSQL pod (allows DB egress).
   postgresqlPodSelector:
     app.kubernetes.io/name: postgresql
-  # Allow outbound SMTP (port 587).
-  smtpEnabled: true
+  # Allow outbound SMTP (config.smtpPort). Disabled by default because SMTP
+  # itself is unconfigured by default (config.smtpHost is empty). Set to true
+  # when outbound email is configured.
+  smtpEnabled: false
 
 # ── Pod security ──────────────────────────────────────────────────────────────
 podSecurityContext:
@@ -103,9 +109,11 @@ securityContext:
     drop: ["ALL"]
 
 # ── Health checks ─────────────────────────────────────────────────────────────
+# /healthz — liveness: process is up (200).
+# /readyz  — readiness: pings the database; 200 when healthy, 503 otherwise.
 livenessProbe:
   httpGet:
-    path: /api/v1/auth/bootstrap
+    path: /healthz
     port: http
   initialDelaySeconds: 5
   periodSeconds: 15
@@ -113,7 +121,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /api/v1/auth/bootstrap
+    path: /readyz
     port: http
   initialDelaySeconds: 3
   periodSeconds: 10

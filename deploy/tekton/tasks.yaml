@@ -36,9 +36,12 @@ spec:
 # It builds images from a Containerfile/Dockerfile without a Docker daemon,
 # making it fully compatible with Podman-based environments and Kubernetes clusters.
 #
-# Security note: this task runs privileged to access the overlay storage driver.
-# For clusters with kernel.unprivileged_userns_clone=1, set storageDriver=vfs
-# and remove `privileged: true` to run rootless.
+# Security note: this task runs rootless (no privileged containers). It uses
+# the `vfs` storage driver and user-namespace (chroot-isolation) builds as the
+# unprivileged `build` user (UID 1000) of the buildah image. Requires nodes with
+# kernel.unprivileged_userns_clone=1 (default on modern kernels). vfs is slower
+# than overlay; on clusters that permit it, fuse-overlayfs can be used instead
+# by setting storage-driver=overlay with the fuse device mounted.
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -66,8 +69,8 @@ spec:
       description: Build context path relative to the workspace root.
     - name: storage-driver
       type: string
-      default: overlay
-      description: "Buildah storage driver. Use 'vfs' for rootless builds."
+      default: vfs
+      description: "Buildah storage driver. 'vfs' works rootless everywhere; 'overlay' needs fuse-overlayfs or privileges."
   workspaces:
     - name: source
       description: Checked-out source repository containing the Dockerfile.
@@ -82,13 +85,24 @@ spec:
     - name: build
       image: quay.io/buildah/stable:v1.35
       workingDir: $(workspaces.source.path)
+      # Rootless build: run as the image's unprivileged `build` user inside a
+      # user namespace. SETFCAP is needed to set file capabilities during the
+      # build; allowPrivilegeEscalation stays true (default) so the setuid
+      # newuidmap/newgidmap helpers can map the user namespace.
       securityContext:
-        privileged: true   # required for overlay storage; replace with vfs for rootless
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          add: ["SETFCAP"]
       env:
         - name: STORAGE_DRIVER
           value: $(params.storage-driver)
         - name: BUILDAH_ISOLATION
           value: chroot
+      volumeMounts:
+        # Rootless container storage, shared with the push step.
+        - name: containers-storage
+          mountPath: /home/build/.local/share/containers
       script: |
         #!/bin/bash
         set -eu
@@ -103,11 +117,21 @@ spec:
     - name: push
       image: quay.io/buildah/stable:v1.35
       workingDir: $(workspaces.source.path)
+      # Rootless push: same unprivileged user as the build step so it can read
+      # the container storage the build step created.
       securityContext:
-        privileged: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        capabilities:
+          add: ["SETFCAP"]
       env:
         - name: STORAGE_DRIVER
           value: $(params.storage-driver)
+        - name: BUILDAH_ISOLATION
+          value: chroot
+      volumeMounts:
+        - name: containers-storage
+          mountPath: /home/build/.local/share/containers
       script: |
         #!/bin/bash
         set -eu
@@ -125,6 +149,11 @@ spec:
 
         cat /tmp/image-digest | tee $(results.image-digest.path)
   volumes:
+    # Shared rootless container storage between the build and push steps
+    # (each Tekton step is a separate container; emptyDir is world-writable
+    # so the unprivileged build user can use it).
+    - name: containers-storage
+      emptyDir: {}
     - name: docker-credentials
       projected:
         sources:
@@ -188,6 +217,13 @@ spec:
       script: |
         #!/bin/sh
         set -eu
+        # Guard: production must always be pinned to an immutable tag.
+        # Refuse to write a mutable "latest" tag into the GitOps overlay.
+        if [ "$(params.image-tag)" = "latest" ]; then
+          echo "ERROR: refusing to set image tag 'latest' in the production overlay." >&2
+          echo "Deploys must pin an immutable commit-SHA tag." >&2
+          exit 1
+        fi
         kustomize edit set image \
           "$(params.image-repository)=$(params.image-repository):$(params.image-tag)"
 

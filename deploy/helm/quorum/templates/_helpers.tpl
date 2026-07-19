@@ -50,9 +50,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{/*
 Full OCI image reference.
+Refuses to render a mutable "latest" tag — deploys must be pinned to an
+immutable tag (commit SHA or chart appVersion).
 */}}
 {{- define "quorum.image" -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- if eq $tag "latest" }}
+{{- fail "image tag resolved to 'latest'. Set image.tag to an immutable tag, e.g. --set image.tag=<commit-sha>." }}
+{{- end }}
 {{- printf "%s:%s" .Values.image.repository $tag }}
 {{- end }}
 

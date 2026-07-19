@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,7 +16,19 @@ import (
 var migrationsFS embed.FS
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	// Bound the pool so a traffic spike or connection leak degrades gracefully
+	// instead of exhausting PostgreSQL's max_connections.
+	cfg.MaxConns = 10
+	cfg.MaxConnLifetime = time.Hour
+	cfg.MaxConnIdleTime = 30 * time.Minute
+	cfg.HealthCheckPeriod = time.Minute
+	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open pool: %w", err)
 	}
@@ -54,11 +67,17 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	for rows.Next() {
 		var v int
 		if err := rows.Scan(&v); err != nil {
+			rows.Close()
 			return err
 		}
 		applied[v] = true
 	}
 	rows.Close()
+	// A mid-iteration error would leave `applied` incomplete and re-run
+	// already-applied migrations, so it must be fatal.
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
 
 	files, err := fs.ReadDir(migrationsFS, "migrations")
 	if err != nil {
@@ -75,7 +94,9 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 		var v int
-		fmt.Sscanf(f.Name(), "%04d", &v)
+		if _, err := fmt.Sscanf(f.Name(), "%04d", &v); err != nil || v <= 0 {
+			return fmt.Errorf("migration %s: filename must start with a positive 4-digit version", f.Name())
+		}
 		ups = append(ups, migration{version: v, name: f.Name()})
 	}
 	sort.Slice(ups, func(i, j int) bool { return ups[i].version < ups[j].version })
@@ -88,11 +109,22 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", m.name, err)
 		}
-		if _, err := conn.Exec(ctx, string(sql)); err != nil {
+		// Apply the migration and record its version atomically so a crash
+		// between the two can never re-run non-idempotent DDL on next boot.
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin migration %s: %w", m.name, err)
+		}
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck
 			return fmt.Errorf("apply migration %s: %w", m.name, err)
 		}
-		if _, err := conn.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", m.version); err != nil {
+		if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", m.version); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck
 			return fmt.Errorf("record migration %s: %w", m.name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit migration %s: %w", m.name, err)
 		}
 		fmt.Printf("applied migration %s\n", m.name)
 	}

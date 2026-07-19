@@ -129,11 +129,11 @@ The `Secure` flag on the refresh cookie is set only when `r.TLS != nil`, so it i
 
 ### Stripe
 
-Stripe webhook events are verified with an HMAC-SHA256 signature over `timestamp.payload` using the `QUORUM_STRIPE_WEBHOOK_SECRET`. If the secret is unset, verification is skipped (intended for local development with the Stripe CLI). **Always set the secret in production.**
+Stripe webhook events are verified with an HMAC-SHA256 signature over `timestamp.payload` using the `QUORUM_STRIPE_WEBHOOK_SECRET`. Multiple `v1=` signatures in the header are accepted (any one match passes), so secret rotation is safe. If the secret is unset, the endpoint **fails closed** and returns `503` — events are only processed unverified when `QUORUM_ALLOW_UNSIGNED_WEBHOOKS=true` is set explicitly (intended for local development with the Stripe CLI; never set it in production). Processed payment events are recorded atomically: the idempotency claim, transaction insert, and invoice-status recompute commit in one database transaction, and processing failures return `5xx` so the provider retries instead of silently dropping the payment.
 
 ### PayPal
 
-PayPal webhook events are verified with an RSA-PKCS1v15 signature over `transmissionID|timestamp|webhookID|CRC32(body)`. The signing certificate is fetched from the `PAYPAL-CERT-URL` header, validated against the `*.paypal.com` domain, and cached in memory to avoid repeated fetches. If `QUORUM_PAYPAL_WEBHOOK_ID` is unset, verification is skipped.
+PayPal webhook events are verified with an RSA-PKCS1v15 signature over `transmissionID|timestamp|webhookID|CRC32(body)`. The signing certificate is fetched from the `PAYPAL-CERT-URL` header, which must be HTTPS and match an exact allowlist of PayPal API hosts (no suffix matching); the fetch never follows redirects, uses a 10-second timeout, and the certificate's chain of trust and validity window are verified against the system root pool before use. Verified certificates are cached in memory (bounded cache). If `QUORUM_PAYPAL_WEBHOOK_ID` is unset, the endpoint fails closed with `503` unless `QUORUM_ALLOW_UNSIGNED_WEBHOOKS=true`.
 
 ### Idempotency
 
@@ -141,9 +141,25 @@ Both webhook handlers check a `processed_events` table before acting. Duplicate 
 
 ---
 
+## Authorisation and destructive actions
+
+Access is controlled by five roles encoded in the JWT — `restricted` < `member` < `officer` < `admin` < `superadmin` — enforced per route in middleware. The JWT also carries the account's `member_id`; a `restricted` user may read only its own linked member record (profile, dues, action items) and receives 403 on every shared/org-wide resource.
+
+Permanent deletion of core records (meetings, plans, contacts, resources, action items) and of user accounts is reserved for `superadmin` and is defence-in-depth gated:
+
+- **Type-to-confirm**: the request must carry `?confirm=<exact record name>` (matched case-insensitively) or it is rejected with 400 before anything is deleted.
+- **Audit**: the delete is recorded in `audit_log` like any mutating request.
+- **Notification**: when SMTP is configured, all admins/superadmins are emailed a record of what was deleted and by whom.
+
+Assigning or revoking the `superadmin` role is itself a superadmin-only action, and no user may change their own role — preventing both privilege self-escalation and accidental self-lockout of the last superadmin.
+
+## Email
+
+Outbound email (dues reminders, admin digests, deletion notices) is sent over SMTP with STARTTLS when the server offers it. Recipient addresses and subjects are rejected if they contain a CR/LF, preventing header injection; message bodies follow the header/body separator and cannot forge headers.
+
 ## Audit logging
 
-All mutating HTTP requests (`POST`, `PATCH`, `PUT`, `DELETE`) that return a 2xx status and carry an authenticated user ID are written to the `audit_log` table with `user_id`, the HTTP method and path, and a timestamp. Read operations (`GET`) are not logged.
+All mutating HTTP requests (`POST`, `PATCH`, `PUT`, `DELETE`) that return a 2xx status and carry an authenticated user ID are written to the `audit_log` table with `user_id`, the HTTP method and path, and a timestamp. Read operations (`GET`) are not logged. Audit rows are pruned after one year by the nightly job.
 
 ---
 

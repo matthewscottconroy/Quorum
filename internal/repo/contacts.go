@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -87,7 +88,17 @@ func (r *ContactsRepo) List(ctx context.Context, f ContactFilter) ([]model.Conta
 		}
 		contacts = append(contacts, c)
 	}
-	return contacts, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(contacts) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM contacts c " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return contacts, total, nil
 }
 
 func (r *ContactsRepo) Get(ctx context.Context, id string) (*model.Contact, error) {
@@ -116,23 +127,34 @@ func (r *ContactsRepo) Create(ctx context.Context, c *model.Contact, createdBy s
 	return &created, nil
 }
 
-func (r *ContactsRepo) Update(ctx context.Context, id string, c *model.Contact) (*model.Contact, error) {
-	row := r.db.QueryRow(ctx, `
-		UPDATE contacts SET
-			name         = $1,
-			organization = $2,
-			email        = $3,
-			phone        = $4,
-			address      = $5,
-			category     = $6,
-			tags         = $7,
-			notes        = $8,
-			updated_at   = now()
-		WHERE id = $9::uuid
+var contactAllowedFields = map[string]bool{
+	"name": true, "organization": true, "email": true, "phone": true,
+	"address": true, "category": true, "tags": true, "notes": true,
+}
+
+// Update sets only the given fields, preserving PATCH semantics.
+func (r *ContactsRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Contact, error) {
+	sets := []string{}
+	args := []any{}
+	idx := 1
+	for k, v := range fields {
+		if !contactAllowedFields[k] {
+			continue
+		}
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		args = append(args, v)
+		idx++
+	}
+	sets = append(sets, "updated_at = now()")
+	args = append(args, id)
+
+	query := fmt.Sprintf(`
+		UPDATE contacts SET %s WHERE id = $%d::uuid
 		RETURNING id::text, name, organization, email, phone, address,
 		          category, tags, notes, created_by::text, created_at, updated_at`,
-		c.Name, c.Organization, c.Email, c.Phone, c.Address, c.Category, c.Tags, c.Notes, id)
-	updated, err := scanContact(row)
+		strings.Join(sets, ", "), idx)
+
+	updated, err := scanContact(r.db.QueryRow(ctx, query, args...))
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +162,14 @@ func (r *ContactsRepo) Update(ctx context.Context, id string, c *model.Contact) 
 }
 
 func (r *ContactsRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM contacts WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM contacts WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func scanContact(row scannable) (model.Contact, error) {

@@ -11,13 +11,17 @@ import (
 
 // MeetingsHandler handles meeting, attendance, and decision endpoints.
 type MeetingsHandler struct {
-	repo meetingsRepo
+	repo     meetingsRepo
+	notifier deletionNotifier
 }
 
 // NewMeetingsHandler constructs a MeetingsHandler.
 func NewMeetingsHandler(r meetingsRepo) *MeetingsHandler {
 	return &MeetingsHandler{repo: r}
 }
+
+// SetNotifier attaches an optional notifier used on gated deletes.
+func (h *MeetingsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
 func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -119,11 +123,18 @@ func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		scheduledAt = &t
 	}
+	if body.Status != nil {
+		s := *body.Status
+		if s != "scheduled" && s != "completed" && s != "cancelled" {
+			writeError(w, 400, "invalid status: must be scheduled, completed, or cancelled", "bad_request")
+			return
+		}
+	}
 
 	mt, err := h.repo.Update(r.Context(), id,
 		body.Title, scheduledAt, body.Location, body.Agenda, body.Notes, body.Status)
 	if err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "meeting not found", "update error")
 		return
 	}
 	writeJSON(w, 200, mt)
@@ -134,9 +145,23 @@ func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeError(w, 500, "delete error", "internal_error")
+	mt, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "meeting not found", "query error")
 		return
+	}
+	if !confirmMatches(w, r, mt.Title) {
+		return
+	}
+	// Gather affected members' emails before deleting — the attendee rows
+	// cascade away with the meeting.
+	affected, _ := h.repo.AttendeeEmails(r.Context(), id)
+	if err := h.repo.Delete(r.Context(), id); err != nil {
+		writeRepoError(w, err, "meeting not found", "delete error")
+		return
+	}
+	if h.notifier != nil {
+		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "meeting", mt.Title, affected)
 	}
 	w.WriteHeader(204)
 }
@@ -157,7 +182,14 @@ func (h *MeetingsHandler) SetAttendees(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "update error", "internal_error")
 		return
 	}
-	attendees, _ := h.repo.GetAttendees(r.Context(), id)
+	attendees, err := h.repo.GetAttendees(r.Context(), id)
+	if err != nil {
+		writeError(w, 500, "fetch error", "internal_error")
+		return
+	}
+	if attendees == nil {
+		attendees = []model.MeetingAttendee{}
+	}
 	writeJSON(w, 200, attendees)
 }
 
@@ -223,7 +255,7 @@ func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request)
 		body.Summary, body.Detail, body.Outcome,
 		body.VoteFor, body.VoteAgainst, body.VoteAbstain)
 	if err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "decision not found", "update error")
 		return
 	}
 	writeJSON(w, 200, d)
@@ -235,7 +267,7 @@ func (h *MeetingsHandler) DeleteDecision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := h.repo.DeleteDecision(r.Context(), did); err != nil {
-		writeError(w, 500, "delete error", "internal_error")
+		writeRepoError(w, err, "decision not found", "delete error")
 		return
 	}
 	w.WriteHeader(204)

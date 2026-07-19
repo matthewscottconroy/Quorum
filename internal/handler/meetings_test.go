@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"quorum/internal/model"
 	"quorum/internal/repo"
 )
@@ -172,17 +174,153 @@ func TestMeetingsUpdate_InvalidScheduledAt(t *testing.T) {
 	}
 }
 
+func TestMeetingsUpdate_InvalidStatus(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{})
+	body := `{"status":"postponed"}`
+	req := chiRequest("PATCH", "/meetings/mt1", body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for invalid status", rr.Code)
+	}
+}
+
+func TestMeetingsUpdate_NotFound(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		UpdateFn: func(_ context.Context, _ string, _ *string, _ *time.Time, _, _, _, _ *string) (*model.Meeting, error) {
+			return nil, pgx.ErrNoRows
+		},
+	})
+	body := `{"title":"X"}`
+	req := chiRequest("PATCH", "/meetings/mt1", body, map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
+func TestMeetingsUpdate_RepoError(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		UpdateFn: func(_ context.Context, _ string, _ *string, _ *time.Time, _, _, _, _ *string) (*model.Meeting, error) {
+			return nil, errors.New("db error")
+		},
+	})
+	body := `{"title":"X"}`
+	req := chiRequest("PATCH", "/meetings/mt1", body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 500 {
+		t.Errorf("status: got %d, want 500", rr.Code)
+	}
+}
+
 // ---- Delete ----
 
 func TestMeetingsDelete_Success(t *testing.T) {
+	deleted := false
 	h := NewMeetingsHandler(&mockMeetingsRepo{
-		DeleteFn: func(_ context.Context, _ string) error { return nil },
+		GetFn: func(_ context.Context, id string) (*model.Meeting, error) {
+			return &model.Meeting{ID: id, Title: "Standup"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ string) error { deleted = true; return nil },
 	})
-	req := chiRequest("DELETE", "/meetings/mt1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := chiRequest("DELETE", "/meetings/mt1?confirm=Standup", "", map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Delete(rr, req)
 	if rr.Code != 204 {
-		t.Errorf("status: got %d, want 204", rr.Code)
+		t.Errorf("status: got %d, want 204; body: %s", rr.Code, rr.Body)
+	}
+	if !deleted {
+		t.Error("expected Delete to be called")
+	}
+}
+
+func TestMeetingsDelete_NotifiesAttendees(t *testing.T) {
+	// Attendee emails are gathered before delete and passed to the notifier as
+	// the affected parties.
+	var emailsQueriedBeforeDelete bool
+	deleted := false
+	fn := &fakeNotifier{}
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Meeting, error) {
+			return &model.Meeting{ID: id, Title: "Board Sync"}, nil
+		},
+		AttendeeEmailsFn: func(_ context.Context, _ string) ([]string, error) {
+			emailsQueriedBeforeDelete = !deleted // must run before Delete
+			return []string{"a@example.com", "b@example.com"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ string) error { deleted = true; return nil },
+	})
+	h.SetNotifier(fn)
+
+	req := withCtxUser(chiRequest("DELETE", "/meetings/x?confirm=Board%20Sync", "", map[string]string{"id": testUUID}), "actor-1", "superadmin")
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+
+	if rr.Code != 204 {
+		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	if !emailsQueriedBeforeDelete {
+		t.Error("attendee emails must be gathered before the meeting is deleted")
+	}
+	if !fn.called || fn.entityType != "meeting" || fn.entityName != "Board Sync" {
+		t.Errorf("notifier args: called=%v type=%q name=%q", fn.called, fn.entityType, fn.entityName)
+	}
+	if len(fn.affected) != 2 {
+		t.Errorf("expected 2 affected attendee emails, got %v", fn.affected)
+	}
+}
+
+func TestMeetingsDelete_NotFound(t *testing.T) {
+	// Get returns ErrNoRows before the confirm gate → 404.
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) { return nil, pgx.ErrNoRows },
+	})
+	req := chiRequest("DELETE", "/meetings/mt1?confirm=Standup", "", map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
+func TestMeetingsDelete_MissingConfirm(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Meeting, error) {
+			return &model.Meeting{ID: id, Title: "Standup"}, nil
+		},
+	})
+	req := chiRequest("DELETE", "/meetings/mt1", "", map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 without ?confirm", rr.Code)
+	}
+	if code := errCode(t, rr); code != "confirmation_required" {
+		t.Errorf("code: got %q, want confirmation_required", code)
+	}
+}
+
+func TestMeetingsDelete_MismatchedConfirm(t *testing.T) {
+	deleted := false
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, id string) (*model.Meeting, error) {
+			return &model.Meeting{ID: id, Title: "Standup"}, nil
+		},
+		DeleteFn: func(_ context.Context, _ string) error { deleted = true; return nil },
+	})
+	req := chiRequest("DELETE", "/meetings/mt1?confirm=WrongName", "", map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for mismatched confirm", rr.Code)
+	}
+	if code := errCode(t, rr); code != "confirmation_mismatch" {
+		t.Errorf("code: got %q, want confirmation_mismatch", code)
+	}
+	if deleted {
+		t.Error("Delete must not run when confirmation does not match")
 	}
 }
 

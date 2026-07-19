@@ -190,7 +190,7 @@ CREATE TABLE members (
 CREATE TABLE dues_invoices (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     member_id   UUID NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-    amount      NUMERIC(10,2) NOT NULL,
+    amount      BIGINT NOT NULL,   -- integer minor units (e.g. cents); see money note below
     currency    TEXT NOT NULL DEFAULT 'USD',
     period_label TEXT NOT NULL,  -- e.g. "2026 Q1", "Annual 2026"
     due_date    DATE NOT NULL,
@@ -205,7 +205,7 @@ CREATE TABLE transactions (
     id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     invoice_id            UUID REFERENCES dues_invoices(id),
     member_id             UUID REFERENCES members(id),
-    amount                NUMERIC(10,2) NOT NULL,
+    amount                BIGINT NOT NULL,   -- integer minor units; see money note below
     currency              TEXT NOT NULL DEFAULT 'USD',
     provider              TEXT NOT NULL,  -- 'stripe' | 'paypal' | 'square' | 'manual'
     provider_reference_id TEXT,           -- Stripe charge_id, PayPal order_id, etc.
@@ -325,6 +325,10 @@ CREATE INDEX idx_meetings_fts  ON meetings  USING gin(to_tsvector('english', tit
 CREATE INDEX idx_contacts_fts  ON contacts  USING gin(to_tsvector('english', name || ' ' || coalesce(organization,'')));
 CREATE INDEX idx_resources_fts ON resources USING gin(to_tsvector('english', title || ' ' || coalesce(description,'')));
 ```
+
+### 4.3 Money representation
+
+All monetary amounts (`dues_invoices.amount`, `transactions.amount`) are stored as `BIGINT` **integer minor units** — the smallest unit of the currency (cents for USD, whole yen for JPY, thousandths for BHD). This keeps every sum and comparison exact integer arithmetic, eliminating binary-float rounding error. Converting to a human-readable major-unit value requires the currency's exponent (2 for most currencies, 0 for zero-decimal currencies like JPY/KRW, 3 for a few like BHD/KWD), applied consistently in the Go layer (`model.CurrencyExponent/ParseMoney/FormatMoney`) and the frontend. The API exposes amounts as the integer field `amount_minor` alongside `currency`.
 
 ---
 
@@ -563,15 +567,21 @@ customElements.define('member-card', MemberCard);
 
 ## 8. Role-Based Access Control
 
-Three roles are enforced at the handler layer:
+Five roles are enforced at the handler layer (ascending privilege):
 
 | Role | Capabilities |
 |---|---|
-| `admin` | Full read/write on all resources; manage users; configure integrations |
-| `officer` | Read/write meetings, plans, contacts, resources; read members and dues; cannot manage users |
-| `member` | Read-only on their own profile and dues; cannot see other members' dues |
+| `restricted` | Sees only its own linked member record: own profile, dues, and assigned action items. No access to the shared directory, meetings, plans, contacts, resources, or dashboard. Must be linked to a member (`member_id`) to see anything. |
+| `member` | Read-only on all shared resources (directory, meetings, plans, contacts, resources, dashboard). |
+| `officer` | Read/write meetings, plans, contacts, resources, dues, action items; read members; cannot manage users. |
+| `admin` | Officer plus user management and member deactivation (a reversible soft-delete). |
+| `superadmin` | Full access, including permanent deletion of core records and user accounts. |
 
-RBAC is checked in middleware that reads the `role` claim from the JWT. No UI is shown for actions the user cannot perform (frontend hides controls; backend enforces).
+RBAC is checked in middleware that reads the `role` claim from the JWT; the JWT also carries the account's `member_id`, which scopes what a `restricted` user may read. No UI is shown for actions the user cannot perform (frontend hides controls; backend enforces).
+
+**Design note (v1 resolution):** an earlier draft scoped `member` to "own data only." That capability now lives in the dedicated `restricted` role; the default `member` role has full read visibility, matching how a staff-facing back-office tool is used. Grant `restricted` per user for people (e.g. the general membership) who should see only their own record.
+
+**Destructive deletes** of core records (meetings, plans, contacts, resources, action items) and user accounts are reserved for `superadmin` and are heavily gated: a type-to-confirm step (the request must echo the record's exact name), an audit-log entry, and an email notification to all admins/superadmins. Assigning the `superadmin` role is itself superadmin-only, and no user can change their own role.
 
 ---
 
@@ -607,8 +617,9 @@ A `config.toml` file is also supported as a fallback; environment variables take
 A background goroutine runs a nightly job that:
 
 1. Queries `dues_invoices` where `due_date < now()` and `status = 'pending'`; marks them `overdue`.
-2. Sends email reminders to members whose dues are overdue (configurable: first notice, 7-day follow-up, 30-day final notice).
-3. Sends a digest email to admins summarizing overdue count and upcoming meeting agendas.
+2. Sends escalating email reminders to members whose dues are overdue: a first notice, a 7-day follow-up, and a 30-day final notice. Each invoice carries a `reminder_stage` so every member receives each notice at most once; the stage advances only after a successful send.
+3. Sends a digest email to all admins and superadmins summarizing the overdue count.
+4. Prunes expired/revoked refresh tokens, old processed webhook events, and aged audit-log rows.
 
 Email templates are plain-text by default; HTML email template support is optional and added later if desired.
 

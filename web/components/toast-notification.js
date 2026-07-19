@@ -19,7 +19,12 @@
 class ToastNotification extends HTMLElement {
   connectedCallback() {
     this.className = 'toast-container';
-    document.body.appendChild(this);
+    this.setAttribute('role', 'status');
+    this.setAttribute('aria-live', 'polite');
+    // Manual popover: joins the browser top layer so toasts render above an
+    // open <dialog> backdrop instead of dimmed beneath it. "manual" opts out
+    // of light-dismiss so clicks elsewhere don't close the container.
+    this.setAttribute('popover', 'manual');
   }
 
   /**
@@ -31,9 +36,35 @@ class ToastNotification extends HTMLElement {
   show(message, type = 'info', duration = 3500) {
     const el = document.createElement('div');
     el.className = `toast toast-${type}`;
+    // Errors should interrupt screen readers assertively; do it on the
+    // individual toast (role="alert") rather than mutating the shared
+    // container's aria-live, which would affect other toasts still visible.
+    if (type === 'error') el.setAttribute('role', 'alert');
     el.textContent = message;
     this.appendChild(el);
-    setTimeout(() => el.remove(), duration);
+    this.#promote();
+    setTimeout(() => {
+      el.remove();
+      // Leave the top layer once empty so a later dialog isn't stacked under
+      // a stale popover entry.
+      if (this.childElementCount === 0) {
+        try { this.hidePopover(); } catch { /* not open / unsupported */ }
+      }
+    }, duration);
+  }
+
+  /**
+   * (Re-)shows the container as a popover so it sits at the TOP of the top
+   * layer — above any dialog opened after the previous toast. No-op in
+   * browsers without the Popover API (the container falls back to its
+   * z-index positioning).
+   */
+  #promote() {
+    if (typeof this.showPopover !== 'function') return;
+    try {
+      if (this.matches(':popover-open')) this.hidePopover();
+      this.showPopover();
+    } catch { /* detached element or transient state; toast still renders */ }
   }
 }
 customElements.define('toast-notification', ToastNotification);

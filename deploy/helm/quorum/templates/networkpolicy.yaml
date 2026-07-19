@@ -44,7 +44,9 @@ spec:
         - port: {{ .Values.config.smtpPort | int }}
           protocol: TCP
     {{- end }}
-    # HTTPS (Stripe/PayPal webhook verification, cert fetching)
+    # HTTPS (Stripe/PayPal webhook verification, cert fetching).
+    # Intentionally broad: Stripe/PayPal publish no stable CIDRs, so this
+    # cannot be narrowed with ipBlock. Use an egress proxy to tighten it.
     - ports:
         - port: 443
           protocol: TCP

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"quorum/internal/model"
 	"quorum/internal/repo"
 )
@@ -18,7 +20,7 @@ func testInvoice(id, memberID string) *model.DuesInvoice {
 	return &model.DuesInvoice{
 		ID:          id,
 		MemberID:    memberID,
-		Amount:      100,
+		AmountMinor: 10000,
 		Currency:    "USD",
 		PeriodLabel: "2024-Q1",
 		DueDate:     time.Now().Add(30 * 24 * time.Hour),
@@ -57,10 +59,10 @@ func TestDuesList_FilterPassedThrough(t *testing.T) {
 			return nil, 0, nil
 		},
 	})
-	req := httptest.NewRequest("GET", "/dues?member_id=m1&status=overdue&period=2024-Q1", nil)
+	req := httptest.NewRequest("GET", "/dues?member_id="+testUUID+"&status=overdue&period=2024-Q1", nil)
 	rr := httptest.NewRecorder()
 	h.List(rr, req)
-	if captured.MemberID != "m1" {
+	if captured.MemberID != testUUID {
 		t.Errorf("MemberID: got %q", captured.MemberID)
 	}
 	if captured.Status != "overdue" {
@@ -68,6 +70,16 @@ func TestDuesList_FilterPassedThrough(t *testing.T) {
 	}
 	if captured.PeriodLabel != "2024-Q1" {
 		t.Errorf("PeriodLabel: got %q", captured.PeriodLabel)
+	}
+}
+
+func TestDuesList_BadMemberID(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{})
+	req := httptest.NewRequest("GET", "/dues?member_id=not-a-uuid", nil)
+	rr := httptest.NewRecorder()
+	h.List(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID member_id", rr.Code)
 	}
 }
 
@@ -80,7 +92,7 @@ func TestDuesCreate_Single(t *testing.T) {
 			return []model.DuesInvoice{*invs[0]}, nil
 		},
 	})
-	body := `{"member_id":"m1","amount":150,"period_label":"2024-Q2","due_date":"2024-06-30"}`
+	body := `{"member_id":"` + testUUID + `","amount_minor":15000,"period_label":"2024-Q2","due_date":"2024-06-30"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
@@ -108,7 +120,7 @@ func TestDuesCreate_Bulk(t *testing.T) {
 			return result, nil
 		},
 	})
-	body := `{"member_ids":["m1","m2","m3"],"amount":100,"period_label":"2024-Q3","due_date":"2024-09-30"}`
+	body := `{"member_ids":["` + testUUID + `","` + testUUID2 + `","33333333-3333-3333-3333-333333333333"],"amount_minor":10000,"period_label":"2024-Q3","due_date":"2024-09-30"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
@@ -123,7 +135,7 @@ func TestDuesCreate_Bulk(t *testing.T) {
 
 func TestDuesCreate_MissingAmount(t *testing.T) {
 	h := NewDuesHandler(&mockDuesRepo{})
-	body := `{"member_id":"m1","period_label":"2024-Q1","due_date":"2024-03-31"}`
+	body := `{"member_id":"` + testUUID + `","period_label":"2024-Q1","due_date":"2024-03-31"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
@@ -134,7 +146,7 @@ func TestDuesCreate_MissingAmount(t *testing.T) {
 
 func TestDuesCreate_InvalidDueDate(t *testing.T) {
 	h := NewDuesHandler(&mockDuesRepo{})
-	body := `{"member_id":"m1","amount":100,"period_label":"Q1","due_date":"not-a-date"}`
+	body := `{"member_id":"` + testUUID + `","amount_minor":10000,"period_label":"Q1","due_date":"not-a-date"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
@@ -145,12 +157,33 @@ func TestDuesCreate_InvalidDueDate(t *testing.T) {
 
 func TestDuesCreate_NoMemberID(t *testing.T) {
 	h := NewDuesHandler(&mockDuesRepo{})
-	body := `{"amount":100,"period_label":"Q1","due_date":"2024-03-31"}`
+	body := `{"amount_minor":10000,"period_label":"Q1","due_date":"2024-03-31"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
 	if rr.Code != 400 {
 		t.Errorf("status: got %d, want 400", rr.Code)
+	}
+}
+
+func TestDuesCreate_BadMemberUUID(t *testing.T) {
+	// Every member id (single or bulk) must be a UUID.
+	h := NewDuesHandler(&mockDuesRepo{})
+	body := `{"member_ids":["` + testUUID + `","garbage"],"amount_minor":10000,"period_label":"Q1","due_date":"2024-03-31"}`
+	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.Create(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID member id", rr.Code)
+	}
+
+	h = NewDuesHandler(&mockDuesRepo{})
+	body = `{"member_id":"m1","amount_minor":10000,"period_label":"Q1","due_date":"2024-03-31"}`
+	req = httptest.NewRequest("POST", "/dues", strings.NewReader(body))
+	rr = httptest.NewRecorder()
+	h.Create(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for non-UUID single member_id", rr.Code)
 	}
 }
 
@@ -162,7 +195,7 @@ func TestDuesCreate_DefaultCurrency(t *testing.T) {
 			return []model.DuesInvoice{*invs[0]}, nil
 		},
 	})
-	body := `{"member_id":"m1","amount":50,"period_label":"Q1","due_date":"2024-03-31"}`
+	body := `{"member_id":"` + testUUID + `","amount_minor":5000,"period_label":"Q1","due_date":"2024-03-31"}`
 	req := httptest.NewRequest("POST", "/dues", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.Create(rr, req)
@@ -239,6 +272,32 @@ func TestDuesUpdate_MissingStatus(t *testing.T) {
 	}
 }
 
+func TestDuesUpdate_NotFound(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{
+		UpdateInvoiceStatusFn: func(_ context.Context, _, _ string, _ *string) error { return pgx.ErrNoRows },
+	})
+	body := `{"status":"paid"}`
+	req := chiRequest("PATCH", "/dues/i1", body, map[string]string{"id": testUUID2})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 404 {
+		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
+	}
+}
+
+func TestDuesUpdate_RepoError(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{
+		UpdateInvoiceStatusFn: func(_ context.Context, _, _ string, _ *string) error { return errors.New("db error") },
+	})
+	body := `{"status":"paid"}`
+	req := chiRequest("PATCH", "/dues/i1", body, map[string]string{"id": testUUID})
+	rr := httptest.NewRecorder()
+	h.Update(rr, req)
+	if rr.Code != 500 {
+		t.Errorf("status: got %d, want 500", rr.Code)
+	}
+}
+
 // ---- CreateTransaction ----
 
 func TestDuesCreateTransaction_Success(t *testing.T) {
@@ -251,7 +310,7 @@ func TestDuesCreateTransaction_Success(t *testing.T) {
 		},
 		RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
 	})
-	body := `{"amount":100,"provider":"stripe"}`
+	body := `{"amount_minor":10000,"provider":"stripe"}`
 	req := withCtxUser(
 		chiRequest("POST", "/dues/i1/transactions", body, map[string]string{"id": "11111111-1111-1111-1111-111111111111"}),
 		"user-1", "officer",
@@ -284,7 +343,7 @@ func TestDuesCreateTransaction_InvoiceNotFound(t *testing.T) {
 			return nil, errors.New("not found")
 		},
 	})
-	body := `{"amount":50,"provider":"manual"}`
+	body := `{"amount_minor":5000,"provider":"manual"}`
 	req := chiRequest("POST", "/dues/ghost/transactions", body, map[string]string{"id": "00000000-0000-0000-0000-000000000000"})
 	rr := httptest.NewRecorder()
 	h.CreateTransaction(rr, req)
@@ -312,6 +371,18 @@ func TestDuesListTransactions(t *testing.T) {
 	json.NewDecoder(rr.Body).Decode(&got)
 	if len(got.Data) != 1 {
 		t.Errorf("expected 1 transaction, got %d", len(got.Data))
+	}
+}
+
+func TestDuesListTransactions_BadUUIDFilters(t *testing.T) {
+	for _, param := range []string{"invoice_id", "member_id"} {
+		h := NewDuesHandler(&mockDuesRepo{})
+		req := httptest.NewRequest("GET", "/dues/transactions?"+param+"=garbage", nil)
+		rr := httptest.NewRecorder()
+		h.ListTransactions(rr, req)
+		if rr.Code != 400 {
+			t.Errorf("%s=garbage: got %d, want 400", param, rr.Code)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -55,7 +56,17 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 		}
 		meetings = append(meetings, mt)
 	}
-	return meetings, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(meetings) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM meetings m " + where
+		if err := r.db.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return meetings, total, nil
 }
 
 func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, error) {
@@ -111,8 +122,37 @@ func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, sch
 }
 
 func (r *MeetingsRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM meetings WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM meetings WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// AttendeeEmails returns the on-file email addresses of a meeting's attendees,
+// used to notify affected members before the meeting (and its attendee rows) is
+// deleted. Must be called before Delete, which cascade-removes attendees.
+func (r *MeetingsRepo) AttendeeEmails(ctx context.Context, meetingID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT m.email FROM meeting_attendees ma
+		JOIN members m ON m.id = ma.member_id
+		WHERE ma.meeting_id = $1::uuid AND m.email IS NOT NULL AND m.email <> ''`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var emails []string
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			return nil, err
+		}
+		emails = append(emails, e)
+	}
+	return emails, rows.Err()
 }
 
 func (r *MeetingsRepo) GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error) {
@@ -213,8 +253,14 @@ func (r *MeetingsRepo) UpdateDecision(ctx context.Context, id string, summary, d
 }
 
 func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM meeting_decisions WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM meeting_decisions WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {

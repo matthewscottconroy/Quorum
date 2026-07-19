@@ -22,6 +22,10 @@ func NewDuesHandler(r duesRepo) *DuesHandler {
 
 func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if v := q.Get("member_id"); v != "" && !isValidUUID(v) {
+		writeError(w, 400, "member_id must be a UUID", "bad_request")
+		return
+	}
 	f := repo.InvoiceFilter{
 		MemberID:    q.Get("member_id"),
 		Status:      q.Get("status"),
@@ -48,8 +52,9 @@ func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		// Single invoice
-		MemberID    string  `json:"member_id"`
-		Amount      float64 `json:"amount"`
+		MemberID string `json:"member_id"`
+		// AmountMinor is the amount in the currency's minor units (e.g. cents).
+		AmountMinor int64   `json:"amount_minor"`
 		Currency    string  `json:"currency"`
 		PeriodLabel string  `json:"period_label"`
 		DueDate     string  `json:"due_date"`
@@ -61,8 +66,8 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid body", "bad_request")
 		return
 	}
-	if body.PeriodLabel == "" || body.DueDate == "" || body.Amount <= 0 {
-		writeError(w, 400, "amount, period_label, and due_date are required", "bad_request")
+	if body.PeriodLabel == "" || body.DueDate == "" || body.AmountMinor <= 0 {
+		writeError(w, 400, "amount_minor (>0), period_label, and due_date are required", "bad_request")
 		return
 	}
 	currency := body.Currency
@@ -88,12 +93,18 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "member_ids must not exceed 100 entries", "bad_request")
 		return
 	}
+	for _, mid := range memberIDs {
+		if !isValidUUID(mid) {
+			writeError(w, 400, "member ids must be UUIDs", "bad_request")
+			return
+		}
+	}
 
 	invs := make([]*model.DuesInvoice, len(memberIDs))
 	for i, mid := range memberIDs {
 		invs[i] = &model.DuesInvoice{
 			MemberID:    mid,
-			Amount:      body.Amount,
+			AmountMinor: body.AmountMinor,
 			Currency:    currency,
 			PeriodLabel: body.PeriodLabel,
 			DueDate:     dueDate,
@@ -146,7 +157,7 @@ func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.UpdateInvoiceStatus(r.Context(), id, *body.Status, body.Notes); err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		writeRepoError(w, err, "invoice not found", "update error")
 		return
 	}
 	inv, err := h.repo.GetInvoice(r.Context(), id)
@@ -165,7 +176,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 	userID := userIDFromCtx(r)
 
 	var body struct {
-		Amount            float64 `json:"amount"`
+		AmountMinor       int64   `json:"amount_minor"`
 		Currency          string  `json:"currency"`
 		Provider          string  `json:"provider"`
 		ProviderReference *string `json:"provider_reference_id"`
@@ -176,8 +187,8 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "invalid body", "bad_request")
 		return
 	}
-	if body.Amount <= 0 || body.Provider == "" {
-		writeError(w, 400, "amount and provider required", "bad_request")
+	if body.AmountMinor <= 0 || body.Provider == "" {
+		writeError(w, 400, "amount_minor (>0) and provider required", "bad_request")
 		return
 	}
 
@@ -198,7 +209,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 	tx, err := h.repo.CreateTransaction(r.Context(), &model.Transaction{
 		InvoiceID:           &invoiceID,
 		MemberID:            &inv.MemberID,
-		Amount:              body.Amount,
+		AmountMinor:         body.AmountMinor,
 		Currency:            currency,
 		Provider:            body.Provider,
 		ProviderReferenceID: body.ProviderReference,
@@ -222,6 +233,12 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 
 func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	for _, p := range []string{"invoice_id", "member_id"} {
+		if v := q.Get(p); v != "" && !isValidUUID(v) {
+			writeError(w, 400, p+" must be a UUID", "bad_request")
+			return
+		}
+	}
 	f := repo.TransactionFilter{
 		InvoiceID: q.Get("invoice_id"),
 		MemberID:  q.Get("member_id"),

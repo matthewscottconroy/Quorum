@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -87,7 +88,17 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 		}
 		resources = append(resources, res)
 	}
-	return resources, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	if len(resources) == 0 && f.Offset > 0 {
+		countQuery := "SELECT count(*) FROM resources r " + where
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return resources, total, nil
 }
 
 func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, error) {
@@ -115,19 +126,32 @@ func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy
 	return &created, nil
 }
 
-func (r *ResourcesRepo) Update(ctx context.Context, id string, res *model.Resource) (*model.Resource, error) {
-	row := r.db.QueryRow(ctx, `
-		UPDATE resources SET
-			title       = $1,
-			description = $2,
-			url         = $3,
-			category    = $4,
-			tags        = $5,
-			updated_at  = now()
-		WHERE id = $6::uuid
+var resourceAllowedFields = map[string]bool{
+	"title": true, "description": true, "url": true, "category": true, "tags": true,
+}
+
+// Update sets only the given fields, preserving PATCH semantics.
+func (r *ResourcesRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error) {
+	sets := []string{}
+	args := []any{}
+	idx := 1
+	for k, v := range fields {
+		if !resourceAllowedFields[k] {
+			continue
+		}
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		args = append(args, v)
+		idx++
+	}
+	sets = append(sets, "updated_at = now()")
+	args = append(args, id)
+
+	query := fmt.Sprintf(`
+		UPDATE resources SET %s WHERE id = $%d::uuid
 		RETURNING id::text, title, description, url, category, tags, added_by::text, created_at, updated_at`,
-		res.Title, res.Description, res.URL, res.Category, res.Tags, id)
-	updated, err := scanResource(row)
+		strings.Join(sets, ", "), idx)
+
+	updated, err := scanResource(r.db.QueryRow(ctx, query, args...))
 	if err != nil {
 		return nil, err
 	}
@@ -135,8 +159,14 @@ func (r *ResourcesRepo) Update(ctx context.Context, id string, res *model.Resour
 }
 
 func (r *ResourcesRepo) Delete(ctx context.Context, id string) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM resources WHERE id = $1::uuid`, id)
-	return err
+	tag, err := r.db.Exec(ctx, `DELETE FROM resources WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 func scanResource(row scannable) (model.Resource, error) {

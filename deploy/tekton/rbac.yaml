@@ -16,8 +16,15 @@ rules:
     resources: [pipelineruns, taskruns]
     verbs: [create, get, list, watch]
   - apiGroups: [""]
-    resources: [configmaps, secrets]
+    resources: [configmaps]
     verbs: [get, list, watch]
+  # Scope secret access to exactly what the EventListener needs: the GitHub
+  # interceptor reads the webhook HMAC secret by name with `get`.
+  # (list/watch dropped — resourceNames does not restrict them effectively.)
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [github-webhook-secret]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

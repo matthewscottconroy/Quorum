@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -23,6 +24,14 @@ import (
 )
 
 func main() {
+	// -healthcheck lets the scratch container (which ships no shell or curl)
+	// health-check itself: `quorum -healthcheck` GETs /healthz and exits 0/1.
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /healthz endpoint and exit")
+	flag.Parse()
+	if *healthcheck {
+		os.Exit(runHealthcheck())
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -51,14 +60,15 @@ func main() {
 	resourcesRepo := repo.NewResourcesRepo(pool)
 	actionItemsRepo := repo.NewActionItemsRepo(pool)
 	auditRepo := repo.NewAuditRepo(pool)
+	maintenanceRepo := repo.NewMaintenanceRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
-	duesSvc := service.NewDuesService(duesRepo, emailSvc)
-	duesSvc.StartScheduler(ctx)
+	duesSvc := service.NewDuesService(duesRepo, emailSvc, maintenanceRepo)
+	schedDone := duesSvc.StartScheduler(ctx)
 
 	// Middleware
-	mw := handler.NewMiddleware(cfg.JWTSecret)
+	mw := handler.NewMiddleware(cfg.JWTSecret, cfg.TrustProxyHeaders)
 
 	// Handlers
 	authH := handler.NewAuthHandler(authRepo, cfg)
@@ -70,19 +80,37 @@ func main() {
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
-	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID)
+	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
+	if cfg.AllowUnsignedWebhooks {
+		log.Println("WARNING: QUORUM_ALLOW_UNSIGNED_WEBHOOKS is set — webhook signature verification is DISABLED for providers without a configured secret. Never use this in production.")
+	}
+
+	// Notify the governance body when a record is permanently deleted.
+	notifier := service.NewNotifier(emailSvc, authRepo)
+	authH.SetNotifier(notifier)
+	meetingsH.SetNotifier(notifier)
+	plansH.SetNotifier(notifier)
+	contactsH.SetNotifier(notifier)
+	resourcesH.SetNotifier(notifier)
+	actionItemsH.SetNotifier(notifier)
 
 	r := chi.NewRouter()
-	r.Use(chimiddleware.RealIP)
+	// Note: chi's RealIP middleware is deliberately NOT used — it trusts
+	// X-Forwarded-For from any client, which would let attackers rotate the
+	// header to bypass the login rate limiter. Rate limiting keys on the raw
+	// socket address instead.
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(handler.SecurityHeaders)
 	r.Use(handler.MaxRequestBody)
 
+	r.Get("/healthz", handler.Healthz)
+	r.Get("/readyz", handler.Readyz(pool))
+
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/auth/bootstrap", authH.Bootstrap)
+		r.With(mw.LoginRateLimit).Post("/auth/bootstrap", authH.Bootstrap)
 		r.With(mw.LoginRateLimit).Post("/auth/login", authH.Login)
-		r.With(mw.LoginRateLimit).Post("/auth/refresh", authH.Refresh)
+		r.With(mw.RefreshRateLimit).Post("/auth/refresh", authH.Refresh)
 
 		// Webhooks are unauthenticated but signature-verified.
 		r.Post("/webhooks/stripe", webhooksH.Stripe)
@@ -96,20 +124,25 @@ func main() {
 			r.Get("/auth/me", authH.Me)
 			r.Patch("/auth/me/password", authH.ChangePassword)
 
+			// User management is admin+; minting/altering a superadmin is gated
+			// inside the handler. Deleting an account is a superadmin action.
 			r.With(mw.RequireRole("admin")).Get("/users", authH.ListUsers)
 			r.With(mw.RequireRole("admin")).Post("/users", authH.CreateUser)
 			r.With(mw.RequireRole("admin")).Patch("/users/{id}", authH.UpdateUserRole)
-			r.With(mw.RequireRole("admin")).Delete("/users/{id}", authH.DeleteUser)
+			r.With(mw.RequireRole("superadmin")).Delete("/users/{id}", authH.DeleteUser)
 
-			r.Get("/dashboard", dashH.Summary)
+			// Org-wide reads require at least `member`; `restricted` users are
+			// blocked here and reach only their own record via the member-scoped
+			// endpoints below (which enforce ownership in-handler).
+			r.With(mw.RequireRole("member")).Get("/dashboard", dashH.Summary)
 
-			r.Get("/members", membersH.List)
+			r.With(mw.RequireRole("member")).Get("/members", membersH.List)
 			r.With(mw.RequireRole("officer")).Post("/members", membersH.Create)
-			r.Get("/members/{id}", membersH.Get)
+			r.Get("/members/{id}", membersH.Get) // ownership-scoped
 			r.With(mw.RequireRole("officer")).Patch("/members/{id}", membersH.Update)
-			r.With(mw.RequireRole("admin")).Delete("/members/{id}", membersH.Delete)
-			r.Get("/members/{id}/dues", membersH.GetDues)
-			r.Get("/members/{id}/action-items", membersH.GetActionItems)
+			r.With(mw.RequireRole("admin")).Delete("/members/{id}", membersH.Delete) // soft-delete
+			r.Get("/members/{id}/dues", membersH.GetDues)                            // ownership-scoped
+			r.Get("/members/{id}/action-items", membersH.GetActionItems)             // ownership-scoped
 
 			r.With(mw.RequireRole("officer")).Get("/dues", duesH.List)
 			r.With(mw.RequireRole("officer")).Post("/dues", duesH.Create)
@@ -118,41 +151,41 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/transactions", duesH.CreateTransaction)
 			r.With(mw.RequireRole("officer")).Get("/dues/transactions", duesH.ListTransactions)
 
-			r.Get("/meetings", meetingsH.List)
+			r.With(mw.RequireRole("member")).Get("/meetings", meetingsH.List)
 			r.With(mw.RequireRole("officer")).Post("/meetings", meetingsH.Create)
-			r.Get("/meetings/{id}", meetingsH.Get)
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}", meetingsH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}", meetingsH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}", meetingsH.Delete)
+			r.With(mw.RequireRole("superadmin")).Delete("/meetings/{id}", meetingsH.Delete)
 			r.With(mw.RequireRole("officer")).Put("/meetings/{id}/attendees", meetingsH.SetAttendees)
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/decisions", meetingsH.CreateDecision)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}/decisions/{did}", meetingsH.UpdateDecision)
 			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}/decisions/{did}", meetingsH.DeleteDecision)
 
-			r.Get("/action-items", actionItemsH.List)
-			r.Post("/action-items", actionItemsH.Create)
-			r.Patch("/action-items/{id}", actionItemsH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/action-items/{id}", actionItemsH.Delete)
+			r.With(mw.RequireRole("member")).Get("/action-items", actionItemsH.List)
+			r.With(mw.RequireRole("officer")).Post("/action-items", actionItemsH.Create)
+			r.With(mw.RequireRole("officer")).Patch("/action-items/{id}", actionItemsH.Update)
+			r.With(mw.RequireRole("superadmin")).Delete("/action-items/{id}", actionItemsH.Delete)
 
-			r.Get("/plans", plansH.List)
+			r.With(mw.RequireRole("member")).Get("/plans", plansH.List)
 			r.With(mw.RequireRole("officer")).Post("/plans", plansH.Create)
-			r.Get("/plans/{id}", plansH.Get)
+			r.With(mw.RequireRole("member")).Get("/plans/{id}", plansH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/plans/{id}", plansH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/plans/{id}", plansH.Delete)
+			r.With(mw.RequireRole("superadmin")).Delete("/plans/{id}", plansH.Delete)
 			r.With(mw.RequireRole("officer")).Post("/plans/{id}/decisions", plansH.CreateDecision)
 			r.With(mw.RequireRole("officer")).Patch("/plans/{id}/decisions/{did}", plansH.UpdateDecision)
 			r.With(mw.RequireRole("officer")).Delete("/plans/{id}/decisions/{did}", plansH.DeleteDecision)
 
-			r.Get("/contacts", contactsH.List)
+			r.With(mw.RequireRole("member")).Get("/contacts", contactsH.List)
 			r.With(mw.RequireRole("officer")).Post("/contacts", contactsH.Create)
-			r.Get("/contacts/{id}", contactsH.Get)
+			r.With(mw.RequireRole("member")).Get("/contacts/{id}", contactsH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/contacts/{id}", contactsH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/contacts/{id}", contactsH.Delete)
+			r.With(mw.RequireRole("superadmin")).Delete("/contacts/{id}", contactsH.Delete)
 
-			r.Get("/resources", resourcesH.List)
+			r.With(mw.RequireRole("member")).Get("/resources", resourcesH.List)
 			r.With(mw.RequireRole("officer")).Post("/resources", resourcesH.Create)
-			r.Get("/resources/{id}", resourcesH.Get)
+			r.With(mw.RequireRole("member")).Get("/resources/{id}", resourcesH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/resources/{id}", resourcesH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/resources/{id}", resourcesH.Delete)
+			r.With(mw.RequireRole("superadmin")).Delete("/resources/{id}", resourcesH.Delete)
 		})
 	})
 
@@ -191,5 +224,36 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown: %v", err)
 	}
+
+	// Stop the scheduler before the deferred pool.Close() so an in-flight
+	// nightly job never runs against a closed pool.
+	cancel()
+	select {
+	case <-schedDone:
+	case <-time.After(5 * time.Second):
+		log.Println("scheduler did not stop in time")
+	}
 	log.Println("done")
+}
+
+// runHealthcheck probes the local liveness endpoint and returns a process exit
+// code (0 healthy, 1 otherwise). Used by the container HEALTHCHECK since the
+// scratch image has no shell or HTTP client of its own.
+func runHealthcheck() int {
+	port := os.Getenv("QUORUM_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/healthz", port))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }

@@ -90,6 +90,74 @@ func TestLoad_JWTSecretTooShort(t *testing.T) {
 	}
 }
 
+func TestLoad_JWTSecretPlaceholderRejected(t *testing.T) {
+	// Well-known placeholder secrets must be refused even when long enough,
+	// case-insensitively.
+	secrets := []string{
+		"CHANGEME-CHANGEME-CHANGEME-CHANGEME-CHANGEME",
+		"changeme-changeme-changeme-changeme-changeme",
+		"prefix-ChangeMe-suffix-padded-to-32-chars!!",
+	}
+	for _, s := range secrets {
+		setEnv(t, "QUORUM_DATABASE_URL", "postgres://x", "QUORUM_JWT_SECRET", s)
+		_, err := config.Load()
+		if err == nil {
+			t.Errorf("secret %q: expected error for placeholder secret", s)
+		}
+	}
+}
+
+func TestLoad_AllowUnsignedWebhooks(t *testing.T) {
+	baseEnv(t)
+	setEnv(t, "QUORUM_ALLOW_UNSIGNED_WEBHOOKS", "true")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AllowUnsignedWebhooks {
+		t.Error("AllowUnsignedWebhooks: got false, want true for 'true'")
+	}
+}
+
+func TestLoad_AllowUnsignedWebhooksDefaultsFalse(t *testing.T) {
+	baseEnv(t)
+	// Anything other than the exact string "true" (including unset) is false.
+	for _, v := range []string{"", "1", "TRUE", "yes"} {
+		setEnv(t, "QUORUM_ALLOW_UNSIGNED_WEBHOOKS", v)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load with %q: %v", v, err)
+		}
+		if cfg.AllowUnsignedWebhooks {
+			t.Errorf("AllowUnsignedWebhooks: got true for %q, want false", v)
+		}
+	}
+}
+
+func TestLoad_TrustProxyHeaders(t *testing.T) {
+	baseEnv(t)
+	setEnv(t, "QUORUM_TRUST_PROXY_HEADERS", "true")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.TrustProxyHeaders {
+		t.Error("TrustProxyHeaders: got false, want true for 'true'")
+	}
+
+	// Anything other than the exact string "true" (including unset) is false.
+	for _, v := range []string{"", "1", "TRUE", "yes"} {
+		setEnv(t, "QUORUM_TRUST_PROXY_HEADERS", v)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load with %q: %v", v, err)
+		}
+		if cfg.TrustProxyHeaders {
+			t.Errorf("TrustProxyHeaders: got true for %q, want false", v)
+		}
+	}
+}
+
 func TestLoad_CustomPort(t *testing.T) {
 	baseEnv(t)
 	setEnv(t, "QUORUM_PORT", "9090")
