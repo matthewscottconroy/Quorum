@@ -563,3 +563,20 @@ Both files contain `# replace` comments for repository URLs that must be updated
 
 - [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets) — encrypt client-side, store SealedSecret in git.
 - [External Secrets Operator](https://external-secrets.io) — sync from Vault, AWS Secrets Manager, etc.
+
+---
+
+## License
+
+Quorum is licensed under the **GNU Affero General Public License v3.0 or later**
+(AGPL-3.0-or-later). See [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE)
+for the copyright notice.
+
+In short: you may run, study, modify, and share Quorum freely. Self-hosting it
+for your own organization carries **no obligations**. If you run a *modified*
+version as a network service for others, the AGPL requires you to offer those
+users the corresponding source of your modified version.
+
+Contributions are accepted under the same license via the Developer Certificate
+of Origin (DCO) — sign off your commits with `git commit -s` to certify you
+wrote the change and may submit it under AGPL-3.0-or-later.
