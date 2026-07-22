@@ -34,7 +34,8 @@ func (f *fakeNotifier) NotifyDeletion(_ context.Context, actorUserID, entityType
 type mockAuthRepo struct {
 	GetUserByEmailFn                func(ctx context.Context, email string) (*model.User, string, error)
 	GetUserByIDFn                   func(ctx context.Context, id string) (*model.User, error)
-	CreateUserFn                    func(ctx context.Context, email, hash, role string) (*model.User, error)
+	CreateUserFn                    func(ctx context.Context, email, hash, role string, memberID *string) (*model.User, error)
+	SetUserMemberFn                 func(ctx context.Context, id string, memberID *string) error
 	CreateFirstUserFn               func(ctx context.Context, email, hash, role string) (*model.User, error)
 	UpdateLastLoginFn               func(ctx context.Context, id string) error
 	StoreRefreshTokenFn             func(ctx context.Context, userID, hash string, expiresAt time.Time) error
@@ -55,8 +56,14 @@ func (m *mockAuthRepo) GetUserByEmail(ctx context.Context, email string) (*model
 func (m *mockAuthRepo) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	return m.GetUserByIDFn(ctx, id)
 }
-func (m *mockAuthRepo) CreateUser(ctx context.Context, email, hash, role string) (*model.User, error) {
-	return m.CreateUserFn(ctx, email, hash, role)
+func (m *mockAuthRepo) CreateUser(ctx context.Context, email, hash, role string, memberID *string) (*model.User, error) {
+	return m.CreateUserFn(ctx, email, hash, role, memberID)
+}
+func (m *mockAuthRepo) SetUserMember(ctx context.Context, id string, memberID *string) error {
+	if m.SetUserMemberFn != nil {
+		return m.SetUserMemberFn(ctx, id, memberID)
+	}
+	return nil
 }
 func (m *mockAuthRepo) CreateFirstUser(ctx context.Context, email, hash, role string) (*model.User, error) {
 	return m.CreateFirstUserFn(ctx, email, hash, role)

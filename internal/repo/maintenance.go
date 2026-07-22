@@ -13,6 +13,7 @@ type MaintenanceRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewMaintenanceRepo constructs a MaintenanceRepo backed by the given pool.
 func NewMaintenanceRepo(db *pgxpool.Pool) *MaintenanceRepo {
 	return &MaintenanceRepo{db: db}
 }

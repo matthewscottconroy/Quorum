@@ -52,18 +52,21 @@ All runtime configuration is passed through environment variables. No configurat
 | `QUORUM_BASE_URL` | no | `http://localhost:8080` | Public URL used in email links |
 | `QUORUM_JWT_ACCESS_TTL` | no | `15m` | Access token lifetime (Go duration string, e.g. `15m`, `1h`) |
 | `QUORUM_JWT_REFRESH_TTL` | no | `168h` | Refresh token lifetime (default 7 days) |
+| `QUORUM_TRUST_PROXY_HEADERS` | no | `false` | When `true`, the login/refresh rate limiter keys on the proxy-supplied client IP (`X-Real-IP`, then leftmost `X-Forwarded-For`) instead of the raw socket address. Enable **only** behind a trusted proxy/ingress that strips client-supplied forwarding headers; otherwise clients can spoof their rate-limit key |
 | `QUORUM_SMTP_HOST` | no | — | SMTP hostname. Leave empty to disable email reminders entirely |
 | `QUORUM_SMTP_PORT` | no | `587` | SMTP port. Only read when `QUORUM_SMTP_HOST` is set |
 | `QUORUM_SMTP_USER` | no | — | SMTP authentication username |
 | `QUORUM_SMTP_PASS` | no | — | SMTP authentication password (secret) |
+| `QUORUM_SMTP_REQUIRE_TLS` | no | `false` | When `true`, require an encrypted SMTP session (STARTTLS) — sending fails instead of falling back to a plaintext connection if the relay does not offer TLS |
 | `QUORUM_EMAIL_FROM` | no | `quorum@localhost` | From address for outbound email |
-| `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). Omit to skip signature verification (dev only) |
-| `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID for signature verification |
-| `DB_PASSWORD` | Compose only | — | Postgres container password (used only in `compose.yaml`) |
+| `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When unset the Stripe webhook endpoint **fails closed** and returns `503`; it processes events unverified only when `QUORUM_ALLOW_UNSIGNED_WEBHOOKS=true` |
+| `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID for signature verification. When unset the PayPal webhook endpoint fails closed with `503` (same `QUORUM_ALLOW_UNSIGNED_WEBHOOKS` override) |
+| `QUORUM_ALLOW_UNSIGNED_WEBHOOKS` | no | `false` | Process webhook events without signature verification when the provider's secret is unset. **Local development only** (e.g. Stripe CLI); never set `true` in production |
+| `DB_PASSWORD` | Compose only | — | Postgres container password (used only in `docker-compose.yml`) |
 
 Variables split by sensitivity:
 
-- **ConfigMap** (non-secret, commit-safe): `QUORUM_PORT`, `QUORUM_BASE_URL`, `QUORUM_JWT_ACCESS_TTL`, `QUORUM_JWT_REFRESH_TTL`, `QUORUM_SMTP_HOST`, `QUORUM_SMTP_PORT`, `QUORUM_SMTP_USER`, `QUORUM_EMAIL_FROM`
+- **ConfigMap** (non-secret, commit-safe): `QUORUM_PORT`, `QUORUM_BASE_URL`, `QUORUM_JWT_ACCESS_TTL`, `QUORUM_JWT_REFRESH_TTL`, `QUORUM_TRUST_PROXY_HEADERS`, `QUORUM_SMTP_HOST`, `QUORUM_SMTP_PORT`, `QUORUM_SMTP_USER`, `QUORUM_SMTP_REQUIRE_TLS`, `QUORUM_EMAIL_FROM`, `QUORUM_ALLOW_UNSIGNED_WEBHOOKS`
 - **Secret** (never commit): `QUORUM_DATABASE_URL`, `QUORUM_JWT_SECRET`, `QUORUM_SMTP_PASS`, `QUORUM_STRIPE_WEBHOOK_SECRET`, `QUORUM_PAYPAL_WEBHOOK_ID`
 
 ---
@@ -170,7 +173,7 @@ make docker-up     # docker compose up --build -d
 make docker-down   # docker compose down
 ```
 
-All `docker compose` and `podman compose` commands are interchangeable — the `compose.yaml` file is identical.
+All `docker compose` and `podman compose` commands are interchangeable — the `docker-compose.yml` file is identical.
 
 ### 2.6 Bootstrap the first admin user
 
@@ -190,7 +193,7 @@ To bootstrap manually (useful in scripts):
 ```sh
 curl -s -X POST http://localhost:8080/api/v1/auth/bootstrap \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.com","password":"changeme"}' \
+  -d '{"email":"admin@example.com","password":"correct-horse-battery"}' \
   | python3 -m json.tool
 ```
 
@@ -1080,13 +1083,17 @@ The database connection is healthy but migrations may have failed. Check:
 kubectl logs -n quorum deployment/quorum | grep -i migration
 ```
 
-If migrations are stuck (advisory lock held), the previous pod likely crashed mid-migration. The lock is session-scoped and released when the connection closes. Force-release:
+If migrations are stuck (advisory lock held), a previous pod likely crashed mid-migration. The migration runner takes the **session-scoped** advisory lock `pg_advisory_lock(8675309)` (see `internal/db/db.go`), which PostgreSQL releases automatically when that backend's connection closes — so a truly dead session frees the lock on its own. If a zombie backend is still holding it, identify and terminate it via `pg_locks` joined to `pg_stat_activity` (there is no `application_name = 'quorum-migrate'` — the app does not set one):
 
 ```sql
--- Connect to the database directly
-SELECT pg_terminate_backend(pid)
-FROM pg_stat_activity
-WHERE application_name = 'quorum-migrate';
+-- Find the backend(s) holding the migration advisory lock (key 8675309)
+SELECT a.pid, a.state, a.query, a.state_change
+FROM pg_locks l
+JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.locktype = 'advisory' AND l.objid = 8675309;
+
+-- Terminate the identified backend to release the lock
+SELECT pg_terminate_backend(<pid>);
 ```
 
 Restart the pod after releasing the lock: `kubectl rollout restart deployment/quorum -n quorum`.

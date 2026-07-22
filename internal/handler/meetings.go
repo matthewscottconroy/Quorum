@@ -23,6 +23,7 @@ func NewMeetingsHandler(r meetingsRepo) *MeetingsHandler {
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *MeetingsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// List handles GET requests for a paginated, filterable list of meetings.
 func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.MeetingFilter{
@@ -46,6 +47,7 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.Meeting]{Data: meetings, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a meeting.
 func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string  `json:"title"`
@@ -77,12 +79,13 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Status:      "scheduled",
 	}, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, mt)
 }
 
+// Get handles fetching a single meeting by id.
 func (h *MeetingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -96,6 +99,7 @@ func (h *MeetingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, mt)
 }
 
+// Update handles updating a meeting.
 func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -140,6 +144,7 @@ func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, mt)
 }
 
+// Delete handles deleting a meeting.
 func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -166,6 +171,7 @@ func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// SetAttendees replaces a meeting's attendance roster.
 func (h *MeetingsHandler) SetAttendees(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -193,6 +199,7 @@ func (h *MeetingsHandler) SetAttendees(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, attendees)
 }
 
+// CreateDecision records a decision.
 func (h *MeetingsHandler) CreateDecision(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -228,12 +235,13 @@ func (h *MeetingsHandler) CreateDecision(w http.ResponseWriter, r *http.Request)
 		Outcome:     outcome,
 	})
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, d)
 }
 
+// UpdateDecision edits an existing decision.
 func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
 	did, ok := requireUUID(w, r, "did")
 	if !ok {
@@ -261,6 +269,7 @@ func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, d)
 }
 
+// DeleteDecision removes a decision.
 func (h *MeetingsHandler) DeleteDecision(w http.ResponseWriter, r *http.Request) {
 	did, ok := requireUUID(w, r, "did")
 	if !ok {

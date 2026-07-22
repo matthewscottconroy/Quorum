@@ -1,3 +1,5 @@
+// Package service holds background jobs (nightly dues aging, reminders, and
+// pruning) and the email/notification senders.
 package service
 
 import (
@@ -21,11 +23,22 @@ type userLister interface {
 	ListUsers(ctx context.Context) ([]model.User, error)
 }
 
+// emailSender is the subset of *EmailService that background jobs depend on,
+// extracted so the reminder/digest logic can be unit-tested with a fake.
+type emailSender interface {
+	Send(to []string, subject, body string) error
+	SendToAdmins(ctx context.Context, subject, body string) error
+	configured() bool
+	baseURL() string
+}
+
+// EmailService sends plain-text email over SMTP (STARTTLS when the relay offers it).
 type EmailService struct {
 	cfg      *config.Config
 	authRepo userLister
 }
 
+// NewEmailService constructs an EmailService from config and a user lister.
 func NewEmailService(cfg *config.Config, authRepo userLister) *EmailService {
 	return &EmailService{cfg: cfg, authRepo: authRepo}
 }
@@ -42,6 +55,8 @@ func containsCRLF(s string) bool {
 	return strings.ContainsAny(s, "\r\n")
 }
 
+// Send emails a plain-text message. It no-ops when SMTP is unconfigured and rejects
+// CR/LF in the subject or recipients (header-injection guard).
 func (s *EmailService) Send(to []string, subject, body string) error {
 	if !s.configured() {
 		return nil
@@ -74,13 +89,14 @@ func (s *EmailService) Send(to []string, subject, body string) error {
 		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
 	}
 
-	return sendMailWithTimeout(addr, s.cfg.SMTPHost, auth, s.cfg.EmailFrom, to, msg)
+	return sendMailWithTimeout(addr, s.cfg.SMTPHost, auth, s.cfg.EmailFrom, to, msg, s.cfg.SMTPRequireTLS)
 }
 
 // sendMailWithTimeout mirrors smtp.SendMail (STARTTLS when offered, then
 // optional auth) but bounds the whole exchange with connect and I/O deadlines,
-// which net/smtp itself does not support.
-func sendMailWithTimeout(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
+// which net/smtp itself does not support. When requireTLS is set and the relay
+// does not advertise STARTTLS, it aborts rather than sending in cleartext.
+func sendMailWithTimeout(addr, host string, auth smtp.Auth, from string, to []string, msg []byte, requireTLS bool) error {
 	conn, err := net.DialTimeout("tcp", addr, smtpTimeout)
 	if err != nil {
 		return err
@@ -100,6 +116,8 @@ func sendMailWithTimeout(addr, host string, auth smtp.Auth, from string, to []st
 		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
 			return err
 		}
+	} else if requireTLS {
+		return fmt.Errorf("smtp: server %q does not offer STARTTLS but QUORUM_SMTP_REQUIRE_TLS is set", host)
 	}
 	if auth != nil {
 		if ok, _ := c.Extension("AUTH"); ok {
@@ -130,6 +148,7 @@ func sendMailWithTimeout(addr, host string, auth smtp.Auth, from string, to []st
 	return c.Quit()
 }
 
+// SendToAdmins emails every admin and superadmin who has an address on file.
 func (s *EmailService) SendToAdmins(ctx context.Context, subject, body string) error {
 	users, err := s.authRepo.ListUsers(ctx)
 	if err != nil {

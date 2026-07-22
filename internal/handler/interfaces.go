@@ -12,7 +12,8 @@ import (
 type authRepo interface {
 	GetUserByEmail(ctx context.Context, email string) (*model.User, string, error)
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
-	CreateUser(ctx context.Context, email, hash, role string) (*model.User, error)
+	CreateUser(ctx context.Context, email, hash, role string, memberID *string) (*model.User, error)
+	SetUserMember(ctx context.Context, id string, memberID *string) error
 	CreateFirstUser(ctx context.Context, email, hash, role string) (*model.User, error)
 	UpdateLastLogin(ctx context.Context, id string) error
 	StoreRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error

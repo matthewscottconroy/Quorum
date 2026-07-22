@@ -22,6 +22,7 @@ func NewResourcesHandler(r resourcesRepo) *ResourcesHandler {
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *ResourcesHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// List handles GET requests for a paginated, filterable list of resources.
 func (h *ResourcesHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.ResourceFilter{
@@ -44,6 +45,7 @@ func (h *ResourcesHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.Resource]{Data: resources, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a resource.
 func (h *ResourcesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var res model.Resource
 	if err := decodeJSON(r, &res); err != nil {
@@ -59,12 +61,13 @@ func (h *ResourcesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := h.repo.Create(r.Context(), &res, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, created)
 }
 
+// Get handles fetching a single resource by id.
 func (h *ResourcesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -126,6 +129,7 @@ func (h *ResourcesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, updated)
 }
 
+// Delete handles deleting a resource.
 func (h *ResourcesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {

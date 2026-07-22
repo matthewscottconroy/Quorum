@@ -21,6 +21,7 @@ func NewMembersHandler(r membersRepo, ai actionItemsRepo, d duesRepo) *MembersHa
 	return &MembersHandler{repo: r, actionItems: ai, dues: d}
 }
 
+// List handles GET requests for a paginated, filterable list of members.
 func (h *MembersHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.MemberFilter{
@@ -46,6 +47,7 @@ func (h *MembersHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.Member]{Data: members, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a member.
 func (h *MembersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		DisplayName string         `json:"display_name"`
@@ -102,12 +104,13 @@ func (h *MembersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := h.repo.Create(r.Context(), m)
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, created)
 }
 
+// Get handles fetching a single member by id.
 func (h *MembersHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -124,6 +127,7 @@ func (h *MembersHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, member)
 }
 
+// Update handles updating a member.
 func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -174,6 +178,7 @@ func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, updated)
 }
 
+// Delete handles deleting a member.
 func (h *MembersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -186,6 +191,7 @@ func (h *MembersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// GetDues returns a member's invoices (ownership-scoped for restricted users).
 func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -213,6 +219,7 @@ func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.DuesInvoice]{Data: invoices, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// GetActionItems returns a member's assigned action items (ownership-scoped).
 func (h *MembersHandler) GetActionItems(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {

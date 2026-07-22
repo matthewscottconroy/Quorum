@@ -150,13 +150,19 @@ users (authentication identities; may overlap members)
 
 ### 4.2 Table Definitions
 
+> **Authoritative schema:** the SQL migrations `internal/db/migrations/0001`–`0006` are the source of truth; the `CREATE TABLE` blocks below are illustrative and already fold in the notable deltas from later migrations:
+> - **Roles (0004, 0005):** a `users.role` CHECK constraint, widened in 0005 to `('restricted','member','officer','admin','superadmin')`. CHECK constraints also back the enum columns on `members.status`, `dues_invoices.status`, `meetings.status`, `meeting_decisions.outcome`, `action_items.status`/`priority`, and `plans.status`.
+> - **FK delete behaviour (0003):** informational references are `ON DELETE SET NULL` so deleting a meeting/plan/user is not blocked — `action_items.meeting_id`, `action_items.plan_id`, `transactions.recorded_by`, `plan_decisions.decided_by`, and `audit_log.user_id`. Case-insensitive email uniqueness is enforced via a `lower(email)` unique index.
+> - **Reminder escalation (0005):** `dues_invoices` gains `reminder_stage INT NOT NULL DEFAULT 0` and `last_reminder_at TIMESTAMPTZ`.
+> - **Money (0006):** `dues_invoices.amount` and `transactions.amount` are `BIGINT` integer minor units (see §4.3).
+
 ```sql
 -- Authentication identities (separate from member profiles)
 CREATE TABLE users (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email         TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    role          TEXT NOT NULL DEFAULT 'member',  -- 'admin' | 'officer' | 'member'
+    role          TEXT NOT NULL DEFAULT 'member',  -- CHECK: 'restricted'|'member'|'officer'|'admin'|'superadmin' (0005)
     member_id     UUID REFERENCES members(id),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_login_at TIMESTAMPTZ
@@ -195,6 +201,8 @@ CREATE TABLE dues_invoices (
     period_label TEXT NOT NULL,  -- e.g. "2026 Q1", "Annual 2026"
     due_date    DATE NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'paid' | 'partial' | 'overdue' | 'waived'
+    reminder_stage   INT NOT NULL DEFAULT 0,  -- 0=none 1=first 2=7-day 3=final (30-day); added 0005
+    last_reminder_at TIMESTAMPTZ,             -- added 0005
     notes       TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -211,7 +219,7 @@ CREATE TABLE transactions (
     provider_reference_id TEXT,           -- Stripe charge_id, PayPal order_id, etc.
     provider_status       TEXT,           -- raw status from provider
     payment_method_type   TEXT,           -- 'card' | 'ach' | 'check' | 'cash'
-    recorded_by           UUID REFERENCES users(id), -- null if from webhook; set if manual entry
+    recorded_by           UUID REFERENCES users(id) ON DELETE SET NULL, -- null if from webhook; set if manual entry (0003)
     occurred_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     notes                 TEXT,
     raw_payload           JSONB           -- full provider webhook payload for audit
@@ -257,8 +265,8 @@ CREATE TABLE action_items (
     title        TEXT NOT NULL,
     description  TEXT,
     assignee_id  UUID REFERENCES members(id),
-    meeting_id   UUID REFERENCES meetings(id),
-    plan_id      UUID REFERENCES plans(id),
+    meeting_id   UUID REFERENCES meetings(id) ON DELETE SET NULL,  -- 0003
+    plan_id      UUID REFERENCES plans(id) ON DELETE SET NULL,     -- 0003
     due_date     DATE,
     status       TEXT NOT NULL DEFAULT 'open', -- 'open' | 'in_progress' | 'done' | 'cancelled'
     priority     TEXT NOT NULL DEFAULT 'normal', -- 'low' | 'normal' | 'high'
@@ -286,7 +294,7 @@ CREATE TABLE plan_decisions (
     plan_id    UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
     summary    TEXT NOT NULL,
     rationale  TEXT,
-    decided_by UUID REFERENCES users(id),
+    decided_by UUID REFERENCES users(id) ON DELETE SET NULL,  -- 0003
     decided_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -370,7 +378,7 @@ Authentication uses `Authorization: Bearer <jwt>`. Public endpoints: `POST /api/
 | GET | `/api/v1/dues/:id` | Invoice detail with transactions |
 | PATCH | `/api/v1/dues/:id` | Update status (e.g. mark as waived) |
 | POST | `/api/v1/dues/:id/transactions` | Record a manual transaction against an invoice |
-| GET | `/api/v1/transactions` | Global transaction log with filters |
+| GET | `/api/v1/dues/transactions` | Global transaction log with filters |
 
 ### 5.4 Meetings
 
@@ -594,7 +602,7 @@ QUORUM_PORT=8080
 QUORUM_DATABASE_URL=postgres://user:pass@localhost:5432/quorum
 QUORUM_JWT_SECRET=<random 64 bytes hex>
 QUORUM_JWT_ACCESS_TTL=15m
-QUORUM_JWT_REFRESH_TTL=7d
+QUORUM_JWT_REFRESH_TTL=168h   # Go duration; "7d" is NOT accepted by time.ParseDuration
 
 QUORUM_SMTP_HOST=smtp.example.com
 QUORUM_SMTP_PORT=587
@@ -604,11 +612,13 @@ QUORUM_EMAIL_FROM=quorum@example.org
 
 QUORUM_STRIPE_WEBHOOK_SECRET=whsec_...
 QUORUM_PAYPAL_WEBHOOK_ID=...
+QUORUM_ALLOW_UNSIGNED_WEBHOOKS=false   # dev only; process webhooks without signature verification
+QUORUM_TRUST_PROXY_HEADERS=false       # key rate limiting on X-Real-IP/X-Forwarded-For (trusted proxy only)
 
 QUORUM_BASE_URL=https://quorum.example.org
 ```
 
-A `config.toml` file is also supported as a fallback; environment variables take precedence.
+Configuration is environment-variables only — there is no config file. The authoritative list of variables lives in `internal/config/config.go`.
 
 ---
 
@@ -628,14 +638,14 @@ Email templates are plain-text by default; HTML email template support is option
 ## 11. Security Considerations
 
 - **Passwords**: bcrypt with cost factor 12.
-- **JWT**: Short-lived access tokens (15 min); refresh tokens stored as HMAC-SHA256 hashes.
+- **JWT**: Short-lived access tokens (15 min); refresh tokens stored as plain SHA-256 digests (not HMAC).
 - **Webhook signatures**: Stripe uses `stripe-signature` header (HMAC-SHA256); PayPal uses certificate-based verification. Requests with invalid signatures are rejected with 400 and logged.
 - **SQL injection**: All queries use `pgx` prepared statements and `$1` placeholders; no string interpolation in SQL.
 - **CORS**: Strict allowlist; same-origin by default since the Go server serves the frontend.
 - **CSP**: `Content-Security-Policy` header disallows `eval` and inline scripts; all JS loaded as modules from `/` origin.
-- **HTTPS**: TLS termination at a reverse proxy (nginx, Caddy, or cloud load balancer). The Go server binds only to localhost by default when behind a proxy.
+- **HTTPS**: TLS termination at a reverse proxy (nginx, Caddy, or cloud load balancer). The Go server binds `:PORT` on all interfaces; restricting exposure to localhost is done by the container port mapping (e.g. `127.0.0.1:8080:8080`), not by the app.
 - **Audit log**: Sensitive writes (invoices, transactions, user changes) are logged with `user_id`, `action`, `entity_id`, `before/after` to an `audit_log` table.
-- **Rate limiting**: Login endpoint is rate-limited (10 attempts / minute per IP) via a simple in-memory token bucket.
+- **Rate limiting**: Login endpoint is rate-limited (10 attempts / minute per client key) via a simple in-process sliding-window limiter. By default the key is the raw socket address; set `QUORUM_TRUST_PROXY_HEADERS=true` behind a trusted proxy to key on `X-Real-IP`/`X-Forwarded-For` instead.
 
 ---
 

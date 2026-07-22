@@ -64,7 +64,7 @@ class PageContacts extends HTMLElement {
   _rows() {
     if (!this._contacts?.length) return '';
     return this._contacts.map(c => `
-      <tr class="contact-row" data-id="${esc(c.id)}" style="cursor:pointer">
+      <tr>
         <td><strong>${esc(c.name)}</strong></td>
         <td>${esc(c.organization??'—')}</td>
         <td>${esc(c.category??'—')}</td>

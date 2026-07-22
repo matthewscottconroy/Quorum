@@ -1,3 +1,5 @@
+// Command quorum is the Quorum server entry point: it loads config, runs
+// migrations, wires handlers and background jobs, and serves the API + web app.
 package main
 
 import (
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -128,7 +131,7 @@ func main() {
 			// inside the handler. Deleting an account is a superadmin action.
 			r.With(mw.RequireRole("admin")).Get("/users", authH.ListUsers)
 			r.With(mw.RequireRole("admin")).Post("/users", authH.CreateUser)
-			r.With(mw.RequireRole("admin")).Patch("/users/{id}", authH.UpdateUserRole)
+			r.With(mw.RequireRole("admin")).Patch("/users/{id}", authH.UpdateUser)
 			r.With(mw.RequireRole("superadmin")).Delete("/users/{id}", authH.DeleteUser)
 
 			// Org-wide reads require at least `member`; `restricted` users are
@@ -195,7 +198,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("embed sub: %v", err)
 	}
-	r.Handle("/*", http.FileServer(http.FS(webFS)))
+	r.Handle("/*", staticHandler(webFS))
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
@@ -225,8 +228,9 @@ func main() {
 		log.Fatalf("shutdown: %v", err)
 	}
 
-	// Stop the scheduler before the deferred pool.Close() so an in-flight
-	// nightly job never runs against a closed pool.
+	// Drain any in-flight deletion notices, then stop the scheduler, all before
+	// the deferred pool.Close() so nothing runs against a closed pool.
+	notifier.Close()
 	cancel()
 	select {
 	case <-schedDone:
@@ -234,6 +238,35 @@ func main() {
 		log.Println("scheduler did not stop in time")
 	}
 	log.Println("done")
+}
+
+// staticHandler serves the embedded web assets, but returns 404 for directory
+// paths (no auto-generated listings) and sets a short cache lifetime so the
+// same-session revisits skip re-downloading unchanged JS/CSS.
+func staticHandler(webFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(webFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clean := strings.TrimPrefix(r.URL.Path, "/")
+		// Block directory listings: a trailing slash, the root, or a path that
+		// resolves to a directory is not a servable asset.
+		if clean == "" {
+			clean = "index.html"
+		}
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if f, err := webFS.Open(clean); err == nil {
+			info, statErr := f.Stat()
+			f.Close()
+			if statErr == nil && info.IsDir() {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // runHealthcheck probes the local liveness endpoint and returns a process exit

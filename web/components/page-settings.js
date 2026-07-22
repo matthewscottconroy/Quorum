@@ -14,6 +14,18 @@ function roleOptions(selected) {
   return roles.map(r => `<option value="${r}" ${selected===r?'selected':''}>${r}</option>`).join('');
 }
 
+/**
+ * Builds <option> markup for linking a user to a member record. The empty value
+ * means "no linkage"; `selected` is a member id (UUID string) or null/undefined.
+ */
+function memberOptions(members, selected) {
+  const opts = ['<option value="">— none —</option>'];
+  for (const m of (members ?? [])) {
+    opts.push(`<option value="${esc(m.id)}" ${selected===m.id?'selected':''}>${esc(m.display_name)}</option>`);
+  }
+  return opts.join('');
+}
+
 class PageSettings extends HTMLElement {
   async connectedCallback() {
     await this.render();
@@ -22,12 +34,18 @@ class PageSettings extends HTMLElement {
   async render() {
     const me = getUser();
     let users = [];
+    let members = [];
     if (isAdmin()) {
       try {
         const page = await api('GET', '/users');
         users = page?.data ?? page ?? [];
       } catch {}
+      try {
+        const mPage = await api('GET', '/members?limit=200');
+        members = mPage?.data ?? mPage ?? [];
+      } catch {}
     }
+    this._members = members;
 
     this.innerHTML = `
       <div class="page-header"><h1>Settings</h1></div>
@@ -51,21 +69,28 @@ class PageSettings extends HTMLElement {
             <button class="btn-primary" id="add-user-btn" style="font-size:.8rem;padding:.3rem .75rem">+ Add user</button>
           </div>
           <table>
-            <thead><tr><th>Email</th><th>Role</th><th></th></tr></thead>
+            <thead><tr><th>Email</th><th>Role</th><th>Linked member</th><th></th></tr></thead>
             <tbody>
               ${users.map(u => `
                 <tr>
                   <td style="font-size:.9rem">${esc(u.email)}</td>
-                  <td><span class="badge badge-${u.role==='admin'||u.role==='superadmin'?'overdue':u.role==='officer'?'open':'none'}">${esc(u.role)}</span></td>
-                  <td style="text-align:right;white-space:nowrap">
+                  <td>
                     <select class="role-sel" data-id="${esc(u.id)}" style="width:auto;padding:.2rem .4rem;font-size:.8rem">
                       ${roleOptions(u.role)}
                     </select>
+                  </td>
+                  <td>
+                    <select class="member-sel" data-id="${esc(u.id)}" style="width:auto;padding:.2rem .4rem;font-size:.8rem">
+                      ${memberOptions(members, u.member_id)}
+                    </select>
+                  </td>
+                  <td style="text-align:right;white-space:nowrap">
                     ${isSuperadmin() && u.id !== me?.id ? `<button class="btn-ghost del-user-btn" data-id="${esc(u.id)}" data-email="${esc(u.email)}" style="color:var(--color-danger);font-size:.8rem">Del</button>` : ''}
                   </td>
                 </tr>`).join('')}
             </tbody>
           </table>
+          <p style="font-size:.8rem;color:var(--color-text-muted);margin-top:.75rem">Linking a user to a member record is what lets a <strong>restricted</strong> user see their own profile, dues, and action items. Choose “— none —” to unlink.</p>
         </section>` : '<div></div>'}
       </div>
     `;
@@ -89,13 +114,28 @@ class PageSettings extends HTMLElement {
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
 
     this.querySelectorAll('.role-sel').forEach(sel => {
-      const original = sel.value;
+      let original = sel.value;
       sel.addEventListener('change', async () => {
         try {
           await api('PATCH', `/users/${sel.dataset.id}`, { role: sel.value });
+          original = sel.value; // Adopt the new value as the baseline so a later failed change reverts correctly.
           toast('Role updated','success');
         } catch (err) {
           sel.value = original; // Revert the dropdown when the backend rejects the change.
+          toast(err.error ?? 'Update failed','error');
+        }
+      });
+    });
+
+    this.querySelectorAll('.member-sel').forEach(sel => {
+      let original = sel.value;
+      sel.addEventListener('change', async () => {
+        try {
+          await api('PATCH', `/users/${sel.dataset.id}`, { member_id: sel.value || null });
+          original = sel.value; // Adopt the new value as the baseline for future reverts.
+          toast('Linked member updated','success');
+        } catch (err) {
+          sel.value = original; // Revert when the backend rejects the change (e.g. 403).
           toast(err.error ?? 'Update failed','error');
         }
       });
@@ -129,6 +169,10 @@ class PageSettings extends HTMLElement {
           <div class="form-group"><label for="f-role">Role</label>
             <select id="f-role">${roleOptions('member')}</select>
           </div>
+          <div class="form-group"><label for="f-member">Linked member (optional)</label>
+            <select id="f-member">${memberOptions(this._members, '')}</select>
+            <p style="font-size:.75rem;color:var(--color-text-muted);margin-top:.35rem">Linking a member lets a <strong>restricted</strong> user see their own record.</p>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
@@ -140,12 +184,15 @@ class PageSettings extends HTMLElement {
     dialog.querySelector('#cancel-btn').addEventListener('click', close);
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const body = {
+        email:    dialog.querySelector('#f-email').value,
+        password: dialog.querySelector('#f-user-pw').value,
+        role:     dialog.querySelector('#f-role').value,
+      };
+      const memberId = dialog.querySelector('#f-member').value;
+      if (memberId) body.member_id = memberId; // Omit when none is selected.
       try {
-        await api('POST', '/users', {
-          email:    dialog.querySelector('#f-email').value,
-          password: dialog.querySelector('#f-user-pw').value,
-          role:     dialog.querySelector('#f-role').value,
-        });
+        await api('POST', '/users', body);
         toast('User created','success'); close(); this.render();
       } catch (err) { toast(err.error??'Failed','error'); }
     }));

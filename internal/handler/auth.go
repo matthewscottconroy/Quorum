@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -41,6 +42,7 @@ func NewAuthHandler(r authRepo, cfg *config.Config) *AuthHandler {
 // SetNotifier attaches an optional notifier used when a user account is deleted.
 func (h *AuthHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// Login authenticates an email/password and issues an access token plus refresh cookie.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
@@ -53,8 +55,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	user, hash, err := h.repo.GetUserByEmail(r.Context(), normalizeEmail(body.Email))
 	if err != nil {
-		// Burn the same bcrypt work as a real comparison so response timing
-		// does not reveal whether the email exists.
+		if !errors.Is(err, pgx.ErrNoRows) {
+			// A DB outage must not masquerade as a wave of bad credentials.
+			writeError(w, http.StatusInternalServerError, "login unavailable", "internal_error")
+			return
+		}
+		// Unknown email: burn the same bcrypt work as a real comparison so
+		// response timing does not reveal whether the email exists.
 		auth.DummyCheckPassword(body.Password)
 		writeError(w, http.StatusUnauthorized, "invalid credentials", "unauthorized")
 		return
@@ -103,6 +110,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Refresh rotates the refresh cookie and issues a new access token.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	plain := ""
 	if c, err := r.Cookie("quorum_refresh"); err == nil {
@@ -188,6 +196,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Logout revokes the refresh token and clears the cookie.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("quorum_refresh"); err == nil && c.Value != "" {
 		hashed := auth.HashRefreshToken(c.Value)
@@ -212,6 +221,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// Me returns the authenticated user's profile.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	user, err := h.repo.GetUserByID(r.Context(), userIDFromCtx(r))
 	if err != nil {
@@ -268,12 +278,15 @@ func (h *AuthHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, user)
 }
 
-// CreateUser allows admins to add new users.
+// CreateUser allows admins to add new users. An optional member_id links the
+// account to a member record — required for a "restricted" user to see their
+// own data.
 func (h *AuthHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Email    string  `json:"email"`
+		Password string  `json:"password"`
+		Role     string  `json:"role"`
+		MemberID *string `json:"member_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
@@ -296,19 +309,28 @@ func (h *AuthHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only a superadmin may assign the superadmin role", "forbidden")
 		return
 	}
+	if body.MemberID != nil && !isValidUUID(*body.MemberID) {
+		writeError(w, http.StatusBadRequest, "member_id must be a UUID", "bad_request")
+		return
+	}
 	hash, err := auth.HashPassword(body.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "hash error", "internal_error")
 		return
 	}
-	user, err := h.repo.CreateUser(r.Context(), normalizeEmail(body.Email), hash, role)
+	user, err := h.repo.CreateUser(r.Context(), normalizeEmail(body.Email), hash, role, body.MemberID)
 	if err != nil {
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "member_id does not reference an existing member", "bad_request")
+			return
+		}
 		writeError(w, http.StatusConflict, "email already in use", "conflict")
 		return
 	}
 	writeJSON(w, http.StatusCreated, user)
 }
 
+// ListUsers returns all user accounts (admin only).
 func (h *AuthHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := h.repo.ListUsers(r.Context())
 	if err != nil {
@@ -318,45 +340,89 @@ func (h *AuthHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, users)
 }
 
-func (h *AuthHandler) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
+// UpdateUser changes a user's role and/or their linked member record. The body
+// may contain "role" and/or "member_id" (a UUID string, or null to unlink); at
+// least one must be present.
+func (h *AuthHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
 		return
 	}
-	if id == userIDFromCtx(r) {
-		// Prevent self-demotion, which could strip the last superadmin.
-		writeError(w, http.StatusForbidden, "cannot change your own role", "forbidden")
-		return
-	}
-	var body struct {
-		Role string `json:"role"`
-	}
-	if err := decodeJSON(r, &body); err != nil {
+	var raw map[string]json.RawMessage
+	if err := decodeJSON(r, &raw); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
 		return
 	}
-	if !validRoles[body.Role] {
-		writeError(w, http.StatusBadRequest, "invalid role", "bad_request")
+	roleRaw, hasRole := raw["role"]
+	memberRaw, hasMember := raw["member_id"]
+	if !hasRole && !hasMember {
+		writeError(w, http.StatusBadRequest, "role or member_id required", "bad_request")
 		return
 	}
+	// Prevent self-demotion (which could strip the last superadmin) before any
+	// DB work — it's a pure id comparison.
+	if hasRole && id == userIDFromCtx(r) {
+		writeError(w, http.StatusForbidden, "cannot change your own role", "forbidden")
+		return
+	}
+	// Validate all field formats before touching the database.
+	var role string
+	if hasRole {
+		if err := json.Unmarshal(roleRaw, &role); err != nil || !validRoles[role] {
+			writeError(w, http.StatusBadRequest, "invalid role", "bad_request")
+			return
+		}
+	}
+	var memberID *string
+	if hasMember {
+		if err := json.Unmarshal(memberRaw, &memberID); err != nil {
+			writeError(w, http.StatusBadRequest, "member_id must be a string or null", "bad_request")
+			return
+		}
+		if memberID != nil && !isValidUUID(*memberID) {
+			writeError(w, http.StatusBadRequest, "member_id must be a UUID", "bad_request")
+			return
+		}
+	}
+
 	target, err := h.repo.GetUserByID(r.Context(), id)
 	if err != nil {
 		writeRepoError(w, err, "user not found", "query error")
 		return
 	}
-	// Granting or revoking superadmin is a superadmin-only action.
-	if (body.Role == "superadmin" || target.Role == "superadmin") && roleFromCtx(r) != "superadmin" {
-		writeError(w, http.StatusForbidden, "only a superadmin may grant or revoke the superadmin role", "forbidden")
-		return
+
+	if hasRole {
+		// Granting or revoking superadmin is a superadmin-only action.
+		if (role == "superadmin" || target.Role == "superadmin") && roleFromCtx(r) != "superadmin" {
+			writeError(w, http.StatusForbidden, "only a superadmin may grant or revoke the superadmin role", "forbidden")
+			return
+		}
+		if _, err := h.repo.UpdateUserRole(r.Context(), id, role); err != nil {
+			writeRepoError(w, err, "user not found", "update error")
+			return
+		}
 	}
-	user, err := h.repo.UpdateUserRole(r.Context(), id, body.Role)
+
+	if hasMember {
+		if err := h.repo.SetUserMember(r.Context(), id, memberID); err != nil {
+			if isFKViolation(err) {
+				writeError(w, http.StatusBadRequest, "member_id does not reference an existing member", "bad_request")
+				return
+			}
+			writeRepoError(w, err, "user not found", "update error")
+			return
+		}
+	}
+
+	updated, err := h.repo.GetUserByID(r.Context(), id)
 	if err != nil {
-		writeRepoError(w, err, "user not found", "update error")
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	writeJSON(w, http.StatusOK, updated)
 }
 
+// DeleteUser permanently deletes a user account (superadmin; type-to-confirm).
 func (h *AuthHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -397,6 +463,7 @@ func (h *AuthHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ChangePassword changes the caller's own password and revokes their other sessions.
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r)
 	var body struct {

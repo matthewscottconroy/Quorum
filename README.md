@@ -66,6 +66,7 @@ All settings are read from environment variables. Copy `.env.example` to `.env` 
 | `QUORUM_SMTP_PORT` | no | `587` | SMTP port |
 | `QUORUM_SMTP_USER` | no | — | SMTP username |
 | `QUORUM_SMTP_PASS` | no | — | SMTP password |
+| `QUORUM_SMTP_REQUIRE_TLS` | no | `false` | Require an encrypted (STARTTLS) SMTP session; sending fails rather than falling back to plaintext if the relay does not offer TLS. |
 | `QUORUM_EMAIL_FROM` | no | `quorum@localhost` | From address for outbound email |
 | `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When unset, the Stripe webhook endpoint returns 503. |
 | `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID. When unset, the PayPal webhook endpoint returns 503. |
@@ -285,12 +286,15 @@ When `QUORUM_SMTP_HOST` is set, Quorum emails a nightly overdue-dues digest to a
 
 ## Nightly maintenance
 
-A background job runs nightly (2 AM local) and, when SMTP is configured:
+A background job runs nightly (2 AM local). These steps run **unconditionally**, whether or not SMTP is configured:
 
 - **Ages** pending invoices whose due date has passed to `overdue`.
+- **Prunes** bookkeeping tables so they do not grow without bound: expired/revoked refresh tokens are deleted immediately, processed webhook events after 90 days, and audit-log entries after one year.
+
+The remaining steps run **only when SMTP is configured** (`QUORUM_SMTP_HOST` set):
+
 - **Reminds members** whose dues are overdue, escalating through three notices — a first notice, a 7-day follow-up, and a 30-day final notice — tracked per invoice so each member gets each notice once. An invoice's stage only advances after a successful send, so a transient SMTP failure is retried the next night.
 - **Digests** the overdue picture to all admins and superadmins.
-- **Prunes** bookkeeping tables so they do not grow without bound: expired/revoked refresh tokens are deleted immediately, processed webhook events after 90 days, and audit-log entries after one year.
 
 ---
 
@@ -536,7 +540,7 @@ kubectl apply -f deploy/tekton/triggers/event-listener.yaml
 
 Edit `deploy/tekton/triggers/event-listener.yaml` to set `image-repository`, `gitops-repo-url`, and `kustomize-overlay-path` for your environment.
 
-**Rootless builds:** Set `storageDriver: vfs` in the `quorum-buildah-build` task params and remove `privileged: true` from the step's `securityContext` (requires `kernel.unprivileged_userns_clone=1` on the node).
+**Rootless builds:** `quorum-buildah-build` is rootless by **default** — it already runs as UID 1000 with the `vfs` storage driver, `BUILDAH_ISOLATION=chroot`, only the `SETFCAP` capability, and no privileged container (requires `kernel.unprivileged_userns_clone=1`, the default on modern kernels). No configuration is needed. The opt-in is the other direction: override the `storage-driver` param to `overlay` (mount `/dev/fuse` for fuse-overlayfs) to speed up large builds while staying rootless.
 
 #### Argo CD
 

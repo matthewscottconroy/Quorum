@@ -1,12 +1,48 @@
 package auth_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"quorum/internal/auth"
 )
+
+// TestParseToken_RejectsAlgNone ensures an unsigned ("alg":"none") token is
+// rejected — accepting one would let anyone forge admin tokens.
+func TestParseToken_RejectsAlgNone(t *testing.T) {
+	tok := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{"user_id": "x", "role": "superadmin"})
+	s, err := tok.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatalf("sign none: %v", err)
+	}
+	if _, err := auth.ParseToken(s, "test-secret"); err == nil {
+		t.Error("ParseToken must reject an alg:none token")
+	}
+}
+
+// TestParseToken_RejectsRSAToken ensures an RS256-signed token is rejected by
+// the HMAC-pinned parser (algorithm-confusion defense).
+func TestParseToken_RejectsRSAToken(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"user_id": "x", "role": "superadmin", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	s, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatalf("sign rs256: %v", err)
+	}
+	if _, err := auth.ParseToken(s, "test-secret"); err == nil {
+		t.Error("ParseToken must reject an RS256 token")
+	}
+}
 
 // ---- HashPassword / CheckPassword ----
 

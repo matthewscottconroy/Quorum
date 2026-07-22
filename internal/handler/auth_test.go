@@ -138,7 +138,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 func TestLogin_UserNotFound(t *testing.T) {
 	repo := &mockAuthRepo{
 		GetUserByEmailFn: func(_ context.Context, _ string) (*model.User, string, error) {
-			return nil, "", errors.New("no rows")
+			return nil, "", pgx.ErrNoRows
 		},
 	}
 	h := NewAuthHandler(repo, testConfig())
@@ -150,6 +150,23 @@ func TestLogin_UserNotFound(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("status: got %d, want 401", rr.Code)
+	}
+}
+
+func TestLogin_DBOutage(t *testing.T) {
+	// A non-ErrNoRows error (DB down) must be 500, not a misleading 401.
+	repo := &mockAuthRepo{
+		GetUserByEmailFn: func(_ context.Context, _ string) (*model.User, string, error) {
+			return nil, "", errors.New("connection refused")
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	body := `{"email":"x@example.com","password":"pass"}`
+	req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.Login(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: got %d, want 500 on DB outage", rr.Code)
 	}
 }
 
@@ -627,7 +644,7 @@ func TestMe_NotFound(t *testing.T) {
 
 func TestCreateUser_Success(t *testing.T) {
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, _, _, role string) (*model.User, error) {
+		CreateUserFn: func(_ context.Context, _, _, role string, _ *string) (*model.User, error) {
 			return testUser("new", role), nil
 		},
 	}
@@ -657,7 +674,9 @@ func TestCreateUser_InvalidRole(t *testing.T) {
 
 func TestCreateUser_AdminCreatesMember(t *testing.T) {
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, _, _, role string) (*model.User, error) { return testUser("new", role), nil },
+		CreateUserFn: func(_ context.Context, _, _, role string, _ *string) (*model.User, error) {
+			return testUser("new", role), nil
+		},
 	}
 	h := NewAuthHandler(repo, testConfig())
 	body := `{"email":"m@b.com","password":"longpass123","role":"member"}`
@@ -672,7 +691,7 @@ func TestCreateUser_AdminCreatesMember(t *testing.T) {
 func TestCreateUser_AdminCreatingSuperadminForbidden(t *testing.T) {
 	// superadmin is a valid role, but only a superadmin may assign it.
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, _, _, _ string) (*model.User, error) {
+		CreateUserFn: func(_ context.Context, _, _, _ string, _ *string) (*model.User, error) {
 			t.Error("CreateUser must not be called when an admin attempts to mint a superadmin")
 			return nil, nil
 		},
@@ -692,7 +711,9 @@ func TestCreateUser_AdminCreatingSuperadminForbidden(t *testing.T) {
 
 func TestCreateUser_SuperadminCreatesSuperadmin(t *testing.T) {
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, _, _, role string) (*model.User, error) { return testUser("new", role), nil },
+		CreateUserFn: func(_ context.Context, _, _, role string, _ *string) (*model.User, error) {
+			return testUser("new", role), nil
+		},
 	}
 	h := NewAuthHandler(repo, testConfig())
 	body := `{"email":"root@b.com","password":"longpass123","role":"superadmin"}`
@@ -707,7 +728,7 @@ func TestCreateUser_SuperadminCreatesSuperadmin(t *testing.T) {
 func TestCreateUser_DefaultsToMember(t *testing.T) {
 	var capturedRole string
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, _, _, role string) (*model.User, error) {
+		CreateUserFn: func(_ context.Context, _, _, role string, _ *string) (*model.User, error) {
 			capturedRole = role
 			return testUser("id", role), nil
 		},
@@ -725,7 +746,7 @@ func TestCreateUser_DefaultsToMember(t *testing.T) {
 func TestCreateUser_NormalizesEmail(t *testing.T) {
 	var capturedEmail string
 	repo := &mockAuthRepo{
-		CreateUserFn: func(_ context.Context, email, _, role string) (*model.User, error) {
+		CreateUserFn: func(_ context.Context, email, _, role string, _ *string) (*model.User, error) {
 			capturedEmail = email
 			return testUser("id", role), nil
 		},
@@ -767,7 +788,7 @@ func TestUpdateUserRole_Success(t *testing.T) {
 	body := `{"role":"officer"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status: got %d, want 200; body: %s", rr.Code, rr.Body)
 	}
@@ -779,7 +800,7 @@ func TestUpdateUserRole_SelfChangeForbidden(t *testing.T) {
 	body := `{"role":"member"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/"+selfID, body, map[string]string{"id": selfID}), selfID, "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("status: got %d, want 403 for changing your own role", rr.Code)
 	}
@@ -798,7 +819,7 @@ func TestUpdateUserRole_TargetSuperadminRequiresSuperadmin(t *testing.T) {
 	body := `{"role":"member"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("status: got %d, want 403", rr.Code)
 	}
@@ -816,7 +837,7 @@ func TestUpdateUserRole_PromoteToSuperadminRequiresSuperadmin(t *testing.T) {
 	body := `{"role":"superadmin"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("status: got %d, want 403", rr.Code)
 	}
@@ -831,7 +852,7 @@ func TestUpdateUserRole_SuperadminMayPromoteToSuperadmin(t *testing.T) {
 	body := `{"role":"superadmin"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "super-1", "superadmin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status: got %d, want 200; body: %s", rr.Code, rr.Body)
 	}
@@ -844,7 +865,7 @@ func TestUpdateUserRole_InvalidRole(t *testing.T) {
 	body := `{"role":"wizard"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d, want 400", rr.Code)
 	}
@@ -859,7 +880,7 @@ func TestUpdateUserRole_NotFound(t *testing.T) {
 	body := `{"role":"officer"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID2}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status: got %d, want 404 for ErrNoRows", rr.Code)
 	}
@@ -876,7 +897,7 @@ func TestUpdateUserRole_RepoError(t *testing.T) {
 	body := `{"role":"officer"}`
 	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want 500", rr.Code)
 	}
@@ -886,7 +907,7 @@ func TestUpdateUserRole_BadJSON(t *testing.T) {
 	h := NewAuthHandler(&mockAuthRepo{}, testConfig())
 	req := chiRequest("PATCH", "/users/u1", "{bad", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
 	rr := httptest.NewRecorder()
-	h.UpdateUserRole(rr, req)
+	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d, want 400", rr.Code)
 	}
@@ -1105,5 +1126,108 @@ func TestListUsers_ReturnsUsers(t *testing.T) {
 	json.NewDecoder(rr.Body).Decode(&got)
 	if len(got) != 2 {
 		t.Errorf("expected 2 users, got %d", len(got))
+	}
+}
+
+// ---- member-link provisioning (restricted role) ----
+
+func TestCreateUser_WithMemberID(t *testing.T) {
+	var captured *string
+	repo := &mockAuthRepo{
+		CreateUserFn: func(_ context.Context, _, _, role string, memberID *string) (*model.User, error) {
+			captured = memberID
+			return testUser("new", role), nil
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	body := `{"email":"r@example.com","password":"longpassword1","role":"restricted","member_id":"` + testUUID + `"}`
+	req := withCtxUser(httptest.NewRequest("POST", "/users", strings.NewReader(body)), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.CreateUser(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	if captured == nil || *captured != testUUID {
+		t.Errorf("member_id reaching repo: got %v, want %s", captured, testUUID)
+	}
+}
+
+func TestCreateUser_InvalidMemberID(t *testing.T) {
+	h := NewAuthHandler(&mockAuthRepo{}, testConfig())
+	body := `{"email":"r@example.com","password":"longpassword1","member_id":"not-a-uuid"}`
+	req := withCtxUser(httptest.NewRequest("POST", "/users", strings.NewReader(body)), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.CreateUser(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", rr.Code)
+	}
+}
+
+func TestCreateUser_MemberFKViolation(t *testing.T) {
+	repo := &mockAuthRepo{
+		CreateUserFn: func(_ context.Context, _, _, _ string, _ *string) (*model.User, error) {
+			return nil, &pgconn.PgError{Code: "23503"}
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	body := `{"email":"r@example.com","password":"longpassword1","member_id":"` + testUUID + `"}`
+	req := withCtxUser(httptest.NewRequest("POST", "/users", strings.NewReader(body)), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.CreateUser(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400 for a bad member_id FK", rr.Code)
+	}
+}
+
+func TestUpdateUser_SetsMemberLink(t *testing.T) {
+	var captured *string
+	linked := false
+	repo := &mockAuthRepo{
+		GetUserByIDFn: func(_ context.Context, id string) (*model.User, error) { return testUser(id, "restricted"), nil },
+		SetUserMemberFn: func(_ context.Context, _ string, memberID *string) error {
+			linked = true
+			captured = memberID
+			return nil
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	body := `{"member_id":"` + testUUID2 + `"}`
+	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.UpdateUser(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	if !linked || captured == nil || *captured != testUUID2 {
+		t.Errorf("SetUserMember: linked=%v captured=%v", linked, captured)
+	}
+}
+
+func TestUpdateUser_UnlinksMember(t *testing.T) {
+	var captured *string = new(string)
+	repo := &mockAuthRepo{
+		GetUserByIDFn:   func(_ context.Context, id string) (*model.User, error) { return testUser(id, "restricted"), nil },
+		SetUserMemberFn: func(_ context.Context, _ string, memberID *string) error { captured = memberID; return nil },
+	}
+	h := NewAuthHandler(repo, testConfig())
+	body := `{"member_id":null}`
+	req := withCtxUser(chiRequest("PATCH", "/users/u1", body, map[string]string{"id": testUUID}), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.UpdateUser(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	if captured != nil {
+		t.Errorf("unlink should pass nil member_id, got %v", *captured)
+	}
+}
+
+func TestUpdateUser_NeitherField(t *testing.T) {
+	h := NewAuthHandler(&mockAuthRepo{}, testConfig())
+	req := withCtxUser(chiRequest("PATCH", "/users/u1", `{}`, map[string]string{"id": testUUID}), "admin-1", "admin")
+	rr := httptest.NewRecorder()
+	h.UpdateUser(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400 when neither role nor member_id present", rr.Code)
 	}
 }

@@ -73,7 +73,7 @@ class PageDues extends HTMLElement {
   _rows() {
     if (!this._invoices?.length) return '';
     return this._invoices.map(inv => `
-      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0">
+      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0" role="button">
         <td>${esc(inv.member_name)}</td>
         <td>${esc(inv.period_label)}</td>
         <td>${formatMoney(inv.amount_minor, inv.currency)}</td>

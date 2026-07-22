@@ -11,14 +11,17 @@ import (
 	"quorum/internal/model"
 )
 
+// ResourcesRepo provides PostgreSQL data access for resources.
 type ResourcesRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewResourcesRepo constructs a ResourcesRepo backed by the given connection pool.
 func NewResourcesRepo(db *pgxpool.Pool) *ResourcesRepo {
 	return &ResourcesRepo{db: db}
 }
 
+// ResourceFilter holds the optional query parameters for listing resources.
 type ResourceFilter struct {
 	Search   string
 	Category string
@@ -27,6 +30,7 @@ type ResourceFilter struct {
 	Offset   int
 }
 
+// List returns a page of resources matching the filter, plus the total count.
 func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Resource, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -101,6 +105,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	return resources, total, nil
 }
 
+// Get returns the resource with the given id, or pgx.ErrNoRows if none exists.
 func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT id::text, title, description, url, category, tags,
@@ -113,6 +118,7 @@ func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, er
 	return &res, nil
 }
 
+// Create inserts a new resource and returns the stored row.
 func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error) {
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO resources (title, description, url, category, tags, added_by)
@@ -158,6 +164,7 @@ func (r *ResourcesRepo) Update(ctx context.Context, id string, fields map[string
 	return &updated, nil
 }
 
+// Delete removes the resource, returning pgx.ErrNoRows if no such row existed.
 func (r *ResourcesRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM resources WHERE id = $1::uuid`, id)
 	if err != nil {

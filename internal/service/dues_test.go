@@ -183,3 +183,100 @@ func TestSendMemberReminders_UnconfiguredEmailSkips(t *testing.T) {
 		t.Error("reminders must not be queried when email is unconfigured")
 	}
 }
+
+// fakeSender implements emailSender for reminder/digest tests without SMTP.
+type fakeSender struct {
+	isConfigured bool
+	failSend     bool
+	sends        [][]string
+}
+
+func (f *fakeSender) Send(to []string, _, _ string) error {
+	if f.failSend {
+		return errors.New("smtp failure")
+	}
+	f.sends = append(f.sends, to)
+	return nil
+}
+func (f *fakeSender) SendToAdmins(_ context.Context, _, _ string) error { return nil }
+func (f *fakeSender) configured() bool                                  { return f.isConfigured }
+func (f *fakeSender) baseURL() string                                   { return "" }
+
+func TestSendMemberReminders_Escalation(t *testing.T) {
+	now := time.Now()
+	daysAgo := func(d int) time.Time { return now.AddDate(0, 0, -d) }
+	reminders := []repo.OverdueReminder{
+		{InvoiceID: "a", MemberEmail: "a@x", Currency: "USD", DueDate: daysAgo(40), ReminderStage: 0}, // target 3 -> send
+		{InvoiceID: "b", MemberEmail: "b@x", Currency: "USD", DueDate: daysAgo(40), ReminderStage: 3}, // target 3 -> skip
+		{InvoiceID: "c", MemberEmail: "c@x", Currency: "USD", DueDate: daysAgo(3), ReminderStage: 1},  // target 1 -> skip
+		{InvoiceID: "e", MemberEmail: "e@x", Currency: "USD", DueDate: daysAgo(10), ReminderStage: 1}, // target 2 -> send
+	}
+	advanced := map[string]int{}
+	ager := &mockInvoiceAger{
+		OverdueForRemindersFn:  func(_ context.Context) ([]repo.OverdueReminder, error) { return reminders, nil },
+		AdvanceReminderStageFn: func(_ context.Context, id string, stage int) error { advanced[id] = stage; return nil },
+	}
+	fs := &fakeSender{isConfigured: true}
+	svc := NewDuesService(ager, fs, nil)
+	svc.sendMemberReminders(context.Background())
+
+	if len(fs.sends) != 2 {
+		t.Fatalf("expected 2 reminder sends, got %d", len(fs.sends))
+	}
+	if advanced["a"] != 3 || advanced["e"] != 2 {
+		t.Errorf("expected a->3 and e->2, got %v", advanced)
+	}
+	if _, ok := advanced["b"]; ok {
+		t.Error("already-final invoice b must not advance")
+	}
+	if _, ok := advanced["c"]; ok {
+		t.Error("invoice c already at its due stage must not advance")
+	}
+}
+
+func TestSendMemberReminders_FailedSendDoesNotAdvance(t *testing.T) {
+	reminders := []repo.OverdueReminder{
+		{InvoiceID: "a", MemberEmail: "a@x", Currency: "USD", DueDate: time.Now().AddDate(0, 0, -40), ReminderStage: 0},
+	}
+	advanced := false
+	ager := &mockInvoiceAger{
+		OverdueForRemindersFn:  func(_ context.Context) ([]repo.OverdueReminder, error) { return reminders, nil },
+		AdvanceReminderStageFn: func(_ context.Context, _ string, _ int) error { advanced = true; return nil },
+	}
+	svc := NewDuesService(ager, &fakeSender{isConfigured: true, failSend: true}, nil)
+	svc.sendMemberReminders(context.Background())
+	if advanced {
+		t.Error("stage must not advance when the send fails (retry next night)")
+	}
+}
+
+func TestNextScheduledRun_Invariants(t *testing.T) {
+	d := nextScheduledRun()
+	if d <= 0 || d > 24*time.Hour {
+		t.Errorf("nextScheduledRun should be in (0, 24h], got %v", d)
+	}
+}
+
+func TestRunNightlyJobSafely_RecoversPanic(t *testing.T) {
+	ager := &mockInvoiceAger{
+		MarkOverdueFn: func(_ context.Context) (int64, error) { panic("boom") },
+	}
+	svc := NewDuesService(ager, NewEmailService(&config.Config{}, nil), nil)
+	svc.runNightlyJobSafely(context.Background()) // must not panic
+}
+
+func TestEmailSend_RejectsCRLFInSubject(t *testing.T) {
+	e := NewEmailService(&config.Config{SMTPHost: "localhost", SMTPPort: 2525, EmailFrom: "from@x"}, nil)
+	err := e.Send([]string{"a@b.com"}, "Subject\r\nBcc: evil@x", "body")
+	if err == nil || !strings.Contains(err.Error(), "newline") {
+		t.Errorf("expected header-injection guard error, got %v", err)
+	}
+}
+
+func TestEmailSend_RejectsCRLFInRecipient(t *testing.T) {
+	e := NewEmailService(&config.Config{SMTPHost: "localhost", SMTPPort: 2525, EmailFrom: "from@x"}, nil)
+	err := e.Send([]string{"a@b.com\r\nBcc: evil@x"}, "Subject", "body")
+	if err == nil {
+		t.Error("expected header-injection guard error for a CRLF recipient")
+	}
+}

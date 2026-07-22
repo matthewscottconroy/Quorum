@@ -1,3 +1,5 @@
+// Package handler implements the chi HTTP handlers, middleware, authentication
+// and role gating, and rate limiting for the Quorum API.
 package handler
 
 import (
@@ -85,6 +87,7 @@ type Middleware struct {
 	trustProxy bool
 }
 
+// NewMiddleware constructs the shared middleware with separate login and refresh rate limiters.
 func NewMiddleware(secret string, trustProxy bool) *Middleware {
 	return &Middleware{
 		jwtSecret:      secret,
@@ -207,14 +210,27 @@ func isFKViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
-// writeRepoError maps common repository errors to HTTP responses:
-// missing rows become 404, everything else the given fallback message as 500.
+// isCheckViolation reports whether err is a PostgreSQL check-constraint
+// violation (SQLSTATE 23514) — e.g. a text field exceeding its length bound.
+func isCheckViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514"
+}
+
+// writeRepoError maps common repository errors to HTTP responses: missing rows
+// → 404; a check-constraint violation (e.g. a too-long field) or a foreign-key
+// violation → 400 (client's fault); everything else → 500 with fallbackMsg.
 func writeRepoError(w http.ResponseWriter, err error, notFoundMsg, fallbackMsg string) {
-	if isNotFound(err) {
+	switch {
+	case isNotFound(err):
 		writeError(w, http.StatusNotFound, notFoundMsg, "not_found")
-		return
+	case isCheckViolation(err):
+		writeError(w, http.StatusBadRequest, "a field value is invalid or exceeds the maximum length", "bad_request")
+	case isFKViolation(err):
+		writeError(w, http.StatusBadRequest, "a referenced record does not exist", "bad_request")
+	default:
+		writeError(w, http.StatusInternalServerError, fallbackMsg, "internal_error")
 	}
-	writeError(w, http.StatusInternalServerError, fallbackMsg, "internal_error")
 }
 
 // toStringSlice converts a decoded JSON array into []string, reporting
@@ -349,7 +365,10 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 				return
 			}
 			action := r.Method + " " + r.URL.Path
-			ar.Log(r.Context(), userID, action, "") //nolint:errcheck
+			// Record the primary resource id (the {id} route param) as the
+			// entity, so the audit log can answer "who changed which record".
+			entityID := chi.URLParam(r, "id")
+			ar.Log(r.Context(), userID, action, entityID) //nolint:errcheck
 		})
 	}
 }

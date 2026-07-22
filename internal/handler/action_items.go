@@ -31,6 +31,7 @@ func NewActionItemsHandler(r actionItemsRepo) *ActionItemsHandler {
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *ActionItemsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// List handles GET requests for a paginated, filterable list of action items.
 func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	// UUID filters are validated up front so garbage input gets a 400 instead
@@ -62,6 +63,7 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.ActionItem]{Data: items, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a action item.
 func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string  `json:"title"`
@@ -117,12 +119,13 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.repo.Create(r.Context(), item, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, created)
 }
 
+// Update handles updating a action item.
 func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -160,6 +163,17 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if v, present := body["due_date"]; present && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			writeError(w, 400, "due_date must be YYYY-MM-DD", "bad_request")
+			return
+		}
+		if _, err := time.Parse("2006-01-02", s); err != nil {
+			writeError(w, 400, "due_date must be YYYY-MM-DD", "bad_request")
+			return
+		}
+	}
 	updated, err := h.repo.Update(r.Context(), id, body)
 	if err != nil {
 		writeRepoError(w, err, "action item not found", "update error")
@@ -168,6 +182,7 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, updated)
 }
 
+// Delete handles deleting a action item.
 func (h *ActionItemsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {

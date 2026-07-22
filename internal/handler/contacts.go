@@ -22,6 +22,7 @@ func NewContactsHandler(r contactsRepo) *ContactsHandler {
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *ContactsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// List handles GET requests for a paginated, filterable list of contacts.
 func (h *ContactsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.ContactFilter{
@@ -44,6 +45,7 @@ func (h *ContactsHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.Contact]{Data: contacts, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a contact.
 func (h *ContactsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var c model.Contact
 	if err := decodeJSON(r, &c); err != nil {
@@ -59,12 +61,13 @@ func (h *ContactsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := h.repo.Create(r.Context(), &c, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, created)
 }
 
+// Get handles fetching a single contact by id.
 func (h *ContactsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -127,6 +130,7 @@ func (h *ContactsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, updated)
 }
 
+// Delete handles deleting a contact.
 func (h *ContactsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {

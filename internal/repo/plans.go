@@ -12,20 +12,24 @@ import (
 	"quorum/internal/model"
 )
 
+// PlansRepo provides PostgreSQL data access for plans.
 type PlansRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewPlansRepo constructs a PlansRepo backed by the given connection pool.
 func NewPlansRepo(db *pgxpool.Pool) *PlansRepo {
 	return &PlansRepo{db: db}
 }
 
+// PlanFilter holds the optional query parameters for listing plans.
 type PlanFilter struct {
 	Status string
 	Limit  int
 	Offset int
 }
 
+// List returns a page of plans matching the filter, plus the total count.
 func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, error) {
 	where := ""
 	args := []any{}
@@ -81,6 +85,7 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 	return plans, total, nil
 }
 
+// Get returns the plan with the given id, or pgx.ErrNoRows if none exists.
 func (r *PlansRepo) Get(ctx context.Context, id string) (*model.Plan, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT p.id::text, p.title, p.description, p.status, p.owner_id::text,
@@ -100,6 +105,7 @@ func (r *PlansRepo) Get(ctx context.Context, id string) (*model.Plan, error) {
 	return &pl, nil
 }
 
+// Create inserts a new plan and returns the stored row.
 func (r *PlansRepo) Create(ctx context.Context, p *model.Plan, createdBy string) (*model.Plan, error) {
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO plans (title, description, status, owner_id, target_date, created_by)
@@ -114,6 +120,7 @@ func (r *PlansRepo) Create(ctx context.Context, p *model.Plan, createdBy string)
 	return &pl, nil
 }
 
+// Update applies the given field changes to the plan and returns the updated row.
 func (r *PlansRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Plan, error) {
 	sets := []string{"updated_at = now()"}
 	args := []any{}
@@ -147,6 +154,7 @@ func (r *PlansRepo) Update(ctx context.Context, id string, fields map[string]any
 	return r.Get(ctx, id)
 }
 
+// Delete removes the plan, returning pgx.ErrNoRows if no such row existed.
 func (r *PlansRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM plans WHERE id = $1::uuid`, id)
 	if err != nil {
@@ -172,6 +180,7 @@ func (r *PlansRepo) OwnerEmail(ctx context.Context, planID string) (string, erro
 	return email, err
 }
 
+// GetDecisions returns the plan's decision log.
 func (r *PlansRepo) GetDecisions(ctx context.Context, planID string) ([]model.PlanDecision, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, plan_id::text, summary, rationale, decided_by::text, decided_at
@@ -191,6 +200,7 @@ func (r *PlansRepo) GetDecisions(ctx context.Context, planID string) ([]model.Pl
 	return decisions, rows.Err()
 }
 
+// CreateDecision records a decision on the plan.
 func (r *PlansRepo) CreateDecision(ctx context.Context, d *model.PlanDecision, decidedBy string) (*model.PlanDecision, error) {
 	var created model.PlanDecision
 	err := r.db.QueryRow(ctx, `
@@ -202,6 +212,7 @@ func (r *PlansRepo) CreateDecision(ctx context.Context, d *model.PlanDecision, d
 	return &created, err
 }
 
+// UpdateDecision edits an existing decision, returning pgx.ErrNoRows if absent.
 func (r *PlansRepo) UpdateDecision(ctx context.Context, id string, summary, rationale *string) (*model.PlanDecision, error) {
 	var d model.PlanDecision
 	err := r.db.QueryRow(ctx, `
@@ -215,6 +226,7 @@ func (r *PlansRepo) UpdateDecision(ctx context.Context, id string, summary, rati
 	return &d, err
 }
 
+// DeleteDecision removes a decision, returning pgx.ErrNoRows if absent.
 func (r *PlansRepo) DeleteDecision(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM plan_decisions WHERE id = $1::uuid`, id)
 	if err != nil {

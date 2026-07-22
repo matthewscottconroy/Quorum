@@ -27,6 +27,7 @@ func NewPlansHandler(r plansRepo) *PlansHandler {
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *PlansHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
+// List handles GET requests for a paginated, filterable list of plans.
 func (h *PlansHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.PlanFilter{
@@ -47,6 +48,7 @@ func (h *PlansHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.Plan]{Data: plans, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a plan.
 func (h *PlansHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string  `json:"title"`
@@ -93,12 +95,13 @@ func (h *PlansHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TargetDate:  targetDate,
 	}, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, pl)
 }
 
+// Get handles fetching a single plan by id.
 func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -112,6 +115,7 @@ func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pl)
 }
 
+// Update handles updating a plan.
 func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -166,6 +170,7 @@ func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, pl)
 }
 
+// Delete handles deleting a plan.
 func (h *PlansHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -193,6 +198,7 @@ func (h *PlansHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// CreateDecision records a decision.
 func (h *PlansHandler) CreateDecision(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -212,12 +218,13 @@ func (h *PlansHandler) CreateDecision(w http.ResponseWriter, r *http.Request) {
 		Rationale: body.Rationale,
 	}, userIDFromCtx(r))
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, 201, d)
 }
 
+// UpdateDecision edits an existing decision.
 func (h *PlansHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
 	did, ok := requireUUID(w, r, "did")
 	if !ok {
@@ -239,6 +246,7 @@ func (h *PlansHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, d)
 }
 
+// DeleteDecision removes a decision.
 func (h *PlansHandler) DeleteDecision(w http.ResponseWriter, r *http.Request) {
 	did, ok := requireUUID(w, r, "did")
 	if !ok {

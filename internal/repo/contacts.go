@@ -11,14 +11,17 @@ import (
 	"quorum/internal/model"
 )
 
+// ContactsRepo provides PostgreSQL data access for contacts.
 type ContactsRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewContactsRepo constructs a ContactsRepo backed by the given connection pool.
 func NewContactsRepo(db *pgxpool.Pool) *ContactsRepo {
 	return &ContactsRepo{db: db}
 }
 
+// ContactFilter holds the optional query parameters for listing contacts.
 type ContactFilter struct {
 	Search   string
 	Category string
@@ -27,6 +30,7 @@ type ContactFilter struct {
 	Offset   int
 }
 
+// List returns a page of contacts matching the filter, plus the total count.
 func (r *ContactsRepo) List(ctx context.Context, f ContactFilter) ([]model.Contact, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -101,6 +105,7 @@ func (r *ContactsRepo) List(ctx context.Context, f ContactFilter) ([]model.Conta
 	return contacts, total, nil
 }
 
+// Get returns the contact with the given id, or pgx.ErrNoRows if none exists.
 func (r *ContactsRepo) Get(ctx context.Context, id string) (*model.Contact, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT id::text, name, organization, email, phone, address,
@@ -113,6 +118,7 @@ func (r *ContactsRepo) Get(ctx context.Context, id string) (*model.Contact, erro
 	return &c, nil
 }
 
+// Create inserts a new contact and returns the stored row.
 func (r *ContactsRepo) Create(ctx context.Context, c *model.Contact, createdBy string) (*model.Contact, error) {
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO contacts (name, organization, email, phone, address, category, tags, notes, created_by)
@@ -161,6 +167,7 @@ func (r *ContactsRepo) Update(ctx context.Context, id string, fields map[string]
 	return &updated, nil
 }
 
+// Delete removes the contact, returning pgx.ErrNoRows if no such row existed.
 func (r *ContactsRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM contacts WHERE id = $1::uuid`, id)
 	if err != nil {

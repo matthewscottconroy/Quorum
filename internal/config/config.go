@@ -35,6 +35,10 @@ type Config struct {
 	SMTPPass  string
 	EmailFrom string
 
+	// SMTPRequireTLS, when true, aborts sending rather than falling back to a
+	// plaintext session if the relay does not offer STARTTLS.
+	SMTPRequireTLS bool
+
 	// Stripe webhook signing secret. Checked only when non-empty.
 	StripeWebhookSecret string
 
@@ -73,10 +77,11 @@ func Load() (*Config, error) {
 		JWTSecret:   getEnv("QUORUM_JWT_SECRET", ""),
 		BaseURL:     getEnv("QUORUM_BASE_URL", "http://localhost:8080"),
 
-		SMTPHost:  getEnv("QUORUM_SMTP_HOST", ""),
-		SMTPUser:  getEnv("QUORUM_SMTP_USER", ""),
-		SMTPPass:  getEnv("QUORUM_SMTP_PASS", ""),
-		EmailFrom: getEnv("QUORUM_EMAIL_FROM", "quorum@localhost"),
+		SMTPHost:       getEnv("QUORUM_SMTP_HOST", ""),
+		SMTPUser:       getEnv("QUORUM_SMTP_USER", ""),
+		SMTPPass:       getEnv("QUORUM_SMTP_PASS", ""),
+		EmailFrom:      getEnv("QUORUM_EMAIL_FROM", "quorum@localhost"),
+		SMTPRequireTLS: getEnv("QUORUM_SMTP_REQUIRE_TLS", "") == "true",
 
 		StripeWebhookSecret: getEnv("QUORUM_STRIPE_WEBHOOK_SECRET", ""),
 		PayPalWebhookID:     getEnv("QUORUM_PAYPAL_WEBHOOK_ID", ""),

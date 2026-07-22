@@ -323,6 +323,25 @@ func TestDuesCreateTransaction_Success(t *testing.T) {
 	}
 }
 
+func TestDuesCreateTransaction_CurrencyMismatch(t *testing.T) {
+	// A payment in a different currency than the invoice must be rejected.
+	inv := testInvoice("11111111-1111-1111-1111-111111111111", "m1")
+	inv.Currency = "USD"
+	h := NewDuesHandler(&mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, _ string) (*model.DuesInvoice, error) { return inv, nil },
+	})
+	body := `{"amount_minor":10000,"provider":"manual","currency":"EUR"}`
+	req := withCtxUser(
+		chiRequest("POST", "/dues/i1/transactions", body, map[string]string{"id": "11111111-1111-1111-1111-111111111111"}),
+		"user-1", "officer",
+	)
+	rr := httptest.NewRecorder()
+	h.CreateTransaction(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 for currency mismatch", rr.Code)
+	}
+}
+
 func TestDuesCreateTransaction_MissingAmount(t *testing.T) {
 	inv := testInvoice("11111111-1111-1111-1111-111111111111", "m1")
 	h := NewDuesHandler(&mockDuesRepo{

@@ -47,6 +47,10 @@ class PageMyAccount extends HTMLElement {
       return;
     }
 
+    // Distinguish a failed fetch (null) from a genuinely empty result so each
+    // section can show an error state rather than a misleading empty state.
+    const duesFailed = dues === null;
+    const itemsFailed = items === null;
     const invoices = dues?.data ?? dues ?? [];
     const actionItems = items?.data ?? items ?? [];
 
@@ -64,7 +68,9 @@ class PageMyAccount extends HTMLElement {
 
       <section class="card" style="overflow:hidden;margin-bottom:1.25rem">
         <div class="panel-header" style="padding:.75rem 1rem;border-bottom:1px solid var(--color-border)"><h2 style="font-size:1rem">My dues</h2></div>
-        ${invoices.length === 0
+        ${duesFailed
+          ? '<p class="empty-state" style="padding:1rem;color:var(--color-danger)">Couldn\'t load your dues — try again.</p>'
+          : invoices.length === 0
           ? '<p class="empty-state" style="padding:1rem">No invoices.</p>'
           : `<table>
               <thead><tr><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th></tr></thead>
@@ -82,7 +88,9 @@ class PageMyAccount extends HTMLElement {
 
       <section class="card" style="overflow:hidden">
         <div class="panel-header" style="padding:.75rem 1rem;border-bottom:1px solid var(--color-border)"><h2 style="font-size:1rem">My action items</h2></div>
-        ${actionItems.length === 0
+        ${itemsFailed
+          ? '<p class="empty-state" style="padding:1rem;color:var(--color-danger)">Couldn\'t load your action items — try again.</p>'
+          : actionItems.length === 0
           ? '<p class="empty-state" style="padding:1rem">No action items assigned to you.</p>'
           : `<table>
               <thead><tr><th>Item</th><th>Due date</th><th>Priority</th><th>Status</th></tr></thead>

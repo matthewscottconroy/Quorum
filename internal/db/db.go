@@ -1,3 +1,5 @@
+// Package db manages the PostgreSQL connection pool and the embedded,
+// advisory-locked migration runner.
 package db
 
 import (
@@ -15,6 +17,7 @@ import (
 //go:embed migrations
 var migrationsFS embed.FS
 
+// Connect opens a bounded pgx connection pool and verifies connectivity with a ping.
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
@@ -38,6 +41,8 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// Migrate applies embedded up-migrations in version order under a Postgres advisory
+// lock, recording each in schema_migrations within its own transaction.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {

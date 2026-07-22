@@ -1,3 +1,4 @@
+// Package repo provides pgx-backed data access for each domain aggregate.
 package repo
 
 import (
@@ -10,14 +11,17 @@ import (
 	"quorum/internal/model"
 )
 
+// AuthRepo provides PostgreSQL data access for records.
 type AuthRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewAuthRepo constructs a AuthRepo backed by the given connection pool.
 func NewAuthRepo(db *pgxpool.Pool) *AuthRepo {
 	return &AuthRepo{db: db}
 }
 
+// GetUserByEmail returns the user and password hash for an email, or pgx.ErrNoRows.
 func (r *AuthRepo) GetUserByEmail(ctx context.Context, email string) (*model.User, string, error) {
 	var u model.User
 	var hash string
@@ -31,6 +35,7 @@ func (r *AuthRepo) GetUserByEmail(ctx context.Context, email string) (*model.Use
 	return &u, hash, nil
 }
 
+// GetUserByID returns the user with the given id, or pgx.ErrNoRows.
 func (r *AuthRepo) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRow(ctx, `
@@ -43,22 +48,41 @@ func (r *AuthRepo) GetUserByID(ctx context.Context, id string) (*model.User, err
 	return &u, nil
 }
 
-func (r *AuthRepo) CreateUser(ctx context.Context, email, hash, role string) (*model.User, error) {
+// CreateUser inserts a new user. memberID optionally links the account to a
+// member record (required for a "restricted" user to see their own data); pass
+// nil to leave it unlinked.
+func (r *AuthRepo) CreateUser(ctx context.Context, email, hash, role string, memberID *string) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO users (email, password_hash, role)
-		VALUES ($1, $2, $3)
+		INSERT INTO users (email, password_hash, role, member_id)
+		VALUES ($1, $2, $3, $4::uuid)
 		RETURNING id::text, email, role, member_id::text, created_at, last_login_at`,
-		email, hash, role).
+		email, hash, role, memberID).
 		Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.CreatedAt, &u.LastLoginAt)
 	return &u, err
 }
 
+// SetUserMember links (or, with nil, unlinks) a user's member record. Returns
+// pgx.ErrNoRows if no such user exists.
+func (r *AuthRepo) SetUserMember(ctx context.Context, id string, memberID *string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE users SET member_id = $2::uuid WHERE id = $1::uuid`, id, memberID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateLastLogin stamps the user's last_login_at to the current time.
 func (r *AuthRepo) UpdateLastLogin(ctx context.Context, id string) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1::uuid`, id)
 	return err
 }
 
+// StoreRefreshToken persists a hashed refresh token with its expiry.
 func (r *AuthRepo) StoreRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
@@ -66,6 +90,7 @@ func (r *AuthRepo) StoreRefreshToken(ctx context.Context, userID, hash string, e
 	return err
 }
 
+// GetRefreshToken returns the user id, revoked flag, and expiry for a token hash.
 func (r *AuthRepo) GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt time.Time, err error) {
 	err = r.db.QueryRow(ctx, `
 		SELECT user_id::text, revoked, expires_at
@@ -74,17 +99,20 @@ func (r *AuthRepo) GetRefreshToken(ctx context.Context, hash string) (userID str
 	return
 }
 
+// RevokeRefreshToken marks a single refresh token revoked.
 func (r *AuthRepo) RevokeRefreshToken(ctx context.Context, hash string) error {
 	_, err := r.db.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE WHERE token_hash = $1`, hash)
 	return err
 }
 
+// CountUsers returns the total number of user accounts.
 func (r *AuthRepo) CountUsers(ctx context.Context) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&n)
 	return n, err
 }
 
+// ListUsers returns all users ordered by email.
 func (r *AuthRepo) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, email, role, member_id::text, created_at, last_login_at
@@ -104,6 +132,7 @@ func (r *AuthRepo) ListUsers(ctx context.Context) ([]model.User, error) {
 	return users, rows.Err()
 }
 
+// UpdateUserRole sets a user's role and returns the updated user.
 func (r *AuthRepo) UpdateUserRole(ctx context.Context, id, role string) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRow(ctx, `
@@ -117,6 +146,7 @@ func (r *AuthRepo) UpdateUserRole(ctx context.Context, id, role string) (*model.
 	return &u, nil
 }
 
+// DeleteUser removes a user, returning pgx.ErrNoRows if none existed.
 func (r *AuthRepo) DeleteUser(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, id)
 	if err != nil {
@@ -128,12 +158,14 @@ func (r *AuthRepo) DeleteUser(ctx context.Context, id string) error {
 	return nil
 }
 
+// GetPasswordHash returns the bcrypt password hash for a user id.
 func (r *AuthRepo) GetPasswordHash(ctx context.Context, id string) (string, error) {
 	var hash string
 	err := r.db.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1::uuid`, id).Scan(&hash)
 	return hash, err
 }
 
+// UpdatePasswordHash replaces a user's password hash.
 func (r *AuthRepo) UpdatePasswordHash(ctx context.Context, id, hash string) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2::uuid`, hash, id)
 	return err
@@ -175,6 +207,7 @@ func (r *AuthRepo) CreateFirstUser(ctx context.Context, email, hash, role string
 	return &u, nil
 }
 
+// RevokeAllRefreshTokensForUser revokes every active refresh token for a user.
 func (r *AuthRepo) RevokeAllRefreshTokensForUser(ctx context.Context, userID string) error {
 	_, err := r.db.Exec(ctx,
 		`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1::uuid AND revoked = FALSE`,

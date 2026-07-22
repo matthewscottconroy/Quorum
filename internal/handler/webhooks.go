@@ -49,6 +49,7 @@ func NewWebhooksHandler(d duesRepo, stripeSecret, paypalWebhookID string, allowU
 	}
 }
 
+// Stripe handles inbound Stripe webhook events.
 func (h *WebhooksHandler) Stripe(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -189,6 +190,7 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 	return err
 }
 
+// PayPal handles inbound PayPal webhook events.
 func (h *WebhooksHandler) PayPal(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {

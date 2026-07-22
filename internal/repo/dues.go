@@ -12,14 +12,17 @@ import (
 	"quorum/internal/model"
 )
 
+// DuesRepo provides PostgreSQL data access for invoices.
 type DuesRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewDuesRepo constructs a DuesRepo backed by the given connection pool.
 func NewDuesRepo(db *pgxpool.Pool) *DuesRepo {
 	return &DuesRepo{db: db}
 }
 
+// InvoiceFilter holds the optional query parameters for listing invoices.
 type InvoiceFilter struct {
 	MemberID    string
 	Status      string
@@ -28,6 +31,7 @@ type InvoiceFilter struct {
 	Offset      int
 }
 
+// ListInvoices returns a page of invoices matching the filter, plus the total count.
 func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.DuesInvoice, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -101,6 +105,7 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 	return invoices, total, nil
 }
 
+// GetInvoice returns the invoice with the given id and its transactions, or pgx.ErrNoRows.
 func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error) {
 	var inv model.DuesInvoice
 	err := r.db.QueryRow(ctx, `
@@ -124,6 +129,7 @@ func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoic
 	return &inv, nil
 }
 
+// CreateInvoiceBatch inserts one invoice per entry within a single transaction.
 func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -152,6 +158,7 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 	return created, nil
 }
 
+// UpdateInvoiceStatus sets an invoice's status, returning pgx.ErrNoRows if absent.
 func (r *DuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE dues_invoices SET status = $1, notes = coalesce($2, notes), updated_at = now()
@@ -165,12 +172,16 @@ func (r *DuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status string, n
 	return nil
 }
 
+// recomputeInvoiceStatusSQL recomputes an invoice's status from its payments.
+// Only transactions in the SAME currency as the invoice count toward the paid
+// total — summing raw minor units across currencies would be meaningless (¥1000
+// is not $1000), so a mismatched-currency payment must never flip the status.
 const recomputeInvoiceStatusSQL = `
 	UPDATE dues_invoices SET
 		status = CASE
-			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = dues_invoices.currency)
 			     >= amount THEN 'paid'
-			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed')
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = dues_invoices.currency)
 			     > 0 THEN 'partial'
 			WHEN due_date < CURRENT_DATE AND status NOT IN ('paid','waived') THEN 'overdue'
 			ELSE status
@@ -178,11 +189,13 @@ const recomputeInvoiceStatusSQL = `
 		updated_at = now()
 	WHERE id = $1::uuid AND status NOT IN ('paid','waived')`
 
+// RecomputeInvoiceStatus recomputes an invoice's status from its same-currency transactions.
 func (r *DuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {
 	_, err := r.db.Exec(ctx, recomputeInvoiceStatusSQL, id)
 	return err
 }
 
+// MarkOverdue flips past-due pending invoices to overdue and returns the count.
 func (r *DuesRepo) MarkOverdue(ctx context.Context) (int64, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE dues_invoices SET status = 'overdue', updated_at = now()
@@ -193,6 +206,7 @@ func (r *DuesRepo) MarkOverdue(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
+// CountByStatus returns the number of invoices in the given status.
 func (r *DuesRepo) CountByStatus(ctx context.Context, status string) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx, `SELECT count(*) FROM dues_invoices WHERE status = $1`, status).Scan(&n)
@@ -201,6 +215,7 @@ func (r *DuesRepo) CountByStatus(ctx context.Context, status string) (int, error
 
 // Transactions
 
+// TransactionFilter holds the optional query parameters for listing transactions.
 type TransactionFilter struct {
 	InvoiceID string
 	MemberID  string
@@ -208,6 +223,7 @@ type TransactionFilter struct {
 	Offset    int
 }
 
+// ListTransactions returns a page of transactions matching the filter, plus the total count.
 func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([]model.Transaction, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -277,6 +293,9 @@ func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([
 	return txs, total, nil
 }
 
+// CreateTransaction inserts a payment transaction and returns the stored row.
+// Used for manual (officer-entered) payments; webhook payments go through
+// RecordWebhookPayment, which also claims the event and recomputes status.
 func (r *DuesRepo) CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error) {
 	var created model.Transaction
 	err := r.db.QueryRow(ctx, `
@@ -297,6 +316,7 @@ func (r *DuesRepo) CreateTransaction(ctx context.Context, t *model.Transaction) 
 	return &created, err
 }
 
+// FindInvoiceByProviderRef returns the invoice id linked to a provider reference, if any.
 func (r *DuesRepo) FindInvoiceByProviderRef(ctx context.Context, providerRef string) (string, error) {
 	var id string
 	err := r.db.QueryRow(ctx, `
@@ -347,6 +367,7 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	return false, tx.Commit(ctx)
 }
 
+// MarkEventProcessed records a webhook event id so provider retries are idempotent.
 func (r *DuesRepo) MarkEventProcessed(ctx context.Context, eventID string) error {
 	_, err := r.db.Exec(ctx, `INSERT INTO processed_events (provider_event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
 	return err
@@ -373,7 +394,8 @@ func (r *DuesRepo) OverdueForReminders(ctx context.Context) ([]OverdueReminder, 
 		       di.period_label, di.due_date, di.reminder_stage
 		FROM dues_invoices di
 		JOIN members m ON m.id = di.member_id
-		WHERE di.status = 'overdue' AND m.email IS NOT NULL AND m.email <> ''
+		WHERE (di.status = 'overdue' OR (di.status = 'partial' AND di.due_date < CURRENT_DATE))
+		  AND m.email IS NOT NULL AND m.email <> ''
 		ORDER BY di.due_date
 		LIMIT 1000`)
 	if err != nil {
@@ -401,6 +423,7 @@ func (r *DuesRepo) AdvanceReminderStage(ctx context.Context, invoiceID string, s
 	return err
 }
 
+// OverdueInvoicesForEmail returns overdue (and past-due partial) invoices for the admin digest.
 func (r *DuesRepo) OverdueInvoicesForEmail(ctx context.Context) ([]model.DuesInvoice, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT di.id::text, di.member_id::text, di.amount, di.currency, di.period_label,
@@ -408,7 +431,7 @@ func (r *DuesRepo) OverdueInvoicesForEmail(ctx context.Context) ([]model.DuesInv
 		       m.display_name
 		FROM dues_invoices di
 		JOIN members m ON m.id = di.member_id
-		WHERE di.status = 'overdue'
+		WHERE di.status = 'overdue' OR (di.status = 'partial' AND di.due_date < CURRENT_DATE)
 		ORDER BY di.due_date
 		LIMIT 500`)
 	if err != nil {

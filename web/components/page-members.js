@@ -1,4 +1,4 @@
-import { api, canWrite } from '../app.js';
+import { api, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
 import { esc, openModal, guardButton } from '../utils.js';
@@ -85,10 +85,10 @@ class PageMembers extends HTMLElement {
         <td>${esc(m.email ?? '—')}</td>
         <td>${esc(m.tier)}</td>
         <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
-        <td><payment-status-badge status="${esc(m.dues_status)}"></payment-status-badge></td>
+        <td><payment-status-badge status="${esc(m.dues_status || 'none')}"></payment-status-badge></td>
         ${canWrite() ? `<td style="text-align:right">
           <button class="btn-ghost edit-btn" data-id="${esc(m.id)}">Edit</button>
-          <button class="btn-ghost del-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>
+          ${isAdmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>` : ''}
         </td>` : ''}
       </tr>`).join('');
   }

@@ -21,6 +21,7 @@ func NewDashboardHandler(d duesRepo, m membersRepo, mt meetingsRepo, ai actionIt
 	return &DashboardHandler{dues: d, members: m, meetings: mt, actionItems: ai}
 }
 
+// Summary returns the dashboard counts and recent items.
 func (h *DashboardHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 

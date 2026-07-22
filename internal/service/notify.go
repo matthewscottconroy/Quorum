@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"quorum/internal/model"
@@ -15,22 +16,66 @@ type userDirectory interface {
 	GetUserByID(ctx context.Context, id string) (*model.User, error)
 }
 
-// Notifier sends out-of-band notifications about governance-significant events.
+const (
+	notifyWorkers   = 4   // bounds concurrent SMTP conversations
+	notifyQueueSize = 256 // bounds memory; excess notices are dropped, not queued forever
+)
+
+type deletionJob struct {
+	actorUserID, entityType, entityName string
+	affectedEmails                      []string
+}
+
+// Notifier sends out-of-band notifications about governance-significant events
+// via a bounded worker pool, so a burst of deletes can neither spawn unbounded
+// goroutines nor block the request path.
 type Notifier struct {
 	email *EmailService
 	dir   userDirectory
+	jobs  chan deletionJob
+	wg    sync.WaitGroup
 }
 
+// NewNotifier constructs a Notifier with a bounded worker pool for deletion notices.
 func NewNotifier(email *EmailService, dir userDirectory) *Notifier {
-	return &Notifier{email: email, dir: dir}
+	n := &Notifier{
+		email: email,
+		dir:   dir,
+		jobs:  make(chan deletionJob, notifyQueueSize),
+	}
+	for i := 0; i < notifyWorkers; i++ {
+		n.wg.Add(1)
+		go n.worker()
+	}
+	return n
+}
+
+func (n *Notifier) worker() {
+	defer n.wg.Done()
+	for j := range n.jobs {
+		n.notifyDeletion(j.actorUserID, j.entityType, j.entityName, j.affectedEmails)
+	}
+}
+
+// Close stops accepting notices and waits for in-flight ones to finish. Call
+// during graceful shutdown, before closing the database pool.
+func (n *Notifier) Close() {
+	close(n.jobs)
+	n.wg.Wait()
 }
 
 // NotifyDeletion informs the governance body (all admins and superadmins) and
 // any directly-affected members that a record was permanently deleted. It is
-// fire-and-forget: the SMTP round-trip must not block the HTTP response, and a
-// notification failure never fails the delete itself.
+// non-blocking: the notice is enqueued for a worker, so the SMTP round-trip
+// never blocks the HTTP response and a notification failure never fails the
+// delete. If the queue is saturated the notice is dropped (and logged) rather
+// than growing memory without bound.
 func (n *Notifier) NotifyDeletion(_ context.Context, actorUserID, entityType, entityName string, affectedEmails []string) {
-	go n.notifyDeletion(actorUserID, entityType, entityName, affectedEmails)
+	select {
+	case n.jobs <- deletionJob{actorUserID, entityType, entityName, affectedEmails}:
+	default:
+		log.Printf("notify: queue full, dropping deletion notice for %s %q", entityType, entityName)
+	}
 }
 
 func (n *Notifier) notifyDeletion(actorUserID, entityType, entityName string, affectedEmails []string) {

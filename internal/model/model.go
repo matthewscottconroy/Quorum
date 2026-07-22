@@ -5,7 +5,10 @@ import "time"
 
 // User represents an application login account.
 // A User may optionally be linked to a Member record via MemberID.
-// Roles: "member", "officer", "admin".
+// Roles, in ascending privilege: "restricted", "member", "officer", "admin",
+// "superadmin". A "restricted" user sees only its own linked member record; a
+// "superadmin" can perform destructive deletes. MemberID links the account to a
+// Member (required for a "restricted" user to see their own data).
 type User struct {
 	ID          string     `json:"id"`
 	Email       string     `json:"email"`
@@ -106,7 +109,7 @@ type MeetingAttendee struct {
 }
 
 // MeetingDecision records a formal decision made during a meeting, including vote counts.
-// Outcome values: "passed", "failed", "tabled", "withdrawn".
+// Outcome values: "passed", "failed", "tabled", "noted".
 type MeetingDecision struct {
 	ID          string    `json:"id"`
 	MeetingID   string    `json:"meeting_id"`
@@ -139,7 +142,7 @@ type ActionItem struct {
 }
 
 // Plan represents a strategic initiative tracked over time.
-// Status values: "draft", "active", "completed", "cancelled".
+// Status values: "draft", "active", "completed", "archived".
 // Decisions is populated only when fetching a single plan.
 type Plan struct {
 	ID          string         `json:"id"`

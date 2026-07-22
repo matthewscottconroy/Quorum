@@ -10,20 +10,24 @@ import (
 	"quorum/internal/model"
 )
 
+// MeetingsRepo provides PostgreSQL data access for meetings.
 type MeetingsRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewMeetingsRepo constructs a MeetingsRepo backed by the given connection pool.
 func NewMeetingsRepo(db *pgxpool.Pool) *MeetingsRepo {
 	return &MeetingsRepo{db: db}
 }
 
+// MeetingFilter holds the optional query parameters for listing meetings.
 type MeetingFilter struct {
 	Upcoming bool
 	Limit    int
 	Offset   int
 }
 
+// List returns a page of meetings matching the filter, plus the total count.
 func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeting, int, error) {
 	where := ""
 	if f.Upcoming {
@@ -69,6 +73,7 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	return meetings, total, nil
 }
 
+// Get returns the meeting with the given id, or pgx.ErrNoRows if none exists.
 func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,
@@ -90,6 +95,7 @@ func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, erro
 	return &mt, nil
 }
 
+// Create inserts a new meeting and returns the stored row.
 func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error) {
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO meetings (title, scheduled_at, location, agenda, notes, status, created_by)
@@ -103,6 +109,7 @@ func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy 
 	return &created, nil
 }
 
+// Update applies the given field changes to the meeting and returns the updated row.
 func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error) {
 	_, err := r.db.Exec(ctx, `
 		UPDATE meetings SET
@@ -121,6 +128,7 @@ func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, sch
 	return r.Get(ctx, id)
 }
 
+// Delete removes the meeting, returning pgx.ErrNoRows if no such row existed.
 func (r *MeetingsRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM meetings WHERE id = $1::uuid`, id)
 	if err != nil {
@@ -155,6 +163,7 @@ func (r *MeetingsRepo) AttendeeEmails(ctx context.Context, meetingID string) ([]
 	return emails, rows.Err()
 }
 
+// GetAttendees returns the meeting's attendee list.
 func (r *MeetingsRepo) GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ma.member_id::text, m.display_name, ma.present
@@ -178,6 +187,7 @@ func (r *MeetingsRepo) GetAttendees(ctx context.Context, meetingID string) ([]mo
 	return attendees, rows.Err()
 }
 
+// SetAttendees replaces the meeting's attendee list.
 func (r *MeetingsRepo) SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -199,6 +209,7 @@ func (r *MeetingsRepo) SetAttendees(ctx context.Context, meetingID string, atten
 	return tx.Commit(ctx)
 }
 
+// GetDecisions returns the meeting's decision log.
 func (r *MeetingsRepo) GetDecisions(ctx context.Context, meetingID string) ([]model.MeetingDecision, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, meeting_id::text, summary, detail,
@@ -222,6 +233,7 @@ func (r *MeetingsRepo) GetDecisions(ctx context.Context, meetingID string) ([]mo
 	return decisions, rows.Err()
 }
 
+// CreateDecision records a decision on the meeting.
 func (r *MeetingsRepo) CreateDecision(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error) {
 	var created model.MeetingDecision
 	err := r.db.QueryRow(ctx, `
@@ -234,6 +246,7 @@ func (r *MeetingsRepo) CreateDecision(ctx context.Context, d *model.MeetingDecis
 	return &created, err
 }
 
+// UpdateDecision edits an existing decision, returning pgx.ErrNoRows if absent.
 func (r *MeetingsRepo) UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error) {
 	var d model.MeetingDecision
 	err := r.db.QueryRow(ctx, `
@@ -252,6 +265,7 @@ func (r *MeetingsRepo) UpdateDecision(ctx context.Context, id string, summary, d
 	return &d, err
 }
 
+// DeleteDecision removes a decision, returning pgx.ErrNoRows if absent.
 func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM meeting_decisions WHERE id = $1::uuid`, id)
 	if err != nil {
@@ -263,6 +277,7 @@ func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
 	return nil
 }
 
+// Upcoming returns up to n meetings scheduled from now onward.
 func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,

@@ -63,9 +63,12 @@ export function openModal({ title, body, maxWidth, onMount } = {}) {
   const dialog = document.createElement('dialog');
   dialog.className = 'modal';
   if (maxWidth) dialog.style.maxWidth = maxWidth;
+  // Give the dialog an accessible name by pointing aria-labelledby at the header.
+  const titleId = `modal-title-${Math.random().toString(36).slice(2, 10)}`;
+  dialog.setAttribute('aria-labelledby', titleId);
   dialog.innerHTML = `
     <div class="modal-header">
-      <h2>${esc(title ?? '')}</h2>
+      <h2 id="${titleId}">${esc(title ?? '')}</h2>
       <button type="button" class="btn-ghost modal-close" aria-label="Close">✕</button>
     </div>
     ${body ?? ''}

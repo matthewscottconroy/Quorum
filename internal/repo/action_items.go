@@ -12,14 +12,17 @@ import (
 	"quorum/internal/model"
 )
 
+// ActionItemsRepo provides PostgreSQL data access for action items.
 type ActionItemsRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewActionItemsRepo constructs a ActionItemsRepo backed by the given connection pool.
 func NewActionItemsRepo(db *pgxpool.Pool) *ActionItemsRepo {
 	return &ActionItemsRepo{db: db}
 }
 
+// ActionItemFilter holds the optional query parameters for listing action items.
 type ActionItemFilter struct {
 	AssigneeID string
 	MeetingID  string
@@ -29,6 +32,7 @@ type ActionItemFilter struct {
 	Offset     int
 }
 
+// List returns a page of action items matching the filter, plus the total count.
 func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model.ActionItem, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -113,6 +117,7 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 	return items, total, nil
 }
 
+// Get returns the action item with the given id, or pgx.ErrNoRows if none exists.
 func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT ai.id::text, ai.title, ai.description, ai.assignee_id::text,
@@ -129,6 +134,7 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 	return &item, nil
 }
 
+// Create inserts a new action item and returns the stored row.
 func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error) {
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO action_items
@@ -146,6 +152,7 @@ func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, cr
 	return &created, nil
 }
 
+// Update applies the given field changes to the action item and returns the updated row.
 func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.ActionItem, error) {
 	sets := []string{"updated_at = now()"}
 	args := []any{}
@@ -153,14 +160,16 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 
 	allowed := map[string]bool{
 		"title": true, "description": true, "assignee_id": true,
+		"meeting_id": true, "plan_id": true,
 		"due_date": true, "status": true, "priority": true,
 	}
+	uuidField := map[string]bool{"assignee_id": true, "meeting_id": true, "plan_id": true}
 	for k, v := range fields {
 		if !allowed[k] {
 			continue
 		}
-		if k == "assignee_id" {
-			sets = append(sets, fmt.Sprintf("assignee_id = $%d::uuid", idx))
+		if uuidField[k] {
+			sets = append(sets, fmt.Sprintf("%s = $%d::uuid", k, idx))
 		} else {
 			sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
 		}
@@ -178,6 +187,7 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 	return r.Get(ctx, id)
 }
 
+// Delete removes the action item, returning pgx.ErrNoRows if no such row existed.
 func (r *ActionItemsRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM action_items WHERE id = $1::uuid`, id)
 	if err != nil {

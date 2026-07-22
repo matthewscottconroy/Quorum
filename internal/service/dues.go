@@ -55,15 +55,16 @@ const (
 	auditLogRetention       = 365 * 24 * time.Hour
 )
 
+// DuesService runs the nightly dues aging, member reminders, table pruning, and admin digest.
 type DuesService struct {
 	repo    invoiceAger
-	email   *EmailService
+	email   emailSender
 	janitor janitor
 }
 
 // NewDuesService constructs the service. janitor may be nil, in which case the
 // nightly prune step is skipped.
-func NewDuesService(r invoiceAger, e *EmailService, j janitor) *DuesService {
+func NewDuesService(r invoiceAger, e emailSender, j janitor) *DuesService {
 	return &DuesService{repo: r, email: e, janitor: j}
 }
 

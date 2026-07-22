@@ -12,14 +12,17 @@ import (
 	"quorum/internal/model"
 )
 
+// MembersRepo provides PostgreSQL data access for members.
 type MembersRepo struct {
 	db *pgxpool.Pool
 }
 
+// NewMembersRepo constructs a MembersRepo backed by the given connection pool.
 func NewMembersRepo(db *pgxpool.Pool) *MembersRepo {
 	return &MembersRepo{db: db}
 }
 
+// MemberFilter holds the optional query parameters for listing members.
 type MemberFilter struct {
 	Search string
 	Status string
@@ -28,6 +31,7 @@ type MemberFilter struct {
 	Offset int
 }
 
+// List returns a page of members matching the filter, plus the total count.
 func (r *MembersRepo) List(ctx context.Context, f MemberFilter) ([]model.Member, int, error) {
 	args := []any{}
 	conds := []string{}
@@ -112,6 +116,7 @@ func (r *MembersRepo) List(ctx context.Context, f MemberFilter) ([]model.Member,
 	return members, total, nil
 }
 
+// Get returns the member with the given id, or pgx.ErrNoRows if none exists.
 func (r *MembersRepo) Get(ctx context.Context, id string) (*model.Member, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT m.id::text, m.display_name, m.email, m.phone, m.address,
@@ -130,6 +135,7 @@ func (r *MembersRepo) Get(ctx context.Context, id string) (*model.Member, error)
 	return &m, nil
 }
 
+// Create inserts a new member and returns the stored row.
 func (r *MembersRepo) Create(ctx context.Context, m *model.Member) (*model.Member, error) {
 	var metaBytes []byte
 	if m.Metadata != nil {
@@ -158,6 +164,7 @@ var memberAllowedFields = map[string]bool{
 	"tier": true, "status": true, "joined_at": true, "notes": true, "metadata": true,
 }
 
+// Update applies the given field changes to the member and returns the updated row.
 func (r *MembersRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Member, error) {
 	sets := []string{}
 	args := []any{}
@@ -185,6 +192,7 @@ func (r *MembersRepo) Update(ctx context.Context, id string, fields map[string]a
 	return &created, nil
 }
 
+// Delete removes the member, returning pgx.ErrNoRows if no such row existed.
 func (r *MembersRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `UPDATE members SET status = 'inactive', updated_at = now() WHERE id = $1::uuid`, id)
 	if err != nil {
@@ -196,6 +204,7 @@ func (r *MembersRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// Count returns the number of active members.
 func (r *MembersRepo) Count(ctx context.Context) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx, `SELECT count(*) FROM members WHERE status = 'active'`).Scan(&n)

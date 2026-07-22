@@ -51,24 +51,27 @@ Set-Cookie: quorum_refresh=<token>; Path=/api/v1/auth; HttpOnly; SameSite=Strict
 
 - `HttpOnly` — JavaScript cannot read the cookie, protecting against XSS-based token theft.
 - `SameSite=Strict` — Cookie is not sent on cross-site requests, preventing CSRF.
-- `Secure` — Set only when the request arrives over TLS (i.e. in production behind a reverse proxy).
+- `Secure` — Driven by `QUORUM_BASE_URL`: set only when it begins with `https://` (`config.SecureCookies = strings.HasPrefix(BaseURL, "https://")`), **not** from `r.TLS`. When TLS terminates at an upstream proxy the Go process sees plain HTTP, so operators **must** set `QUORUM_BASE_URL=https://…` or the refresh cookie ships without `Secure`.
 - `Path=/api/v1/auth` — Scoped to the auth sub-path, not sent with every API call.
 
 ---
 
 ## Authorisation
 
-Three roles with strictly ascending privileges:
+Five roles with strictly ascending privileges (`roleRank` in `internal/handler/handler.go`):
 
 | Role | Rank | Can do |
 |------|------|--------|
-| `member` | 1 | Read-only access to all organisational data |
-| `officer` | 2 | Create and update records; cannot manage users or delete core data |
-| `admin` | 3 | Full access including user management and destructive operations |
+| `restricted` | 1 | Sees only its own linked member record (own profile, dues, assigned action items); 403 on every shared/org-wide resource |
+| `member` | 2 | Read-only access to all shared organisational data |
+| `officer` | 3 | Create and update records; cannot manage users or delete core data |
+| `admin` | 4 | Officer plus user management and member deactivation (reversible soft-delete) |
+| `superadmin` | 5 | Full access, including permanent (destructive) deletion of core records and user accounts |
 
 - Roles are encoded in the JWT and enforced in `RequireRole` middleware before reaching any handler.
 - The `roleAtLeast` function checks `rank[current] >= rank[required]`; there are no gaps in the hierarchy.
-- The first admin account can only be created via `POST /api/v1/auth/bootstrap`, which returns 403 once any user exists, preventing re-bootstrapping.
+- Permanent deletion of core records and users is reserved for `superadmin` (see [Authorisation and destructive actions](#authorisation-and-destructive-actions) below); `admin` cannot destructively delete.
+- The first account can only be created via `POST /api/v1/auth/bootstrap`, which mints a `superadmin` and returns 403 once any user exists, preventing re-bootstrapping.
 
 ---
 
@@ -113,15 +116,15 @@ X-Frame-Options: DENY
 
 Quorum listens on plain HTTP and is expected to sit behind a TLS-terminating reverse proxy (nginx, Caddy, or a cloud load balancer). TLS certificates and HTTPS enforcement are the operator's responsibility.
 
-The `Secure` flag on the refresh cookie is set only when `r.TLS != nil`, so it is active when TLS terminates at the Go process itself, and should be enforced at the proxy via HTTPS redirect when terminating upstream.
+The `Secure` flag on the refresh cookie is derived from `QUORUM_BASE_URL` — it is set only when that URL begins with `https://` — **not** from `r.TLS` (which is always nil behind a TLS-terminating proxy). Operators terminating TLS upstream **must** set `QUORUM_BASE_URL=https://…`; otherwise the refresh cookie is sent without `Secure` and can leak over a downgraded connection. HTTPS should additionally be enforced at the proxy via an HTTP→HTTPS redirect.
 
 ---
 
 ## Rate limiting
 
-- Login attempts are rate-limited to **10 per minute per client IP** using a sliding-window in-process rate limiter.
-- The IP is taken from `r.RemoteAddr` after chi's `RealIP` middleware has processed `X-Forwarded-For` headers. The `LoginRateLimit` handler does not re-read `X-Forwarded-For` directly, preventing header injection to bypass the limit.
-- The rate limiter is in-process only. For deployments with multiple replicas, a shared counter (e.g. Redis) should replace the built-in limiter.
+- Login attempts are rate-limited to **10 per minute per client key** using a sliding-window in-process rate limiter (token refresh has a separate, more permissive limiter at 60/min).
+- **IP sourcing:** chi's `RealIP` middleware is deliberately **not** used. By default `clientIP()` keys on the raw socket address (`r.RemoteAddr`), so a client cannot spoof its rate-limit key with a forged header. Only when `QUORUM_TRUST_PROXY_HEADERS=true` does it read the proxy-supplied client IP — `X-Real-IP` first, then the leftmost `X-Forwarded-For` entry. Enable that flag **only** behind a trusted reverse proxy/ingress that sets and sanitises those headers; otherwise leave it off (direct exposure) so headers cannot be forged, and note that with it off all clients behind a proxy would share a single bucket.
+- The rate limiter is in-process only. For deployments with multiple replicas, a shared counter (e.g. Redis) or ingress-level rate limiting should replace the built-in limiter.
 
 ---
 
@@ -170,7 +173,7 @@ All mutating HTTP requests (`POST`, `PATCH`, `PUT`, `DELETE`) that return a 2xx 
 | `github.com/golang-jwt/jwt/v5` | JWT | Signing method validated on parse |
 | `golang.org/x/crypto/bcrypt` | Password hashing | Cost 12 |
 | `github.com/jackc/pgx/v5` | PostgreSQL | Parameterised queries throughout |
-| `github.com/go-chi/chi/v5` | Routing | `RealIP`, `Recoverer`, `Logger` middleware |
+| `github.com/go-chi/chi/v5` | Routing | `Recoverer` and `Logger` middleware (`RealIP` deliberately omitted — see Rate limiting) |
 
 Run `go list -m -json all | jq .` and cross-reference with `govulncheck ./...` to check for known CVEs in dependencies.
 
@@ -184,7 +187,7 @@ Run `go list -m -json all | jq .` and cross-reference with `govulncheck ./...` t
 | **JWT secret** | Generate with `make secret` (64 random hex chars). Rotate by restarting the server with a new value — all existing sessions will be invalidated. |
 | **Database access** | Restrict the PostgreSQL user to the `quorum` database only. Do not grant superuser. |
 | **Secrets management** | Inject `QUORUM_JWT_SECRET`, `QUORUM_DATABASE_URL`, and SMTP/payment secrets via environment variables or a secrets manager, not baked into container images. |
-| **Stripe/PayPal secrets** | Always configure `QUORUM_STRIPE_WEBHOOK_SECRET` and `QUORUM_PAYPAL_WEBHOOK_ID` in production. Without them, any caller can inject fake payment events. |
+| **Stripe/PayPal secrets** | Configure `QUORUM_STRIPE_WEBHOOK_SECRET` and `QUORUM_PAYPAL_WEBHOOK_ID` in production. An unconfigured provider fails closed (`503`); never set `QUORUM_ALLOW_UNSIGNED_WEBHOOKS=true` in production, as it would let any caller inject unverified payment events. |
 | **Backups** | Back up the PostgreSQL database independently of the application container. |
 | **Updates** | Monitor `govulncheck` and rebuild/redeploy promptly when critical CVEs are disclosed in dependencies. |
 | **Network isolation** | The database should not be reachable from the public internet. Place it in a private subnet or use a Unix socket. |

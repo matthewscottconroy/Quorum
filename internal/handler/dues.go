@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"quorum/internal/model"
@@ -20,6 +21,7 @@ func NewDuesHandler(r duesRepo) *DuesHandler {
 	return &DuesHandler{repo: r}
 }
 
+// List handles GET requests for a paginated, filterable list of invoices.
 func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if v := q.Get("member_id"); v != "" && !isValidUUID(v) {
@@ -49,6 +51,7 @@ func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, model.Page[model.DuesInvoice]{Data: invoices, Total: total, Limit: f.Limit, Offset: f.Offset})
 }
 
+// Create handles creating a invoice.
 func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		// Single invoice
@@ -115,7 +118,7 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.repo.CreateInvoiceBatch(r.Context(), invs)
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 
@@ -126,6 +129,7 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Get handles fetching a single invoice by id.
 func (h *DuesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -139,6 +143,7 @@ func (h *DuesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, inv)
 }
 
+// Update handles updating a invoice.
 func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -168,6 +173,7 @@ func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, inv)
 }
 
+// CreateTransaction records a manual payment against an invoice.
 func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	invoiceID, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -203,6 +209,13 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 	if currency == "" {
 		currency = inv.Currency
 	}
+	// A payment in a different currency can't be summed against the invoice
+	// (the recompute only counts matching-currency transactions), so reject it
+	// rather than silently record a payment that never affects the balance.
+	if !strings.EqualFold(currency, inv.Currency) {
+		writeError(w, 400, "transaction currency must match the invoice currency", "bad_request")
+		return
+	}
 	status := "succeeded"
 	providerStr := &status
 
@@ -220,7 +233,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		Notes:               body.Notes,
 	})
 	if err != nil {
-		writeError(w, 500, "create error", "internal_error")
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 
@@ -231,6 +244,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 201, tx)
 }
 
+// ListTransactions handles listing payment transactions.
 func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for _, p := range []string{"invoice_id", "member_id"} {
