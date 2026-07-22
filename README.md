@@ -2,6 +2,9 @@
 
 Quorum is a self-hosted web application for managing organizational operations: dues collection, meeting notes, strategic plans, contacts, and resources.
 
+> **New to Quorum?** The [User & Operations Manual](USER_MANUAL.md) is a task- and role-based guide for every user (members, officers, admins) and for the operator who deploys the system. It exports cleanly to PDF (see its Appendix G).
+
+
 ## Quick start
 
 **With Podman (recommended):**
