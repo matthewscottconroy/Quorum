@@ -11,6 +11,7 @@ import (
 
 	"quorum/internal/auth"
 	"quorum/internal/config"
+	"quorum/internal/model"
 )
 
 // normalizeEmail lowercases and trims an email so lookups and uniqueness are
@@ -27,11 +28,19 @@ func derefStr(s *string) string {
 	return *s
 }
 
+// mailer is the subset of the email service the auth handler needs to deliver
+// password-reset links. Optional: when unset, reset emails are silently
+// skipped (the flow still returns 200 so it cannot be used to probe accounts).
+type mailer interface {
+	Send(to []string, subject, body string) error
+}
+
 // AuthHandler handles authentication and user-management endpoints.
 type AuthHandler struct {
 	repo     authRepo
 	cfg      *config.Config
 	notifier deletionNotifier
+	mailer   mailer
 }
 
 // NewAuthHandler constructs an AuthHandler backed by the given repo and config.
@@ -41,6 +50,45 @@ func NewAuthHandler(r authRepo, cfg *config.Config) *AuthHandler {
 
 // SetNotifier attaches an optional notifier used when a user account is deleted.
 func (h *AuthHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
+
+// SetMailer attaches the email service used to deliver password-reset links.
+func (h *AuthHandler) SetMailer(m mailer) { h.mailer = m }
+
+// issueSession mints an access token, stores a rotated refresh token, sets the
+// refresh cookie, and writes the standard login response. Shared by the
+// single-step login path and the second-factor (TOTP) completion path.
+func (h *AuthHandler) issueSession(w http.ResponseWriter, r *http.Request, user *model.User) {
+	access, err := auth.IssueAccessToken(user.ID, user.Role, derefStr(user.MemberID), h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
+		return
+	}
+	plain, hashed, err := auth.GenerateRefreshToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
+		return
+	}
+	expiresAt := time.Now().Add(h.cfg.JWTRefreshTTL)
+	if err := h.repo.StoreRefreshToken(r.Context(), user.ID, hashed, expiresAt); err != nil {
+		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
+		return
+	}
+	h.repo.UpdateLastLogin(r.Context(), user.ID) //nolint:errcheck
+	http.SetCookie(w, &http.Cookie{
+		Name:     "quorum_refresh",
+		Value:    plain,
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Expires:  expiresAt,
+		Secure:   h.cfg.SecureCookies,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": access,
+		"expires_at":   time.Now().Add(h.cfg.JWTAccessTTL),
+		"user":         user,
+	})
+}
 
 // Login authenticates an email/password and issues an access token plus refresh cookie.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -71,43 +119,73 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := auth.IssueAccessToken(user.ID, user.Role, derefStr(user.MemberID), h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
+	// If the account has two-factor enabled, do NOT issue a session yet. Return
+	// an interim token (Purpose=mfa) that authorizes only the second step; the
+	// API middleware rejects it for everything else.
+	if _, enabled, err := h.repo.GetTOTP(r.Context(), user.ID); err == nil && enabled {
+		mfaToken, err := auth.IssueMFAToken(user.ID, h.cfg.JWTSecret, 5*time.Minute)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "token error", "internal_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mfa_required": true,
+			"mfa_token":    mfaToken,
+		})
+		return
+	}
+
+	h.issueSession(w, r, user)
+}
+
+// LoginMFA completes a two-factor login: it validates the interim MFA token
+// (issued by Login) plus a TOTP code or a one-time recovery code, then issues a
+// full session. Rate-limited like Login.
+func (h *AuthHandler) LoginMFA(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MFAToken     string `json:"mfa_token"`
+		Code         string `json:"code"`
+		RecoveryCode string `json:"recovery_code"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	claims, err := auth.ParseToken(body.MFAToken, h.cfg.JWTSecret)
+	if err != nil || claims.Purpose != auth.PurposeMFA || claims.UserID == "" {
+		writeError(w, http.StatusUnauthorized, "invalid or expired two-factor session", "unauthorized")
+		return
+	}
+	secret, enabled, err := h.repo.GetTOTP(r.Context(), claims.UserID)
+	if err != nil || !enabled {
+		writeError(w, http.StatusUnauthorized, "two-factor is not enabled", "unauthorized")
+		return
+	}
+
+	ok := false
+	switch {
+	case strings.TrimSpace(body.Code) != "":
+		ok = auth.ValidateTOTP(secret, body.Code, time.Now())
+	case strings.TrimSpace(body.RecoveryCode) != "":
+		// Recovery codes are single-use; consuming marks it spent atomically.
+		consumed, cerr := h.repo.ConsumeRecoveryCode(r.Context(), claims.UserID, auth.HashRefreshToken(strings.TrimSpace(body.RecoveryCode)))
+		if cerr != nil {
+			writeError(w, http.StatusInternalServerError, "verification failed", "internal_error")
+			return
+		}
+		ok = consumed
+	}
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid two-factor code", "unauthorized")
+		return
+	}
+
+	user, err := h.repo.GetUserByID(r.Context(), claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
+		writeError(w, http.StatusUnauthorized, "user not found", "unauthorized")
 		return
 	}
-
-	plain, hashed, err := auth.GenerateRefreshToken()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
-		return
-	}
-
-	expiresAt := time.Now().Add(h.cfg.JWTRefreshTTL)
-	if err := h.repo.StoreRefreshToken(r.Context(), user.ID, hashed, expiresAt); err != nil {
-		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
-		return
-	}
-
-	h.repo.UpdateLastLogin(r.Context(), user.ID) //nolint:errcheck
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "quorum_refresh",
-		Value:    plain,
-		Path:     "/api/v1/auth",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  expiresAt,
-		Secure:   h.cfg.SecureCookies,
-	})
-
-	// expires_at is the ACCESS token expiry (the refresh token's lifetime is
-	// carried by the cookie), so clients know when to refresh.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": access,
-		"expires_at":   time.Now().Add(h.cfg.JWTAccessTTL),
-		"user":         user,
-	})
+	h.issueSession(w, r, user)
 }
 
 // Refresh rotates the refresh cookie and issues a new access token.

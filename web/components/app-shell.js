@@ -1,4 +1,11 @@
-import { isAuthenticated, resolveRoute } from '../app.js';
+import { isAuthenticated, resolveRoute, routePath, PUBLIC_ROUTES } from '../app.js';
+
+// Bare (chrome-less) pages shown without the nav shell to logged-out visitors.
+const PUBLIC_PAGE_TAGS = {
+  '#/login':           'login-page',
+  '#/forgot-password': 'forgot-password-page',
+  '#/reset-password':  'reset-password-page',
+};
 
 class AppShell extends HTMLElement {
   connectedCallback() {
@@ -9,7 +16,11 @@ class AppShell extends HTMLElement {
 
   render() {
     if (!isAuthenticated()) {
-      this.innerHTML = '<login-page></login-page>';
+      // Render whichever public page the hash points at (login by default) so
+      // password-recovery links work without a session.
+      const path = routePath(location.hash);
+      const tag = (PUBLIC_ROUTES.has(path) && PUBLIC_PAGE_TAGS[path]) || 'login-page';
+      this.innerHTML = `<${tag}></${tag}>`;
       return;
     }
     const pageTag = resolveRoute();

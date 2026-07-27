@@ -1,0 +1,270 @@
+package handler
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"quorum/internal/auth"
+)
+
+// resetTokenTTL bounds how long a password-reset link stays valid.
+const resetTokenTTL = time.Hour
+
+// recoveryCodeCount is how many one-time 2FA recovery codes are minted at enroll.
+const recoveryCodeCount = 10
+
+// ---- Two-factor (TOTP) enrollment ----
+
+// Setup2FA begins TOTP enrollment for the caller: it generates a fresh secret,
+// stores it (still disabled), and returns the secret plus an otpauth:// URI for
+// the authenticator app. Enrollment is not complete until Enable2FA confirms a
+// code. Re-calling regenerates the secret, which is safe because 2FA is not yet
+// active.
+func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r)
+	user, err := h.repo.GetUserByID(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found", "not_found")
+		return
+	}
+	if _, enabled, _ := h.repo.GetTOTP(r.Context(), userID); enabled {
+		writeError(w, http.StatusConflict, "two-factor is already enabled; disable it first to re-enroll", "conflict")
+		return
+	}
+	secret, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate secret", "internal_error")
+		return
+	}
+	if err := h.repo.SetTOTPSecret(r.Context(), userID, secret); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store secret", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"secret":           secret,
+		"provisioning_uri": auth.TOTPProvisioningURI(secret, user.Email, "Quorum"),
+	})
+}
+
+// Enable2FA confirms TOTP enrollment: the caller submits a current code proving
+// their authenticator is in sync. On success it flips totp_enabled on and
+// returns a fresh set of one-time recovery codes (shown exactly once).
+func (h *AuthHandler) Enable2FA(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r)
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	secret, enabled, err := h.repo.GetTOTP(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup failed", "internal_error")
+		return
+	}
+	if enabled {
+		writeError(w, http.StatusConflict, "two-factor is already enabled", "conflict")
+		return
+	}
+	if secret == "" {
+		writeError(w, http.StatusBadRequest, "call setup before enabling two-factor", "bad_request")
+		return
+	}
+	if !auth.ValidateTOTP(secret, body.Code, time.Now()) {
+		writeError(w, http.StatusBadRequest, "invalid code", "bad_request")
+		return
+	}
+	plainCodes, hashes, err := auth.GenerateRecoveryCodes(recoveryCodeCount)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate recovery codes", "internal_error")
+		return
+	}
+	if err := h.repo.ReplaceRecoveryCodes(r.Context(), userID, hashes); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store recovery codes", "internal_error")
+		return
+	}
+	if err := h.repo.EnableTOTP(r.Context(), userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enable two-factor", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":        true,
+		"recovery_codes": plainCodes,
+	})
+}
+
+// Disable2FA turns off TOTP for the caller. It re-verifies the account password
+// (a stolen session alone must not be able to strip a second factor) and clears
+// the stored secret and recovery codes.
+func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r)
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	hash, err := h.repo.GetPasswordHash(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "user error", "internal_error")
+		return
+	}
+	if !auth.CheckPassword(hash, body.Password) {
+		writeError(w, http.StatusUnauthorized, "password incorrect", "unauthorized")
+		return
+	}
+	if err := h.repo.DisableTOTP(r.Context(), userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not disable two-factor", "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- Password recovery ----
+
+// ForgotPassword starts the self-service reset flow. It ALWAYS returns 200 with
+// the same body, whether or not the email is registered, so it cannot be used
+// to enumerate accounts. When the email exists a single-use, time-limited token
+// is created and emailed as a link. Rate-limited at the route.
+func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	const ok = "if that email is registered, a reset link has been sent"
+	email := normalizeEmail(body.Email)
+	if email == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"message": ok})
+		return
+	}
+	user, _, err := h.repo.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		// Unknown email (or a transient DB error): reveal nothing.
+		writeJSON(w, http.StatusOK, map[string]string{"message": ok})
+		return
+	}
+	plain, hashed, err := auth.GenerateResetToken()
+	if err == nil {
+		if serr := h.repo.CreatePasswordResetToken(r.Context(), user.ID, hashed, time.Now().Add(resetTokenTTL)); serr == nil && h.mailer != nil {
+			link := fmt.Sprintf("%s/#/reset-password?token=%s", strings.TrimRight(h.cfg.BaseURL, "/"), plain)
+			subject := "Reset your Quorum password"
+			text := fmt.Sprintf(
+				"A password reset was requested for your Quorum account.\n\n"+
+					"Open this link to choose a new password (valid for 1 hour):\n\n%s\n\n"+
+					"If you did not request this, you can safely ignore this email.\n", link)
+			h.mailer.Send([]string{user.Email}, subject, text) //nolint:errcheck
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": ok})
+}
+
+// ResetPassword completes the self-service flow: it atomically consumes a valid
+// reset token, sets the new password, and revokes all of that user's refresh
+// tokens so any session opened with the old password is cut off.
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	if body.Token == "" {
+		writeError(w, http.StatusBadRequest, "token required", "bad_request")
+		return
+	}
+	if len(body.NewPassword) < 10 {
+		writeError(w, http.StatusBadRequest, "password must be at least 10 characters", "bad_request")
+		return
+	}
+	userID, err := h.repo.ConsumePasswordResetToken(r.Context(), auth.HashResetToken(body.Token))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "invalid or expired reset token", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reset failed", "internal_error")
+		return
+	}
+	newHash, err := auth.HashPassword(body.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "hash error", "internal_error")
+		return
+	}
+	if err := h.repo.UpdatePasswordHash(r.Context(), userID, newHash); err != nil {
+		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		return
+	}
+	h.repo.RevokeAllRefreshTokensForUser(r.Context(), userID) //nolint:errcheck
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminResetPassword lets an admin set a new password for another account (for
+// users who cannot receive email, or to force a rotation). If new_password is
+// omitted a strong random one is generated and returned to the admin exactly
+// once to relay out-of-band. Resetting a superadmin requires a superadmin
+// actor. All of the target's sessions are revoked.
+func (h *AuthHandler) AdminResetPassword(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		NewPassword string `json:"new_password"`
+	}
+	_ = decodeJSON(r, &body) // body is optional
+
+	target, err := h.repo.GetUserByID(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "user not found", "query error")
+		return
+	}
+	if target.Role == "superadmin" && roleFromCtx(r) != "superadmin" {
+		writeError(w, http.StatusForbidden, "only a superadmin may reset a superadmin's password", "forbidden")
+		return
+	}
+
+	newPassword := strings.TrimSpace(body.NewPassword)
+	generated := false
+	if newPassword == "" {
+		gen, _, err := auth.GenerateRecoveryCodes(3) // 3 x 8 base32 chars = strong temp password
+		if err != nil || len(gen) < 3 {
+			writeError(w, http.StatusInternalServerError, "could not generate password", "internal_error")
+			return
+		}
+		newPassword = strings.Join(gen, "-")
+		generated = true
+	} else if len(newPassword) < 10 {
+		writeError(w, http.StatusBadRequest, "password must be at least 10 characters", "bad_request")
+		return
+	}
+
+	newHash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "hash error", "internal_error")
+		return
+	}
+	if err := h.repo.UpdatePasswordHash(r.Context(), id, newHash); err != nil {
+		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		return
+	}
+	h.repo.RevokeAllRefreshTokensForUser(r.Context(), id) //nolint:errcheck
+
+	resp := map[string]any{"reset": true}
+	if generated {
+		// Returned once so the admin can relay it; never stored in plaintext.
+		resp["temporary_password"] = newPassword
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

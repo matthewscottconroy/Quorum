@@ -142,6 +142,41 @@ export async function api(method, path, body) {
   return res.status === 204 ? null : res.json();
 }
 
+/**
+ * Downloads an authenticated file (CSV/JSON export) to the user's device.
+ * Attaches the in-memory JWT, retries once after a silent refresh on 401, then
+ * streams the response body into a temporary object-URL download.
+ *
+ * @param {string} path - API path, e.g. `/export/members.csv`. Prefixed with `/api/v1`.
+ * @param {string} filename - Suggested download filename.
+ * @throws {object} `{error, code}` when the request fails.
+ */
+export async function apiDownload(path, filename) {
+  const doFetch = () => fetch('/api/v1' + path, {
+    headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+    credentials: 'same-origin',
+  });
+  let res = await doFetch();
+  if (res.status === 401) {
+    if (await silentRefresh()) {
+      res = await doFetch();
+    } else {
+      clearAuth(); navigate('#/login');
+      throw { error: 'Session expired', code: 'unauthorized' };
+    }
+  }
+  if (!res.ok) throw await res.json().catch(() => ({ error: res.statusText }));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // Single-flight guard: concurrent 401s share one in-flight /auth/refresh call.
 let _refreshPromise = null;
 
@@ -185,29 +220,42 @@ export function navigate(hash) {
 }
 
 const routes = {
-  '#/login':     '<login-page>',
-  '#/dashboard': '<page-dashboard>',
-  '#/members':   '<page-members>',
-  '#/dues':      '<page-dues>',
-  '#/meetings':  '<page-meetings>',
-  '#/plans':     '<page-plans>',
-  '#/contacts':  '<page-contacts>',
-  '#/resources': '<page-resources>',
-  '#/settings':  '<page-settings>',
-  '#/my-account':'<page-my-account>',
-  '#/404':       '<page-not-found>',
+  '#/login':           '<login-page>',
+  '#/forgot-password': '<forgot-password-page>',
+  '#/reset-password':  '<reset-password-page>',
+  '#/dashboard':       '<page-dashboard>',
+  '#/members':         '<page-members>',
+  '#/dues':            '<page-dues>',
+  '#/meetings':        '<page-meetings>',
+  '#/plans':           '<page-plans>',
+  '#/contacts':        '<page-contacts>',
+  '#/resources':       '<page-resources>',
+  '#/settings':        '<page-settings>',
+  '#/my-account':      '<page-my-account>',
+  '#/404':             '<page-not-found>',
 };
 
+/**
+ * Public routes reachable without authentication. `#/reset-password` carries a
+ * `?token=…` query, so the router matches on the path portion only.
+ */
+export const PUBLIC_ROUTES = new Set(['#/login', '#/forgot-password', '#/reset-password']);
+
+/** Returns the hash with any `?query` stripped, e.g. `#/reset-password?token=x` → `#/reset-password`. */
+export function routePath(hash) {
+  return (hash || '').split('?')[0];
+}
+
 function resolveRoute() {
-  const hash = location.hash || '#/dashboard';
+  const path = routePath(location.hash) || '#/dashboard';
   // Restricted users may only view their own account. Any other (org-wide) route
   // is redirected to #/my-account so the UI never renders a view the backend
-  // would 403 anyway.
-  if (isRestricted() && hash !== '#/my-account' && hash !== '#/login') {
-    if (location.hash !== '#/my-account') location.hash = '#/my-account';
+  // would 403 anyway. Public (logged-out) routes are left alone.
+  if (isRestricted() && path !== '#/my-account' && !PUBLIC_ROUTES.has(path)) {
+    if (routePath(location.hash) !== '#/my-account') location.hash = '#/my-account';
     return routes['#/my-account'];
   }
-  return routes[hash] ?? routes['#/404'];
+  return routes[path] ?? routes['#/404'];
 }
 
 window.addEventListener('hashchange', () => {
@@ -216,6 +264,8 @@ window.addEventListener('hashchange', () => {
 
 // ─── Component imports (side-effects only) ───────────────────────────────────
 import './components/login-page.js';
+import './components/forgot-password-page.js';
+import './components/reset-password-page.js';
 import './components/app-shell.js';
 import './components/nav-bar.js';
 import './components/page-dashboard.js';
@@ -237,7 +287,7 @@ async function boot() {
   const refreshed = await silentRefresh();
 
   const prevHash = location.hash;
-  if (!isAuthenticated() && location.hash !== '#/login') {
+  if (!isAuthenticated() && !PUBLIC_ROUTES.has(routePath(location.hash))) {
     location.hash = '#/login';
   } else if (isAuthenticated() && (!location.hash || location.hash === '#/login')) {
     location.hash = isRestricted() ? '#/my-account' : '#/dashboard';

@@ -139,6 +139,12 @@ func (m *Middleware) Auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid or expired token", "unauthorized")
 			return
 		}
+		// An interim two-factor token authorizes only the second login step, not
+		// the API.
+		if claims.Purpose == auth.PurposeMFA {
+			writeError(w, http.StatusUnauthorized, "two-factor authentication incomplete", "unauthorized")
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 		ctx = context.WithValue(ctx, ctxRole, claims.Role)
 		ctx = context.WithValue(ctx, ctxMemberID, claims.MemberID)

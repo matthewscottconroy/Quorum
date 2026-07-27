@@ -1,4 +1,4 @@
-import { api, canWrite } from '../app.js';
+import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
 import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney } from '../utils.js';
@@ -26,7 +26,11 @@ class PageDues extends HTMLElement {
     this.innerHTML = `
       <div class="page-header">
         <h1>Dues &amp; Billing</h1>
-        ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Create invoice</button>' : ''}
+        <div style="display:flex;gap:.5rem">
+          <button class="btn-secondary" id="export-dues-btn">Export dues</button>
+          <button class="btn-secondary" id="export-tx-btn">Export payments</button>
+          ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Create invoice</button>' : ''}
+        </div>
       </div>
       <div class="search-bar">
         <select id="status-sel" style="max-width:160px">
@@ -47,6 +51,14 @@ class PageDues extends HTMLElement {
     this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this.load(); });
     this.querySelector('#refresh-btn')?.addEventListener('click', () => this.load());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
+    this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
+      try { await apiDownload('/export/dues.csv', 'dues.csv'); }
+      catch (err) { toast(err.error ?? 'Export failed','error'); }
+    });
+    this.querySelector('#export-tx-btn')?.addEventListener('click', async () => {
+      try { await apiDownload('/export/transactions.csv', 'transactions.csv'); }
+      catch (err) { toast(err.error ?? 'Export failed','error'); }
+    });
   }
 
   async load() {

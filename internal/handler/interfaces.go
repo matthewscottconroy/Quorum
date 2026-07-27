@@ -26,6 +26,14 @@ type authRepo interface {
 	GetPasswordHash(ctx context.Context, id string) (string, error)
 	UpdatePasswordHash(ctx context.Context, id, hash string) error
 	RevokeAllRefreshTokensForUser(ctx context.Context, userID string) error
+	CreatePasswordResetToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
+	ConsumePasswordResetToken(ctx context.Context, hash string) (string, error)
+	GetTOTP(ctx context.Context, userID string) (secret string, enabled bool, err error)
+	SetTOTPSecret(ctx context.Context, userID, secret string) error
+	EnableTOTP(ctx context.Context, userID string) error
+	DisableTOTP(ctx context.Context, userID string) error
+	ReplaceRecoveryCodes(ctx context.Context, userID string, hashes []string) error
+	ConsumeRecoveryCode(ctx context.Context, userID, hash string) (bool, error)
 }
 
 // membersRepo is satisfied by *repo.MembersRepo.

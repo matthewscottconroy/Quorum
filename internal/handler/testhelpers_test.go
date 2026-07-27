@@ -48,6 +48,60 @@ type mockAuthRepo struct {
 	GetPasswordHashFn               func(ctx context.Context, id string) (string, error)
 	UpdatePasswordHashFn            func(ctx context.Context, id, hash string) error
 	RevokeAllRefreshTokensForUserFn func(ctx context.Context, userID string) error
+	CreatePasswordResetTokenFn      func(ctx context.Context, userID, hash string, expiresAt time.Time) error
+	ConsumePasswordResetTokenFn     func(ctx context.Context, hash string) (string, error)
+	GetTOTPFn                       func(ctx context.Context, userID string) (string, bool, error)
+	SetTOTPSecretFn                 func(ctx context.Context, userID, secret string) error
+	EnableTOTPFn                    func(ctx context.Context, userID string) error
+	DisableTOTPFn                   func(ctx context.Context, userID string) error
+	ReplaceRecoveryCodesFn          func(ctx context.Context, userID string, hashes []string) error
+	ConsumeRecoveryCodeFn           func(ctx context.Context, userID, hash string) (bool, error)
+}
+
+func (m *mockAuthRepo) CreatePasswordResetToken(ctx context.Context, userID, hash string, e time.Time) error {
+	if m.CreatePasswordResetTokenFn != nil {
+		return m.CreatePasswordResetTokenFn(ctx, userID, hash, e)
+	}
+	return nil
+}
+func (m *mockAuthRepo) ConsumePasswordResetToken(ctx context.Context, hash string) (string, error) {
+	return m.ConsumePasswordResetTokenFn(ctx, hash)
+}
+func (m *mockAuthRepo) GetTOTP(ctx context.Context, userID string) (string, bool, error) {
+	if m.GetTOTPFn != nil {
+		return m.GetTOTPFn(ctx, userID)
+	}
+	return "", false, nil
+}
+func (m *mockAuthRepo) SetTOTPSecret(ctx context.Context, userID, secret string) error {
+	if m.SetTOTPSecretFn != nil {
+		return m.SetTOTPSecretFn(ctx, userID, secret)
+	}
+	return nil
+}
+func (m *mockAuthRepo) EnableTOTP(ctx context.Context, userID string) error {
+	if m.EnableTOTPFn != nil {
+		return m.EnableTOTPFn(ctx, userID)
+	}
+	return nil
+}
+func (m *mockAuthRepo) DisableTOTP(ctx context.Context, userID string) error {
+	if m.DisableTOTPFn != nil {
+		return m.DisableTOTPFn(ctx, userID)
+	}
+	return nil
+}
+func (m *mockAuthRepo) ReplaceRecoveryCodes(ctx context.Context, userID string, hashes []string) error {
+	if m.ReplaceRecoveryCodesFn != nil {
+		return m.ReplaceRecoveryCodesFn(ctx, userID, hashes)
+	}
+	return nil
+}
+func (m *mockAuthRepo) ConsumeRecoveryCode(ctx context.Context, userID, hash string) (bool, error) {
+	if m.ConsumeRecoveryCodeFn != nil {
+		return m.ConsumeRecoveryCodeFn(ctx, userID, hash)
+	}
+	return false, nil
 }
 
 func (m *mockAuthRepo) GetUserByEmail(ctx context.Context, email string) (*model.User, string, error) {

@@ -14,6 +14,7 @@ type User struct {
 	Email       string     `json:"email"`
 	Role        string     `json:"role"`
 	MemberID    *string    `json:"member_id,omitempty"`
+	TOTPEnabled bool       `json:"totp_enabled"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 }

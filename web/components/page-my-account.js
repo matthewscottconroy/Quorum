@@ -1,4 +1,4 @@
-import { api, getUser, currentMemberId } from '../app.js';
+import { api, apiDownload, getUser, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDate, formatMoney } from '../utils.js';
 
@@ -18,7 +18,15 @@ class PageMyAccount extends HTMLElement {
     const user = getUser();
     const memberId = currentMemberId();
 
-    this.innerHTML = `<div class="page-header"><h1>My Account</h1></div>`;
+    this.innerHTML = `
+      <div class="page-header">
+        <h1>My Account</h1>
+        <button class="btn-secondary" id="export-me-btn">Export my data</button>
+      </div>`;
+    this.querySelector('#export-me-btn').addEventListener('click', async () => {
+      try { await apiDownload('/auth/me/export', 'my-quorum-data.json'); }
+      catch (err) { toast(err.error ?? 'Export failed','error'); }
+    });
 
     if (!memberId) {
       this.innerHTML += `

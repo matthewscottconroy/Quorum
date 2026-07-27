@@ -1,4 +1,4 @@
-import { api, getUser, isAdmin, isSuperadmin } from '../app.js';
+import { api, apiDownload, getUser, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 
@@ -32,7 +32,9 @@ class PageSettings extends HTMLElement {
   }
 
   async render() {
-    const me = getUser();
+    // Re-fetch so the two-factor status reflects any change made this session.
+    let me = getUser();
+    try { me = await api('GET', '/auth/me') ?? me; } catch {}
     let users = [];
     let members = [];
     if (isAdmin()) {
@@ -60,6 +62,21 @@ class PageSettings extends HTMLElement {
           <div class="form-group"><label for="f-pw">New password</label><input id="f-pw" type="password" autocomplete="new-password"></div>
           <div class="form-group"><label for="f-pw2">Confirm password</label><input id="f-pw2" type="password" autocomplete="new-password"></div>
           <button class="btn-primary" id="pw-btn">Update password</button>
+
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
+          <h3 style="font-size:.9rem;margin-bottom:.5rem">Two-factor authentication</h3>
+          ${me?.totp_enabled ? `
+            <p style="font-size:.85rem;color:var(--color-success,#137333);margin-bottom:.75rem">✓ Two-factor is <strong>on</strong>. You'll be asked for a code at sign-in.</p>
+            <button class="btn-ghost" id="twofa-disable-btn" style="color:var(--color-danger)">Turn off two-factor</button>
+          ` : `
+            <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">Add a second step at sign-in using an authenticator app (Google Authenticator, 1Password, Authy…).</p>
+            <button class="btn-primary" id="twofa-setup-btn">Set up two-factor</button>
+          `}
+
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
+          <h3 style="font-size:.9rem;margin-bottom:.5rem">Export my data</h3>
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">Download your account, profile, dues and payments as a JSON file.</p>
+          <button class="btn-secondary" id="export-me-btn">Download my data (JSON)</button>
         </section>
 
         ${isAdmin() ? `
@@ -85,6 +102,7 @@ class PageSettings extends HTMLElement {
                     </select>
                   </td>
                   <td style="text-align:right;white-space:nowrap">
+                    <button class="btn-ghost reset-pw-btn" data-id="${esc(u.id)}" data-email="${esc(u.email)}" style="font-size:.8rem">Reset PW</button>
                     ${isSuperadmin() && u.id !== me?.id ? `<button class="btn-ghost del-user-btn" data-id="${esc(u.id)}" data-email="${esc(u.email)}" style="color:var(--color-danger);font-size:.8rem">Del</button>` : ''}
                   </td>
                 </tr>`).join('')}
@@ -111,7 +129,19 @@ class PageSettings extends HTMLElement {
       } catch (err) { toast(err.error ?? 'Update failed','error'); }
     });
 
+    this.querySelector('#export-me-btn')?.addEventListener('click', async () => {
+      try { await apiDownload('/auth/me/export', 'my-quorum-data.json'); }
+      catch (err) { toast(err.error ?? 'Export failed','error'); }
+    });
+
+    this.querySelector('#twofa-setup-btn')?.addEventListener('click', () => this.open2FASetup());
+    this.querySelector('#twofa-disable-btn')?.addEventListener('click', () => this.open2FADisable());
+
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
+
+    this.querySelectorAll('.reset-pw-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.openAdminReset(btn.dataset.id, btn.dataset.email));
+    });
 
     this.querySelectorAll('.role-sel').forEach(sel => {
       let original = sel.value;
@@ -195,6 +225,129 @@ class PageSettings extends HTMLElement {
         await api('POST', '/users', body);
         toast('User created','success'); close(); this.render();
       } catch (err) { toast(err.error??'Failed','error'); }
+    }));
+  }
+
+  /** Enroll in TOTP: show the secret + otpauth URI, then confirm with a code. */
+  async open2FASetup() {
+    let setup;
+    try {
+      setup = await api('POST', '/auth/2fa/setup');
+    } catch (err) { toast(err.error ?? 'Could not start setup','error'); return; }
+
+    const { dialog, close } = openModal({
+      title: 'Set up two-factor authentication',
+      maxWidth: '440px',
+      body: `
+        <div class="modal-body">
+          <ol style="font-size:.88rem;padding-left:1.1rem;margin:0 0 1rem">
+            <li style="margin-bottom:.5rem">In your authenticator app, add an account and enter this key:</li>
+          </ol>
+          <div style="font-family:monospace;font-size:1rem;letter-spacing:.06em;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;text-align:center;word-break:break-all;margin-bottom:1rem">${esc(setup.secret)}</div>
+          <p style="font-size:.82rem;color:var(--color-text-muted);margin-bottom:1rem;word-break:break-all">Or use the setup URI:<br><span style="font-family:monospace">${esc(setup.provisioning_uri)}</span></p>
+          <div class="form-group"><label for="f-2fa-code">Enter the 6-digit code to confirm</label>
+            <input id="f-2fa-code" inputmode="numeric" maxlength="6" placeholder="123456"></div>
+          <div id="recovery-block" style="display:none">
+            <p style="font-size:.85rem;margin:.5rem 0">Save these one-time <strong>recovery codes</strong> somewhere safe. Each works once if you lose your authenticator:</p>
+            <pre id="recovery-codes" style="background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;font-size:.85rem;white-space:pre-wrap"></pre>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="cancel-btn">Cancel</button>
+          <button class="btn-primary" id="confirm-btn">Confirm &amp; enable</button>
+        </div>
+      `,
+    });
+
+    dialog.querySelector('#cancel-btn').addEventListener('click', () => { close(); this.render(); });
+    const confirmBtn = dialog.querySelector('#confirm-btn');
+    confirmBtn.addEventListener('click', guardButton(confirmBtn, async () => {
+      const code = dialog.querySelector('#f-2fa-code').value.trim();
+      if (!/^\d{6}$/.test(code)) { toast('Enter the 6-digit code','error'); return; }
+      let res;
+      try {
+        res = await api('POST', '/auth/2fa/enable', { code });
+      } catch (err) { toast(err.error ?? 'Invalid code','error'); return; }
+      // Reveal the recovery codes and switch the dialog to a "done" state.
+      dialog.querySelector('#recovery-codes').textContent = (res.recovery_codes ?? []).join('\n');
+      dialog.querySelector('#recovery-block').style.display = 'block';
+      dialog.querySelector('#f-2fa-code').closest('.form-group').style.display = 'none';
+      confirmBtn.style.display = 'none';
+      const cancel = dialog.querySelector('#cancel-btn');
+      cancel.textContent = 'Done';
+      cancel.className = 'btn-primary';
+      toast('Two-factor enabled','success');
+    }));
+  }
+
+  /** Turn off TOTP after re-confirming the account password. */
+  open2FADisable() {
+    const { dialog, close } = openModal({
+      title: 'Turn off two-factor',
+      maxWidth: '400px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.88rem;margin-bottom:1rem">Confirm your password to disable two-factor authentication.</p>
+          <div class="form-group"><label for="f-2fa-pw">Password</label><input id="f-2fa-pw" type="password" autocomplete="current-password"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="cancel-btn">Cancel</button>
+          <button class="btn-primary" id="disable-btn" style="background:var(--color-danger)">Turn off</button>
+        </div>
+      `,
+    });
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const btn = dialog.querySelector('#disable-btn');
+    btn.addEventListener('click', guardButton(btn, async () => {
+      const password = dialog.querySelector('#f-2fa-pw').value;
+      if (!password) { toast('Password is required','error'); return; }
+      try {
+        await api('POST', '/auth/2fa/disable', { password });
+        toast('Two-factor disabled','success'); close(); this.render();
+      } catch (err) { toast(err.error ?? 'Could not disable','error'); }
+    }));
+  }
+
+  /** Admin: reset another user's password (optionally to a generated one). */
+  openAdminReset(userId, email) {
+    const { dialog, close } = openModal({
+      title: 'Reset password',
+      maxWidth: '420px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.88rem;margin-bottom:1rem">Reset the password for <strong>${esc(email)}</strong>. Leave the field blank to generate a strong temporary password to relay to them. All their active sessions will be signed out.</p>
+          <div class="form-group"><label for="f-newpw">New password (optional)</label><input id="f-newpw" type="text" autocomplete="off" placeholder="leave blank to auto-generate"></div>
+          <div id="temp-block" style="display:none">
+            <p style="font-size:.85rem;margin:.5rem 0">Temporary password (share securely, shown once):</p>
+            <pre id="temp-pw" style="background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;font-size:.95rem;white-space:pre-wrap"></pre>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="cancel-btn">Cancel</button>
+          <button class="btn-primary" id="reset-btn">Reset password</button>
+        </div>
+      `,
+    });
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const btn = dialog.querySelector('#reset-btn');
+    btn.addEventListener('click', guardButton(btn, async () => {
+      const pw = dialog.querySelector('#f-newpw').value.trim();
+      const body = pw ? { new_password: pw } : {};
+      let res;
+      try {
+        res = await api('POST', `/users/${userId}/reset-password`, body);
+      } catch (err) { toast(err.error ?? 'Reset failed','error'); return; }
+      if (res.temporary_password) {
+        dialog.querySelector('#temp-pw').textContent = res.temporary_password;
+        dialog.querySelector('#temp-block').style.display = 'block';
+        dialog.querySelector('#f-newpw').closest('.form-group').style.display = 'none';
+        btn.style.display = 'none';
+        const cancel = dialog.querySelector('#cancel-btn');
+        cancel.textContent = 'Done'; cancel.className = 'btn-primary';
+        toast('Password reset','success');
+      } else {
+        toast('Password reset','success'); close();
+      }
     }));
   }
 }

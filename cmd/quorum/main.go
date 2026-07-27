@@ -83,6 +83,7 @@ func main() {
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
+	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
 		log.Println("WARNING: QUORUM_ALLOW_UNSIGNED_WEBHOOKS is set — webhook signature verification is DISABLED for providers without a configured secret. Never use this in production.")
@@ -91,6 +92,7 @@ func main() {
 	// Notify the governance body when a record is permanently deleted.
 	notifier := service.NewNotifier(emailSvc, authRepo)
 	authH.SetNotifier(notifier)
+	authH.SetMailer(emailSvc) // password-reset links (no-ops when SMTP is unconfigured)
 	meetingsH.SetNotifier(notifier)
 	plansH.SetNotifier(notifier)
 	contactsH.SetNotifier(notifier)
@@ -113,7 +115,14 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(mw.LoginRateLimit).Post("/auth/bootstrap", authH.Bootstrap)
 		r.With(mw.LoginRateLimit).Post("/auth/login", authH.Login)
+		r.With(mw.LoginRateLimit).Post("/auth/login/2fa", authH.LoginMFA)
 		r.With(mw.RefreshRateLimit).Post("/auth/refresh", authH.Refresh)
+
+		// Self-service password recovery. Both are unauthenticated and share the
+		// tight login limiter: forgot-password always returns 200 (no account
+		// enumeration); reset-password consumes a single-use, time-limited token.
+		r.With(mw.LoginRateLimit).Post("/auth/forgot-password", authH.ForgotPassword)
+		r.With(mw.LoginRateLimit).Post("/auth/reset-password", authH.ResetPassword)
 
 		// Webhooks are unauthenticated but signature-verified.
 		r.Post("/webhooks/stripe", webhooksH.Stripe)
@@ -127,11 +136,20 @@ func main() {
 			r.Get("/auth/me", authH.Me)
 			r.Patch("/auth/me/password", authH.ChangePassword)
 
+			// Two-factor (TOTP) self-management for the authenticated account.
+			r.Post("/auth/2fa/setup", authH.Setup2FA)
+			r.Post("/auth/2fa/enable", authH.Enable2FA)
+			r.Post("/auth/2fa/disable", authH.Disable2FA)
+
+			// Personal-data export: any authenticated user may export their own data.
+			r.Get("/auth/me/export", exportH.ExportMyData)
+
 			// User management is admin+; minting/altering a superadmin is gated
 			// inside the handler. Deleting an account is a superadmin action.
 			r.With(mw.RequireRole("admin")).Get("/users", authH.ListUsers)
 			r.With(mw.RequireRole("admin")).Post("/users", authH.CreateUser)
 			r.With(mw.RequireRole("admin")).Patch("/users/{id}", authH.UpdateUser)
+			r.With(mw.RequireRole("admin")).Post("/users/{id}/reset-password", authH.AdminResetPassword)
 			r.With(mw.RequireRole("superadmin")).Delete("/users/{id}", authH.DeleteUser)
 
 			// Org-wide reads require at least `member`; `restricted` users are
@@ -153,6 +171,12 @@ func main() {
 			r.With(mw.RequireRole("officer")).Patch("/dues/{id}", duesH.Update)
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/transactions", duesH.CreateTransaction)
 			r.With(mw.RequireRole("officer")).Get("/dues/transactions", duesH.ListTransactions)
+
+			// CSV data exports. Member roster is visible to members and up; the
+			// financial exports (dues, transactions) require officer and up.
+			r.With(mw.RequireRole("member")).Get("/export/members.csv", exportH.ExportMembersCSV)
+			r.With(mw.RequireRole("officer")).Get("/export/dues.csv", exportH.ExportDuesCSV)
+			r.With(mw.RequireRole("officer")).Get("/export/transactions.csv", exportH.ExportTransactionsCSV)
 
 			r.With(mw.RequireRole("member")).Get("/meetings", meetingsH.List)
 			r.With(mw.RequireRole("officer")).Post("/meetings", meetingsH.Create)
@@ -240,22 +264,27 @@ func main() {
 	log.Println("done")
 }
 
-// staticHandler serves the embedded web assets, but returns 404 for directory
-// paths (no auto-generated listings) and sets a short cache lifetime so the
-// same-session revisits skip re-downloading unchanged JS/CSS.
+// staticHandler serves the embedded web assets. The application root ("/")
+// serves index.html; any other directory path (a trailing slash or a path that
+// resolves to a directory) returns 404 so no auto-generated listing is exposed.
+// A short cache lifetime lets same-session revisits skip re-downloading
+// unchanged JS/CSS.
 func staticHandler(webFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(webFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clean := strings.TrimPrefix(r.URL.Path, "/")
-		// Block directory listings: a trailing slash, the root, or a path that
-		// resolves to a directory is not a servable asset.
-		if clean == "" {
-			clean = "index.html"
+		// The root serves the app shell (hash routing means the browser always
+		// requests "/" for navigation). Do not treat it as a directory listing.
+		if r.URL.Path == "/" {
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			fileServer.ServeHTTP(w, r)
+			return
 		}
+		// Any other trailing-slash path is a directory request → 404.
 		if strings.HasSuffix(r.URL.Path, "/") {
 			http.NotFound(w, r)
 			return
 		}
+		clean := strings.TrimPrefix(r.URL.Path, "/")
 		if f, err := webFS.Open(clean); err == nil {
 			info, statErr := f.Stat()
 			f.Close()

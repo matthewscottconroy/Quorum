@@ -39,9 +39,9 @@ func (r *AuthRepo) GetUserByEmail(ctx context.Context, email string) (*model.Use
 func (r *AuthRepo) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	var u model.User
 	err := r.db.QueryRow(ctx, `
-		SELECT id::text, email, role, member_id::text, created_at, last_login_at
+		SELECT id::text, email, role, member_id::text, totp_enabled, created_at, last_login_at
 		FROM users WHERE id = $1::uuid`, id).
-		Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.CreatedAt, &u.LastLoginAt)
+		Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.TOTPEnabled, &u.CreatedAt, &u.LastLoginAt)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (r *AuthRepo) CountUsers(ctx context.Context) (int, error) {
 // ListUsers returns all users ordered by email.
 func (r *AuthRepo) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, email, role, member_id::text, created_at, last_login_at
+		SELECT id::text, email, role, member_id::text, totp_enabled, created_at, last_login_at
 		FROM users ORDER BY email`)
 	if err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func (r *AuthRepo) ListUsers(ctx context.Context) ([]model.User, error) {
 	var users []model.User
 	for rows.Next() {
 		var u model.User
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.CreatedAt, &u.LastLoginAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.MemberID, &u.TOTPEnabled, &u.CreatedAt, &u.LastLoginAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -213,4 +213,104 @@ func (r *AuthRepo) RevokeAllRefreshTokensForUser(ctx context.Context, userID str
 		`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1::uuid AND revoked = FALSE`,
 		userID)
 	return err
+}
+
+// ---- Password reset tokens ----
+
+// CreatePasswordResetToken stores a hashed, time-limited, single-use reset token.
+func (r *AuthRepo) CreatePasswordResetToken(ctx context.Context, userID, hash string, expiresAt time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1::uuid, $2, $3)`,
+		userID, hash, expiresAt)
+	return err
+}
+
+// ConsumePasswordResetToken atomically validates and consumes a reset token,
+// returning the associated user id. Returns pgx.ErrNoRows if the token is
+// unknown, already used, or expired.
+func (r *AuthRepo) ConsumePasswordResetToken(ctx context.Context, hash string) (string, error) {
+	var userID string
+	err := r.db.QueryRow(ctx, `
+		UPDATE password_reset_tokens SET used = TRUE
+		WHERE token_hash = $1 AND used = FALSE AND expires_at > now()
+		RETURNING user_id::text`, hash).Scan(&userID)
+	return userID, err
+}
+
+// ---- TOTP two-factor authentication ----
+
+// GetTOTP returns a user's stored TOTP secret and whether 2FA is enabled.
+func (r *AuthRepo) GetTOTP(ctx context.Context, userID string) (secret string, enabled bool, err error) {
+	var s *string
+	err = r.db.QueryRow(ctx,
+		`SELECT totp_secret, totp_enabled FROM users WHERE id = $1::uuid`, userID).Scan(&s, &enabled)
+	if s != nil {
+		secret = *s
+	}
+	return secret, enabled, err
+}
+
+// SetTOTPSecret stores a (not-yet-confirmed) TOTP secret, leaving 2FA disabled
+// until the user verifies a code.
+func (r *AuthRepo) SetTOTPSecret(ctx context.Context, userID, secret string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE users SET totp_secret = $2, totp_enabled = FALSE WHERE id = $1::uuid`, userID, secret)
+	return err
+}
+
+// EnableTOTP marks 2FA active for a user (after a code has been verified).
+func (r *AuthRepo) EnableTOTP(ctx context.Context, userID string) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET totp_enabled = TRUE WHERE id = $1::uuid`, userID)
+	return err
+}
+
+// DisableTOTP turns off 2FA, clears the secret, and removes all recovery codes.
+func (r *AuthRepo) DisableTOTP(ctx context.Context, userID string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`UPDATE users SET totp_secret = NULL, totp_enabled = FALSE WHERE id = $1::uuid`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id = $1::uuid`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ReplaceRecoveryCodes deletes any existing recovery codes and stores the given
+// hashes.
+func (r *AuthRepo) ReplaceRecoveryCodes(ctx context.Context, userID string, hashes []string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id = $1::uuid`, userID); err != nil {
+		return err
+	}
+	for _, h := range hashes {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES ($1::uuid, $2)`, userID, h); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// ConsumeRecoveryCode marks one matching unused recovery code as used, returning
+// true if a code was consumed.
+func (r *AuthRepo) ConsumeRecoveryCode(ctx context.Context, userID, hash string) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE mfa_recovery_codes SET used = TRUE
+		WHERE id = (SELECT id FROM mfa_recovery_codes
+		            WHERE user_id = $1::uuid AND code_hash = $2 AND used = FALSE LIMIT 1)`,
+		userID, hash)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

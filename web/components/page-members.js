@@ -1,4 +1,4 @@
-import { api, canWrite, isAdmin } from '../app.js';
+import { api, apiDownload, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
 import { esc, openModal, guardButton } from '../utils.js';
@@ -27,7 +27,10 @@ class PageMembers extends HTMLElement {
     this.innerHTML = `
       <div class="page-header">
         <h1>Members</h1>
-        ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Add member</button>' : ''}
+        <div style="display:flex;gap:.5rem">
+          <button class="btn-secondary" id="export-btn">Export CSV</button>
+          ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Add member</button>' : ''}
+        </div>
       </div>
       <div class="search-bar">
         <input id="search-inp" placeholder="Search by name or email…" value="${esc(this._search)}">
@@ -54,6 +57,10 @@ class PageMembers extends HTMLElement {
       this.load();
     });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
+    this.querySelector('#export-btn')?.addEventListener('click', async () => {
+      try { await apiDownload('/export/members.csv', 'members.csv'); }
+      catch (err) { toast(err.error ?? 'Export failed','error'); }
+    });
   }
 
   async load() {
