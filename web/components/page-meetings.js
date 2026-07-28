@@ -319,7 +319,9 @@ class PageMeetings extends HTMLElement {
           <span><strong>Quorum ${quorum.met ? '✓ met' : '— not yet met'}</strong></span>
           <span style="color:var(--color-text-muted);font-variant-numeric:tabular-nums">${quorum.effective_present} of ${quorum.required} needed · ${quorum.active_members} active</span>
         </div>
-        <div style="height:10px;background:var(--color-border);border-radius:5px;overflow:hidden">
+        <div style="height:10px;background:var(--color-border);border-radius:5px;overflow:hidden"
+             role="progressbar" aria-valuemin="0" aria-valuemax="${quorum.required}" aria-valuenow="${quorum.effective_present}"
+             aria-label="Quorum: ${quorum.effective_present} of ${quorum.required} needed${quorum.met ? ', met' : ', not yet met'}">
           <div style="height:100%;width:${pct}%;background:${meterColor};transition:width .3s"></div>
         </div>
         ${quorum.proxies_represented ? `<div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.25rem">includes ${quorum.proxies_represented} represented by proxy</div>` : ''}

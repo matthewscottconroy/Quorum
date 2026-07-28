@@ -43,8 +43,14 @@ class AppShell extends HTMLElement {
     s.textContent = `
       .shell { display: flex; height: 100vh; overflow: hidden; }
       .shell-content {
-        flex: 1; overflow-y: auto; padding: 1.75rem 2rem;
+        flex: 1; overflow-y: auto; overflow-x: auto; padding: 1.75rem 2rem;
         background: var(--color-bg);
+      }
+      /* Stack the shell on narrow screens so the app is usable on a phone: the
+         sidebar (styled in nav-bar) becomes a top bar and content scrolls. */
+      @media (max-width: 768px) {
+        .shell { flex-direction: column; height: auto; min-height: 100vh; overflow: visible; }
+        .shell-content { padding: 1rem; }
       }
     `;
     document.head.appendChild(s);

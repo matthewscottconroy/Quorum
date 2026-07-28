@@ -145,7 +145,8 @@ class PageSettings extends HTMLElement {
       </section>` : ''}
     `;
 
-    this.querySelector('#pw-btn')?.addEventListener('click', async () => {
+    const pwBtn = this.querySelector('#pw-btn');
+    pwBtn?.addEventListener('click', guardButton(pwBtn, async () => {
       const cur = this.querySelector('#f-pw-cur').value;
       const pw  = this.querySelector('#f-pw').value;
       const pw2 = this.querySelector('#f-pw2').value;
@@ -159,7 +160,7 @@ class PageSettings extends HTMLElement {
         this.querySelector('#f-pw').value = '';
         this.querySelector('#f-pw2').value = '';
       } catch (err) { toast(err.error ?? 'Update failed','error'); }
-    });
+    }));
 
     this.querySelector('#export-me-btn')?.addEventListener('click', async () => {
       try { await apiDownload('/auth/me/export', 'my-quorum-data.json'); }
@@ -204,7 +205,8 @@ class PageSettings extends HTMLElement {
     } catch { /* leave defaults */ }
     syncValueField();
 
-    this.querySelector('#g-save').addEventListener('click', async () => {
+    const gSave = this.querySelector('#g-save');
+    gSave.addEventListener('click', guardButton(gSave, async () => {
       const mode = modeSel.value;
       const body = {
         quorum_mode: mode,
@@ -216,7 +218,7 @@ class PageSettings extends HTMLElement {
         await api('PUT', '/governance/settings', body);
         toast('Governance rules saved','success');
       } catch (err) { toast(err.error ?? 'Save failed','error'); }
-    });
+    }));
 
     this.querySelectorAll('.role-sel').forEach(sel => {
       let original = sel.value;
@@ -334,7 +336,10 @@ class PageSettings extends HTMLElement {
       `,
     });
 
-    dialog.querySelector('#cancel-btn').addEventListener('click', () => { close(); this.render(); });
+    // Refresh the panel on ANY close (button, Escape, backdrop) so the 2FA
+    // status can't be left stale after enabling.
+    dialog.addEventListener('close', () => { if (this.isConnected) this.render(); });
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
     const confirmBtn = dialog.querySelector('#confirm-btn');
     confirmBtn.addEventListener('click', guardButton(confirmBtn, async () => {
       const code = dialog.querySelector('#f-2fa-code').value.trim();

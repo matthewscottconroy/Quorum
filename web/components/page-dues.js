@@ -104,7 +104,7 @@ class PageDues extends HTMLElement {
       listEl.innerHTML = (schedules ?? []).length ? schedules.map(s => `
         <div class="sched-row" data-id="${esc(s.id)}" style="display:flex;align-items:center;gap:.6rem;border:1px solid var(--color-border);border-radius:var(--radius);padding:.55rem .75rem;margin-bottom:.5rem">
           <div style="flex:1">
-            <div style="font-weight:600;font-size:.9rem">${esc(s.tier)} — ${formatMoney(s.amount_minor, s.currency)} ${esc(s.currency)}</div>
+            <div style="font-weight:600;font-size:.9rem">${esc(s.tier)} — ${formatMoney(s.amount_minor, s.currency)}</div>
             <div style="font-size:.78rem;color:var(--color-text-muted)">${CADENCE[s.cadence]||s.cadence} · due ${s.due_days}d after period start ${s.active?'':'· <em>inactive</em>'}</div>
           </div>
           <button class="btn-secondary sched-gen" style="font-size:.78rem;padding:.25rem .6rem">Generate now</button>
@@ -129,7 +129,8 @@ class PageDues extends HTMLElement {
 
     dialog.querySelector('#s-add').addEventListener('click', async () => {
       const tier = dialog.querySelector('#s-tier').value.trim();
-      const currency = dialog.querySelector('#s-currency').value.trim() || 'USD';
+      const currency = (dialog.querySelector('#s-currency').value.trim() || 'USD').toUpperCase();
+      if (!/^[A-Z]{3}$/.test(currency)) { toast('Currency must be a 3-letter code (e.g. USD)','error'); return; }
       const amountStr = dialog.querySelector('#s-amount').value.trim();
       if (!tier || !amountStr) { toast('Tier and amount are required','error'); return; }
       // parseMoney returns null (never throws) on an invalid amount.
@@ -175,7 +176,7 @@ class PageDues extends HTMLElement {
   _rows() {
     if (!this._invoices?.length) return '';
     return this._invoices.map(inv => `
-      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0" role="button">
+      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0">
         <td>${esc(inv.member_name)}</td>
         <td>${esc(inv.period_label)}</td>
         <td>${formatMoney(inv.amount_minor, inv.currency)}</td>

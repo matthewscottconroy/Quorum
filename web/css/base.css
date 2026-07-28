@@ -101,6 +101,12 @@ label {
 .form-row { display: flex; gap: .75rem; }
 .form-row .form-group { flex: 1; }
 
+/* On narrow screens, stack two-column form rows and let the page header wrap. */
+@media (max-width: 640px) {
+  .form-row { flex-direction: column; gap: 0; }
+  .page-header { flex-wrap: wrap; gap: .5rem; }
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

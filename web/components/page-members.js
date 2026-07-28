@@ -1,7 +1,6 @@
 import { api, apiDownload, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { confirm } from './confirm-dialog.js';
-import { esc, openModal, guardButton } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 
 const TIERS = ['standard','associate','honorary','lifetime','other'];
 const STATUSES = ['active','inactive','suspended'];
@@ -33,8 +32,8 @@ class PageMembers extends HTMLElement {
         </div>
       </div>
       <div class="search-bar">
-        <input id="search-inp" placeholder="Search by name or email…" value="${esc(this._search)}">
-        <select id="status-sel">
+        <input id="search-inp" aria-label="Search members by name or email" placeholder="Search by name or email…" value="${esc(this._search)}">
+        <select id="status-sel" aria-label="Filter by status">
           <option value="">All statuses</option>
           ${STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s}</option>`).join('')}
         </select>
@@ -112,13 +111,20 @@ class PageMembers extends HTMLElement {
     });
   }
 
-  async deleteMember(id, name) {
-    if (!await confirm(`Remove "${name}" from the member list?`, 'Remove Member')) return;
-    try {
-      await api('DELETE', `/members/${id}`);
-      toast('Member removed', 'success');
-      this.load();
-    } catch { toast('Delete failed', 'error'); }
+  deleteMember(id, name) {
+    // Type-to-confirm, matching every other destructive action; the backend
+    // requires the echoed name via ?confirm=.
+    confirmDelete({
+      noun: 'member',
+      name: name ?? '',
+      onConfirm: async (confirmVal) => {
+        try {
+          await api('DELETE', `/members/${id}?confirm=${encodeURIComponent(confirmVal)}`);
+          toast('Member removed', 'success');
+          this.load();
+        } catch (err) { toast(err.error ?? 'Delete failed', 'error'); throw err; }
+      },
+    });
   }
 
   openModal(member) {

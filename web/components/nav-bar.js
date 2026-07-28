@@ -30,13 +30,13 @@ class NavBar extends HTMLElement {
     const user = getUser();
     const links = LINKS.filter(l => hasRole(l.minRole));
     this.innerHTML = `
-      <nav class="sidebar">
+      <nav class="sidebar" aria-label="Main navigation">
         <div class="sidebar-brand">Quorum</div>
         <ul class="sidebar-nav">
           ${links.map(l => `
             <li>
-              <a href="${l.hash}" class="${current === l.hash ? 'active' : ''}">
-                <span class="icon">${l.icon}</span> ${l.label}
+              <a href="${l.hash}" class="${current === l.hash ? 'active' : ''}"${current === l.hash ? ' aria-current="page"' : ''}>
+                <span class="icon" aria-hidden="true">${l.icon}</span> ${l.label}
               </a>
             </li>`).join('')}
         </ul>
@@ -97,6 +97,15 @@ class NavBar extends HTMLElement {
       .user-info { font-size: .78rem; color: var(--color-nav-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .sidebar-footer .btn-ghost { color: #94a3b8; font-size: .8rem; text-align: left; padding: 0; }
       .sidebar-footer .btn-ghost:hover { color: #fff; background: transparent; }
+      /* On narrow screens the sidebar becomes a full-width top bar with the nav
+         items and footer laid out horizontally, so it doesn't eat the viewport. */
+      @media (max-width: 768px) {
+        .sidebar { width: 100%; min-width: 0; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
+        .sidebar-brand { flex: 0 0 auto; border-bottom: none; padding: .75rem 1rem; }
+        .sidebar-nav { display: flex; flex-flow: row wrap; padding: .25rem; flex: 1 1 100%; order: 3; }
+        .sidebar-nav li a { padding: .45rem .7rem; }
+        .sidebar-footer { flex: 0 0 auto; margin-left: auto; flex-direction: row; align-items: center; gap: .6rem; border-top: none; }
+      }
     `;
     document.head.appendChild(s);
   }

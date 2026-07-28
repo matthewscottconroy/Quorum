@@ -27,7 +27,13 @@ export function esc(s) {
  * @returns {string} Formatted date or '—'.
  */
 export function fmtDate(iso, opts) {
-  return iso ? new Date(iso).toLocaleDateString(undefined, opts) : '—';
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  // Date-only values (due dates, join dates) arrive as UTC midnight, e.g.
+  // "2024-06-30T00:00:00Z". Formatting in the viewer's local zone would shift
+  // them to the previous day for anyone west of UTC, so render in UTC.
+  return d.toLocaleDateString(undefined, { timeZone: 'UTC', ...opts });
 }
 
 /**
