@@ -223,6 +223,7 @@ const routes = {
   '#/login':           '<login-page>',
   '#/forgot-password': '<forgot-password-page>',
   '#/reset-password':  '<reset-password-page>',
+  '#/ballot':          '<ballot-page>',
   '#/dashboard':       '<page-dashboard>',
   '#/members':         '<page-members>',
   '#/dues':            '<page-dues>',
@@ -241,7 +242,7 @@ const routes = {
  * Public routes reachable without authentication. `#/reset-password` carries a
  * `?token=…` query, so the router matches on the path portion only.
  */
-export const PUBLIC_ROUTES = new Set(['#/login', '#/forgot-password', '#/reset-password']);
+export const PUBLIC_ROUTES = new Set(['#/login', '#/forgot-password', '#/reset-password', '#/ballot']);
 
 /** Returns the hash with any `?query` stripped, e.g. `#/reset-password?token=x` → `#/reset-password`. */
 export function routePath(hash) {
@@ -268,6 +269,7 @@ window.addEventListener('hashchange', () => {
 import './components/login-page.js';
 import './components/forgot-password-page.js';
 import './components/reset-password-page.js';
+import './components/ballot-page.js';
 import './components/app-shell.js';
 import './components/nav-bar.js';
 import './components/page-dashboard.js';

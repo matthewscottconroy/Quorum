@@ -5,6 +5,7 @@ const PUBLIC_PAGE_TAGS = {
   '#/login':           'login-page',
   '#/forgot-password': 'forgot-password-page',
   '#/reset-password':  'reset-password-page',
+  '#/ballot':          'ballot-page',
 };
 
 class AppShell extends HTMLElement {

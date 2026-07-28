@@ -1,20 +1,37 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"quorum/internal/auth"
+	"quorum/internal/config"
 	"quorum/internal/model"
 )
 
-// GovernanceHandler handles quorum settings, motions, voting, and proxies.
+// ballotTokenTTL bounds how long an emailed ballot link stays valid.
+const ballotTokenTTL = 14 * 24 * time.Hour
+
+// GovernanceHandler handles quorum settings, motions, voting, proxies, and
+// emailed async ballots.
 type GovernanceHandler struct {
-	repo governanceRepo
+	repo   governanceRepo
+	cfg    *config.Config
+	mailer mailer
 }
 
 // NewGovernanceHandler constructs a GovernanceHandler.
-func NewGovernanceHandler(r governanceRepo) *GovernanceHandler {
-	return &GovernanceHandler{repo: r}
+func NewGovernanceHandler(r governanceRepo, cfg *config.Config) *GovernanceHandler {
+	return &GovernanceHandler{repo: r, cfg: cfg}
 }
+
+// SetMailer attaches the email service used to deliver ballot links.
+func (h *GovernanceHandler) SetMailer(m mailer) { h.mailer = m }
 
 // terminalMotionStatus reports whether a motion status is final (no more edits/votes).
 func terminalMotionStatus(s string) bool {
@@ -492,4 +509,118 @@ func (h *GovernanceHandler) DeleteProxy(w http.ResponseWriter, r *http.Request) 
 // validOptionalUUID reports whether p is nil or a valid UUID string.
 func validOptionalUUID(p *string) bool {
 	return p == nil || isValidUUID(*p)
+}
+
+// ---- Async ballots ----
+
+// SendBallots emails a single-use ballot link to every active member with an
+// email who has not yet voted on an OPEN motion (officer+). Requires a mailer.
+func (h *GovernanceHandler) SendBallots(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	if h.mailer == nil {
+		writeError(w, http.StatusServiceUnavailable, "email is not configured, so ballots cannot be sent", "unavailable")
+		return
+	}
+	m, err := h.repo.GetMotion(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if m.Status != "open" {
+		writeError(w, http.StatusConflict, "ballots can only be sent while voting is open", "conflict")
+		return
+	}
+	recipients, err := h.repo.EligibleBallotMembers(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load recipients", "internal_error")
+		return
+	}
+	base := strings.TrimRight(h.cfg.BaseURL, "/")
+	sent := 0
+	for _, rec := range recipients {
+		plain, hashed, gerr := auth.GenerateResetToken()
+		if gerr != nil {
+			continue
+		}
+		if serr := h.repo.UpsertBallotToken(r.Context(), id, rec.MemberID, hashed, time.Now().Add(ballotTokenTTL)); serr != nil {
+			continue
+		}
+		link := fmt.Sprintf("%s/#/ballot?token=%s", base, plain)
+		subject := "Your ballot: " + m.Title
+		body := fmt.Sprintf(
+			"Hello %s,\n\nA vote is open on the motion \"%s\".\n\n"+
+				"Cast your ballot here (valid for 14 days, one use):\n\n%s\n\n"+
+				"If you did not expect this, you can ignore this email.\n", rec.Name, m.Title, link)
+		if h.mailer.Send([]string{rec.Email}, subject, body) == nil {
+			sent++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "eligible": len(recipients)})
+}
+
+// GetBallot returns the motion context for a ballot token (public, unauthenticated).
+func (h *GovernanceHandler) GetBallot(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		writeError(w, http.StatusBadRequest, "token required", "bad_request")
+		return
+	}
+	ctx, err := h.repo.GetBallotContext(r.Context(), auth.HashResetToken(token))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "this ballot link is invalid or has expired", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed", "internal_error")
+		return
+	}
+	if ctx.Status != "open" {
+		writeError(w, http.StatusConflict, "voting on this motion has closed", "conflict")
+		return
+	}
+	writeJSON(w, http.StatusOK, ctx)
+}
+
+// SubmitBallot records a vote from a ballot token, then consumes it (public).
+func (h *GovernanceHandler) SubmitBallot(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token  string `json:"token"`
+		Choice string `json:"choice"`
+	}
+	if err := decodeJSON(r, &body); err != nil || !model.ValidVoteChoices[body.Choice] {
+		writeError(w, http.StatusBadRequest, "choice must be for, against, or abstain", "bad_request")
+		return
+	}
+	if strings.TrimSpace(body.Token) == "" {
+		writeError(w, http.StatusBadRequest, "token required", "bad_request")
+		return
+	}
+	// Verify the motion is still open before consuming the single-use token, so a
+	// closed-motion attempt doesn't burn the member's link.
+	ctx, err := h.repo.GetBallotContext(r.Context(), auth.HashResetToken(body.Token))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "this ballot link is invalid or has expired", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed", "internal_error")
+		return
+	}
+	if ctx.Status != "open" {
+		writeError(w, http.StatusConflict, "voting on this motion has closed", "conflict")
+		return
+	}
+	motionID, memberID, cerr := h.repo.ConsumeBallotToken(r.Context(), auth.HashResetToken(body.Token))
+	if cerr != nil {
+		writeError(w, http.StatusBadRequest, "this ballot link is invalid or already used", "bad_request")
+		return
+	}
+	if err := h.repo.CastBallotVote(r.Context(), motionID, memberID, body.Choice); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not record your vote", "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

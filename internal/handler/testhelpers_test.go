@@ -468,21 +468,42 @@ func (m *mockPlansRepo) DeleteDecision(ctx context.Context, id string) error {
 // ---- mockGovernanceRepo ----
 
 type mockGovernanceRepo struct {
-	GetSettingsFn     func(ctx context.Context) (*model.GovernanceSettings, error)
-	UpdateSettingsFn  func(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error)
-	ComputeQuorumFn   func(ctx context.Context, meetingID string) (*model.QuorumStatus, error)
-	ListMotionsFn     func(ctx context.Context, meetingID string) ([]model.Motion, error)
-	GetMotionFn       func(ctx context.Context, id string) (*model.Motion, error)
-	CreateMotionFn    func(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
-	UpdateMotionFn    func(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
-	SetMotionStatusFn func(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
-	DeleteMotionFn    func(ctx context.Context, id string) error
-	MotionStatusFn    func(ctx context.Context, id string) (string, string, error)
-	CastVoteFn        func(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
-	GetVotesFn        func(ctx context.Context, motionID string) ([]model.MotionVote, error)
-	ListProxiesFn     func(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
-	CreateProxyFn     func(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
-	DeleteProxyFn     func(ctx context.Context, id string) error
+	GetSettingsFn           func(ctx context.Context) (*model.GovernanceSettings, error)
+	UpdateSettingsFn        func(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error)
+	ComputeQuorumFn         func(ctx context.Context, meetingID string) (*model.QuorumStatus, error)
+	ListMotionsFn           func(ctx context.Context, meetingID string) ([]model.Motion, error)
+	GetMotionFn             func(ctx context.Context, id string) (*model.Motion, error)
+	CreateMotionFn          func(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
+	UpdateMotionFn          func(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
+	SetMotionStatusFn       func(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
+	DeleteMotionFn          func(ctx context.Context, id string) error
+	MotionStatusFn          func(ctx context.Context, id string) (string, string, error)
+	CastVoteFn              func(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	GetVotesFn              func(ctx context.Context, motionID string) ([]model.MotionVote, error)
+	ListProxiesFn           func(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
+	CreateProxyFn           func(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
+	DeleteProxyFn           func(ctx context.Context, id string) error
+	EligibleBallotMembersFn func(ctx context.Context, motionID string) ([]repo.BallotRecipient, error)
+	UpsertBallotTokenFn     func(ctx context.Context, motionID, memberID, hash string, expiresAt time.Time) error
+	GetBallotContextFn      func(ctx context.Context, hash string) (*model.BallotContext, error)
+	ConsumeBallotTokenFn    func(ctx context.Context, hash string) (string, string, error)
+	CastBallotVoteFn        func(ctx context.Context, motionID, memberID, choice string) error
+}
+
+func (m *mockGovernanceRepo) EligibleBallotMembers(ctx context.Context, motionID string) ([]repo.BallotRecipient, error) {
+	return m.EligibleBallotMembersFn(ctx, motionID)
+}
+func (m *mockGovernanceRepo) UpsertBallotToken(ctx context.Context, motionID, memberID, hash string, e time.Time) error {
+	return m.UpsertBallotTokenFn(ctx, motionID, memberID, hash, e)
+}
+func (m *mockGovernanceRepo) GetBallotContext(ctx context.Context, hash string) (*model.BallotContext, error) {
+	return m.GetBallotContextFn(ctx, hash)
+}
+func (m *mockGovernanceRepo) ConsumeBallotToken(ctx context.Context, hash string) (string, string, error) {
+	return m.ConsumeBallotTokenFn(ctx, hash)
+}
+func (m *mockGovernanceRepo) CastBallotVote(ctx context.Context, motionID, memberID, choice string) error {
+	return m.CastBallotVoteFn(ctx, motionID, memberID, choice)
 }
 
 func (m *mockGovernanceRepo) GetSettings(ctx context.Context) (*model.GovernanceSettings, error) {

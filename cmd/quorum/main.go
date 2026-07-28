@@ -86,7 +86,7 @@ func main() {
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
-	governanceH := handler.NewGovernanceHandler(governanceRepo)
+	governanceH := handler.NewGovernanceHandler(governanceRepo, cfg)
 	budgetH := handler.NewBudgetHandler(budgetRepo)
 	analyticsH := handler.NewAnalyticsHandler(analyticsRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
@@ -98,7 +98,8 @@ func main() {
 	// Notify the governance body when a record is permanently deleted.
 	notifier := service.NewNotifier(emailSvc, authRepo)
 	authH.SetNotifier(notifier)
-	authH.SetMailer(emailSvc) // password-reset links (no-ops when SMTP is unconfigured)
+	authH.SetMailer(emailSvc)       // password-reset links (no-ops when SMTP is unconfigured)
+	governanceH.SetMailer(emailSvc) // async ballot links
 	meetingsH.SetNotifier(notifier)
 	plansH.SetNotifier(notifier)
 	contactsH.SetNotifier(notifier)
@@ -129,6 +130,11 @@ func main() {
 		// enumeration); reset-password consumes a single-use, time-limited token.
 		r.With(mw.LoginRateLimit).Post("/auth/forgot-password", authH.ForgotPassword)
 		r.With(mw.LoginRateLimit).Post("/auth/reset-password", authH.ResetPassword)
+
+		// Public async-ballot endpoints: a tokenized link lets a member cast a
+		// vote without an app session. Rate-limited like the other token flows.
+		r.With(mw.RefreshRateLimit).Get("/public/ballot", governanceH.GetBallot)
+		r.With(mw.LoginRateLimit).Post("/public/ballot", governanceH.SubmitBallot)
 
 		// Webhooks are unauthenticated but signature-verified.
 		r.Post("/webhooks/stripe", webhooksH.Stripe)
@@ -241,6 +247,8 @@ func main() {
 			// A member casts their OWN ballot; an officer records on behalf / tallies.
 			r.With(mw.RequireRole("member")).Post("/motions/{id}/vote", governanceH.CastVote)
 			r.With(mw.RequireRole("officer")).Post("/motions/{id}/votes", governanceH.RecordVote)
+			// Email single-use ballot links so members (incl. restricted) vote async.
+			r.With(mw.RequireRole("officer")).Post("/motions/{id}/ballots", governanceH.SendBallots)
 
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}/proxies", governanceH.ListProxies)
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/proxies", governanceH.CreateProxy)

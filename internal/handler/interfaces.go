@@ -170,4 +170,9 @@ type governanceRepo interface {
 	ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
 	CreateProxy(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
 	DeleteProxy(ctx context.Context, id string) error
+	EligibleBallotMembers(ctx context.Context, motionID string) ([]repo.BallotRecipient, error)
+	UpsertBallotToken(ctx context.Context, motionID, memberID, hash string, expiresAt time.Time) error
+	GetBallotContext(ctx context.Context, hash string) (*model.BallotContext, error)
+	ConsumeBallotToken(ctx context.Context, hash string) (motionID, memberID string, err error)
+	CastBallotVote(ctx context.Context, motionID, memberID, choice string) error
 }

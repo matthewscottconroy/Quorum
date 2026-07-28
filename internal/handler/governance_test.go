@@ -18,7 +18,7 @@ const testMeetingID = "33333333-3333-3333-3333-333333333333"
 const testMotionID = "44444444-4444-4444-4444-444444444444"
 const testMemberID = "66666666-6666-6666-6666-666666666666"
 
-func govHandler(r governanceRepo) *GovernanceHandler { return NewGovernanceHandler(r) }
+func govHandler(r governanceRepo) *GovernanceHandler { return NewGovernanceHandler(r, testConfig()) }
 
 // ---- Quorum ----
 
@@ -281,5 +281,60 @@ func TestGetMotion_NotFound(t *testing.T) {
 	govHandler(repo).GetMotion(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+// ---- Async ballots ----
+
+func TestSubmitBallot_RecordsVoteAndConsumes(t *testing.T) {
+	var castMember, castChoice string
+	consumed := false
+	repo := &mockGovernanceRepo{
+		GetBallotContextFn: func(_ context.Context, _ string) (*model.BallotContext, error) {
+			return &model.BallotContext{MotionID: testMotionID, MemberID: "mem-1", Status: "open", Title: "Adopt budget"}, nil
+		},
+		ConsumeBallotTokenFn: func(_ context.Context, _ string) (string, string, error) {
+			consumed = true
+			return testMotionID, "mem-1", nil
+		},
+		CastBallotVoteFn: func(_ context.Context, motionID, memberID, choice string) error {
+			castMember, castChoice = memberID, choice
+			return nil
+		},
+	}
+	req := httptest.NewRequest("POST", "/public/ballot", strings.NewReader(`{"token":"abc","choice":"for"}`))
+	rr := httptest.NewRecorder()
+	govHandler(repo).SubmitBallot(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	if !consumed || castMember != "mem-1" || castChoice != "for" {
+		t.Errorf("ballot not recorded correctly: consumed=%v member=%q choice=%q", consumed, castMember, castChoice)
+	}
+}
+
+func TestSubmitBallot_ClosedMotionRejected(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		GetBallotContextFn: func(_ context.Context, _ string) (*model.BallotContext, error) {
+			return &model.BallotContext{Status: "carried"}, nil
+		},
+	}
+	req := httptest.NewRequest("POST", "/public/ballot", strings.NewReader(`{"token":"abc","choice":"for"}`))
+	rr := httptest.NewRecorder()
+	govHandler(repo).SubmitBallot(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for closed motion, got %d", rr.Code)
+	}
+}
+
+func TestGetBallot_InvalidToken(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		GetBallotContextFn: func(_ context.Context, _ string) (*model.BallotContext, error) { return nil, pgx.ErrNoRows },
+	}
+	req := httptest.NewRequest("GET", "/public/ballot?token=bad", nil)
+	rr := httptest.NewRecorder()
+	govHandler(repo).GetBallot(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
 	}
 }

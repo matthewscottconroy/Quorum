@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -450,6 +451,92 @@ func (r *GovernanceRepo) DeleteProxy(ctx context.Context, id string) error {
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// ---- Async ballot tokens ----
+
+// BallotRecipient is an eligible async-ballot recipient.
+type BallotRecipient struct {
+	MemberID string
+	Email    string
+	Name     string
+}
+
+// EligibleBallotMembers returns active members with an email who have not yet
+// voted on the motion — the recipients for an emailed ballot round.
+func (r *GovernanceRepo) EligibleBallotMembers(ctx context.Context, motionID string) ([]BallotRecipient, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT m.id::text, m.email, m.display_name
+		FROM members m
+		WHERE m.status = 'active' AND m.email IS NOT NULL AND m.email <> ''
+		  AND NOT EXISTS (SELECT 1 FROM motion_votes v WHERE v.motion_id = $1::uuid AND v.member_id = m.id)
+		ORDER BY m.display_name`, motionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BallotRecipient
+	for rows.Next() {
+		var b BallotRecipient
+		if err := rows.Scan(&b.MemberID, &b.Email, &b.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// UpsertBallotToken stores (or replaces) a member's ballot token for a motion,
+// resetting it to unused so a resend supersedes any prior link.
+func (r *GovernanceRepo) UpsertBallotToken(ctx context.Context, motionID, memberID, hash string, expiresAt time.Time) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO ballot_tokens (motion_id, member_id, token_hash, expires_at, used)
+		VALUES ($1::uuid, $2::uuid, $3, $4, FALSE)
+		ON CONFLICT (motion_id, member_id)
+		DO UPDATE SET token_hash = excluded.token_hash, expires_at = excluded.expires_at, used = FALSE`,
+		motionID, memberID, hash, expiresAt)
+	return err
+}
+
+// GetBallotContext resolves an unused, unexpired ballot token to the motion and
+// member it authorizes, without consuming it (for rendering the ballot page).
+func (r *GovernanceRepo) GetBallotContext(ctx context.Context, hash string) (*model.BallotContext, error) {
+	var b model.BallotContext
+	err := r.db.QueryRow(ctx, `
+		SELECT mo.id::text, mem.id::text, mem.display_name, mt.title,
+		       mo.title, mo.detail, mo.threshold, mo.status
+		FROM ballot_tokens t
+		JOIN motions mo  ON mo.id = t.motion_id
+		JOIN meetings mt ON mt.id = mo.meeting_id
+		JOIN members mem ON mem.id = t.member_id
+		WHERE t.token_hash = $1 AND t.used = FALSE AND t.expires_at > now()`, hash).
+		Scan(&b.MotionID, &b.MemberID, &b.MemberName, &b.MeetingTitle,
+			&b.Title, &b.Detail, &b.Threshold, &b.Status)
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// ConsumeBallotToken atomically marks a ballot token used and returns the motion
+// and member it authorized. Returns pgx.ErrNoRows if unknown/used/expired.
+func (r *GovernanceRepo) ConsumeBallotToken(ctx context.Context, hash string) (motionID, memberID string, err error) {
+	err = r.db.QueryRow(ctx, `
+		UPDATE ballot_tokens SET used = TRUE
+		WHERE token_hash = $1 AND used = FALSE AND expires_at > now()
+		RETURNING motion_id::text, member_id::text`, hash).Scan(&motionID, &memberID)
+	return
+}
+
+// CastBallotVote records an async ballot with no casting user (cast_by NULL).
+func (r *GovernanceRepo) CastBallotVote(ctx context.Context, motionID, memberID, choice string) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy)
+		VALUES ($1::uuid, $2::uuid, $3, FALSE)
+		ON CONFLICT (motion_id, member_id)
+		DO UPDATE SET choice = excluded.choice, is_proxy = FALSE, cast_at = now()`,
+		motionID, memberID, choice)
+	return err
 }
 
 // scanMotion scans a motion row (without tally/votes, which are filled by callers).

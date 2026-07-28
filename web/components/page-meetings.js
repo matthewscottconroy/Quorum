@@ -361,7 +361,10 @@ class PageMeetings extends HTMLElement {
               <button class="btn-ghost gov-act" data-act="record" data-choice="against" style="font-size:.78rem;color:var(--color-danger)">Against</button>
               <button class="btn-ghost gov-act" data-act="record" data-choice="abstain" style="font-size:.78rem">Abstain</button>
             </div>
-            <button class="btn-primary gov-act" data-act="close" style="font-size:.78rem;margin-top:.5rem">Close &amp; decide</button>
+            <div style="display:flex;gap:.4rem;margin-top:.5rem">
+              <button class="btn-primary gov-act" data-act="close" style="font-size:.78rem">Close &amp; decide</button>
+              <button class="btn-secondary gov-act" data-act="ballots" style="font-size:.78rem" title="Email a single-use ballot link to members who haven't voted">Email ballots</button>
+            </div>
           </div>` : '';
         controls = selfVote + officerTally;
       } else if (terminal) {
@@ -456,6 +459,10 @@ class PageMeetings extends HTMLElement {
         } else if (act === 'close') {
           await api('POST', `/motions/${motionId}/close`);
           toast('Motion decided','success');
+        } else if (act === 'ballots') {
+          const res = await api('POST', `/motions/${motionId}/ballots`);
+          toast(res.sent ? `Emailed ${res.sent} ballot link${res.sent===1?'':'s'}` : 'No eligible members to email (need an email on file, not yet voted)', res.sent ? 'success' : 'info');
+          return; // no reload needed
         } else if (act === 'delete') {
           await api('DELETE', `/motions/${motionId}`);
           toast('Motion deleted','success');

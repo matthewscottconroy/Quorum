@@ -376,6 +376,19 @@ type MotionVote struct {
 	CastAt     time.Time `json:"cast_at"`
 }
 
+// BallotContext is what a public ballot page shows for a tokenized async vote:
+// the motion being voted on and the member the token belongs to.
+type BallotContext struct {
+	MotionID     string  `json:"motion_id"`
+	MemberID     string  `json:"-"`
+	MemberName   string  `json:"member_name"`
+	MeetingTitle string  `json:"meeting_title"`
+	Title        string  `json:"title"`
+	Detail       *string `json:"detail,omitempty"`
+	Threshold    string  `json:"threshold"`
+	Status       string  `json:"status"`
+}
+
 // MeetingProxy records that HolderID may cast GrantorID's ballot at a meeting.
 type MeetingProxy struct {
 	ID          string    `json:"id"`
