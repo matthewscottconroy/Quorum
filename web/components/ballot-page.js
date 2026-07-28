@@ -1,4 +1,5 @@
 import { api } from '../app.js';
+import { esc } from '../utils.js';
 
 /**
  * Public async-ballot page reached from an emailed link
@@ -37,7 +38,7 @@ class BallotPage extends HTMLElement {
     try {
       ctx = await api('GET', `/public/ballot?token=${encodeURIComponent(token)}`);
     } catch (err) {
-      this.innerHTML = this.shell(`<p style="color:var(--color-danger);font-size:.9rem">${(err.error ?? 'This ballot link is invalid or has expired.')}</p>
+      this.innerHTML = this.shell(`<p style="color:var(--color-danger);font-size:.9rem">${esc(err.error ?? 'This ballot link is invalid or has expired.')}</p>
         <p style="text-align:center;margin-top:1rem"><a href="#/login" style="font-size:.85rem;color:var(--color-primary)">Go to sign in</a></p>`);
       return;
     }
@@ -45,7 +46,6 @@ class BallotPage extends HTMLElement {
   }
 
   renderBallot(token, ctx) {
-    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     this.innerHTML = this.shell(`
       <div style="font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-muted);text-align:center;margin-bottom:.25rem">${esc(ctx.meeting_title)}</div>
       <h2 style="font-size:1.1rem;text-align:center;margin-bottom:.5rem">${esc(ctx.title)}</h2>

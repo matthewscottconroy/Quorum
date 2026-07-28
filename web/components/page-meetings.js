@@ -326,6 +326,7 @@ class PageMeetings extends HTMLElement {
       </div>`;
 
     const motionCards = (motions ?? []).map(m => {
+      const tally = m.tally ?? { for: 0, against: 0, abstain: 0 };
       const terminal = ['carried','failed','tabled','withdrawn'].includes(m.status);
       let controls = '';
       if (m.status === 'draft' && officer) {
@@ -383,7 +384,7 @@ class PageMeetings extends HTMLElement {
             <span class="badge badge-${MOTION_BADGE[m.status] || 'none'}">${esc(m.status)}</span>
           </div>
           ${m.detail ? `<div style="font-size:.82rem;margin:.4rem 0">${esc(m.detail)}</div>` : ''}
-          <div style="margin:.5rem 0"><vote-tally for="${m.tally.for}" against="${m.tally.against}" abstain="${m.tally.abstain}"></vote-tally></div>
+          <div style="margin:.5rem 0"><vote-tally for="${tally.for}" against="${tally.against}" abstain="${tally.abstain}"></vote-tally></div>
           ${controls}
         </div>`;
     }).join('') || '<p style="font-size:.85rem;color:var(--color-text-muted);margin:.5rem 0">No motions yet.</p>';
@@ -461,7 +462,7 @@ class PageMeetings extends HTMLElement {
           toast('Motion decided','success');
         } else if (act === 'ballots') {
           const res = await api('POST', `/motions/${motionId}/ballots`);
-          toast(res.sent ? `Emailed ${res.sent} ballot link${res.sent===1?'':'s'}` : 'No eligible members to email (need an email on file, not yet voted)', res.sent ? 'success' : 'info');
+          toast(res.queued ? `Emailing ${res.queued} ballot link${res.queued===1?'':'s'}…` : 'No eligible members to email (need an email on file, not yet voted)', res.queued ? 'success' : 'info');
           return; // no reload needed
         } else if (act === 'delete') {
           await api('DELETE', `/motions/${motionId}`);

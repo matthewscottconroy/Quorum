@@ -49,7 +49,8 @@ class BarChart extends BaseChart {
         <text x="${x + bw / 2}" y="${H - 12}" text-anchor="middle" font-size="10.5" fill="var(--color-text-muted)">${esc(truncate(d.label, 10))}</text>`;
     }).join('');
 
-    this.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" role="img">
+    const label = data.map(d => `${d.label} ${fmt(Number(d.value) || 0)}`).join(', ');
+    this.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(label)}">
       <line x1="${pad.l}" y1="${pad.t + chartH}" x2="${W - pad.r}" y2="${pad.t + chartH}" stroke="var(--color-border)"></line>
       ${bars}
     </svg>`;
@@ -82,7 +83,10 @@ class LineChart extends BaseChart {
     const dots = data.map((d, i) => `<circle cx="${xAt(i)}" cy="${yAt(d.y)}" r="${i === n - 1 ? 4 : 2.5}" fill="${accent}"></circle>`).join('');
     const lastVal = `<text x="${xAt(n - 1)}" y="${yAt(data[n - 1].y) - 8}" text-anchor="end" font-size="11" font-weight="600" fill="var(--color-text)">${esc(fmt(data[n - 1].y))}</text>`;
 
-    this.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" role="img">
+    // Uniform (meet) scaling with a width-derived height avoids the mark/text
+    // distortion that "none" caused when the card width differed from the viewBox.
+    const label = data.map(d => `${d.x}: ${fmt(Number(d.y) || 0)}`).join(', ');
+    this.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${esc(label)}" style="display:block;height:auto">
       <polygon points="${area}" fill="${accent}" opacity="0.12"></polygon>
       <polyline points="${pts}" fill="none" stroke="${accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
       ${dots}${lastVal}${xlabels}
@@ -120,9 +124,10 @@ class DonutChart extends BaseChart {
         <span style="font-variant-numeric:tabular-nums;font-weight:600">${esc(fmt(d.value))}</span>
       </div>`).join('');
 
+    const label = data.map(d => `${d.label} ${fmt(Number(d.value) || 0)}`).join(', ');
     this.innerHTML = `
       <div style="display:flex;align-items:center;gap:1.25rem;flex-wrap:wrap">
-        <svg viewBox="0 0 180 180" width="160" height="160" role="img" style="flex:none">
+        <svg viewBox="0 0 180 180" width="160" height="160" role="img" aria-label="${esc(label)}" style="flex:none">
           ${segments}
           <text x="90" y="86" text-anchor="middle" font-size="24" font-weight="700" fill="var(--color-text)">${esc(String(total))}</text>
           <text x="90" y="104" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">total</text>

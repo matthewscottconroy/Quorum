@@ -132,9 +132,9 @@ class PageDues extends HTMLElement {
       const currency = dialog.querySelector('#s-currency').value.trim() || 'USD';
       const amountStr = dialog.querySelector('#s-amount').value.trim();
       if (!tier || !amountStr) { toast('Tier and amount are required','error'); return; }
-      let amount_minor;
-      try { amount_minor = parseMoney(amountStr, currency); }
-      catch { toast('Enter a valid amount','error'); return; }
+      // parseMoney returns null (never throws) on an invalid amount.
+      const amount_minor = parseMoney(amountStr, currency);
+      if (amount_minor === null || amount_minor <= 0) { toast('Enter a valid amount','error'); return; }
       try {
         await api('POST', '/dues/schedules', {
           tier, amount_minor, currency,

@@ -1,5 +1,6 @@
 import { api } from '../app.js';
 import { toast } from './toast-notification.js';
+import { confirm } from './confirm-dialog.js';
 import { esc, openModal, formatMoney, parseMoney, moneyExponent } from '../utils.js';
 
 const STATUSES = ['draft', 'active', 'archived'];
@@ -26,6 +27,7 @@ class PageBudget extends HTMLElement {
     this._scenarios = [];
     this._selectedId = null;
     this._compare = new Set();
+    this._seq = 0; // guards against out-of-order scenario-detail responses
     this.render();
     this.loadList();
   }
@@ -94,13 +96,15 @@ class PageBudget extends HTMLElement {
   }
 
   async select(id) {
+    const seq = ++this._seq;
     this._selectedId = id;
     this.renderList();
     const detail = this.querySelector('#b-detail');
     detail.innerHTML = '<div style="text-align:center;padding:2rem"><span class="spinner"></span></div>';
     let s;
     try { s = await api('GET', `/budgets/${id}`); }
-    catch { detail.innerHTML = '<div class="empty-state"><p>Failed to load scenario.</p></div>'; return; }
+    catch { if (seq === this._seq) detail.innerHTML = '<div class="empty-state"><p>Failed to load scenario.</p></div>'; return; }
+    if (seq !== this._seq) return; // a newer select() superseded this one
     this.renderDetail(s);
   }
 
@@ -254,7 +258,7 @@ class PageBudget extends HTMLElement {
     });
 
     detail.querySelector('#del-btn').addEventListener('click', async () => {
-      if (!confirm(`Delete scenario “${s.name}”? This cannot be undone.`)) return;
+      if (!await confirm(`Delete scenario “${s.name}”? This cannot be undone.`)) return;
       try {
         await api('DELETE', `/budgets/${id}`);
         toast('Scenario deleted','success');
