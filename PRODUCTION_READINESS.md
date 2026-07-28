@@ -61,10 +61,9 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 - Terminate TLS in front of the app (reverse proxy / ingress). The app sets HSTS
   expectations via `Secure` cookies but does not itself do TLS.
 - Run behind a proxy that sets timeouts and a sane max connection count. The app
-  bounds request bodies (1 MiB) and SMTP timeouts, but has no global read/write
-  HTTP server timeouts configured — **add `ReadHeaderTimeout`, `ReadTimeout`,
-  `WriteTimeout`, and `IdleTimeout` to the `http.Server`** (cheap hardening
-  against slowloris).
+  bounds request bodies (1 MiB), SMTP timeouts, and its `http.Server` read/header/
+  write/idle timeouts (see `cmd/quorum/main.go`), so basic slowloris hardening is
+  in place; a proxy is still recommended for connection limits and TLS.
 - Pin the container image by digest; run as non-root (the Dockerfile should
   already; verify).
 
@@ -102,6 +101,10 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   more than one replica multiplies the effective limit by the replica count and
   loses the bucket on restart. For multi-instance deployments, move to a shared
   store (Redis) or enforce limits at the ingress.
+- The **nightly job is safe to run multi-replica**: it acquires a Postgres
+  advisory lock (`WithLeaderLock`) so exactly one instance generates recurring
+  dues / sends reminders per window. The rate limiter above is the remaining
+  per-instance component.
 
 ### 7. Email deliverability
 - Configure SPF / DKIM / DMARC for `QUORUM_EMAIL_FROM`'s domain, or reset and

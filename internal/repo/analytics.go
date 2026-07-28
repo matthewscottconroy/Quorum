@@ -41,7 +41,7 @@ func (r *AnalyticsRepo) scanCategoryValues(ctx context.Context, query string, ar
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.CategoryValue
+	out := make([]model.CategoryValue, 0)
 	for rows.Next() {
 		var c model.CategoryValue
 		if err := rows.Scan(&c.Label, &c.Value); err != nil {
@@ -59,7 +59,7 @@ func (r *AnalyticsRepo) scanSeries(ctx context.Context, query string, args ...an
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.SeriesPoint
+	out := make([]model.SeriesPoint, 0)
 	for rows.Next() {
 		var p model.SeriesPoint
 		if err := rows.Scan(&p.X, &p.Y); err != nil {
@@ -143,6 +143,7 @@ func (r *AnalyticsRepo) Attendance(ctx context.Context) (*model.AttendanceAnalyt
 	}
 	defer rows.Close()
 	var a model.AttendanceAnalytics
+	a.Meetings = make([]model.MeetingAttendanceStat, 0)
 	total := 0
 	for rows.Next() {
 		var s model.MeetingAttendanceStat
@@ -204,6 +205,7 @@ func (r *AnalyticsRepo) Payments(ctx context.Context) (*model.PaymentsAnalytics,
 		return nil, err
 	}
 	defer rows.Close()
+	p.DuesByStatus = make([]model.StatusAmount, 0)
 	for rows.Next() {
 		var s model.StatusAmount
 		if err := rows.Scan(&s.Status, &s.Count, &s.AmountMinor); err != nil {
