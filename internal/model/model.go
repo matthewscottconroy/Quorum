@@ -197,6 +197,9 @@ type MeetingAttendanceStat struct {
 }
 
 // AnalyticsOverview holds the headline KPIs for the analytics dashboard.
+// MixedCurrencies is true when payments/invoices span more than one currency, in
+// which case the summed money figures (which ignore currency) are not
+// meaningful — the UI surfaces a warning.
 type AnalyticsOverview struct {
 	ActiveMembers    int    `json:"active_members"`
 	YTDPaymentsMinor int64  `json:"ytd_payments_minor"`
@@ -204,6 +207,7 @@ type AnalyticsOverview struct {
 	OpenMotions      int    `json:"open_motions"`
 	UpcomingMeetings int    `json:"upcoming_meetings"`
 	Currency         string `json:"currency"`
+	MixedCurrencies  bool   `json:"mixed_currencies"`
 }
 
 // MembershipAnalytics breaks the roster down by status and tier, with monthly joins.

@@ -21,6 +21,7 @@ class PageAnalytics extends HTMLElement {
   render() {
     this.innerHTML = `
       <div class="page-header"><h1>Analytics</h1></div>
+      <div id="a-warn" style="display:none"></div>
       <div id="a-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin-bottom:1.25rem"></div>
       <div id="a-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1rem">
         <div style="grid-column:1/-1;text-align:center;padding:2rem"><span class="spinner"></span></div>
@@ -66,6 +67,16 @@ class PageAnalytics extends HTMLElement {
 
     const cur = overview.currency;
     const money = v => formatMoney(v, cur);
+
+    // Summed money figures ignore currency; warn if the data spans more than one.
+    const warn = this.querySelector('#a-warn');
+    if (overview.mixed_currencies) {
+      warn.style.display = 'block';
+      warn.innerHTML = `<div style="background:var(--color-warning);color:#fff;border-radius:var(--radius);padding:.6rem .9rem;font-size:.85rem;margin-bottom:1rem">
+        ⚠ Your payments and dues span more than one currency. The money totals below are summed across currencies and shown in ${esc(cur)}, so treat them as approximate until per-currency reporting is added.</div>`;
+    } else {
+      warn.style.display = 'none';
+    }
 
     this.querySelector('#a-kpis').innerHTML = [
       tile('Active members', overview.active_members, 'var(--color-primary)'),

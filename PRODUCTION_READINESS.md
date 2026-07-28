@@ -147,6 +147,15 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 - Bulk import (CSV) to complement the CSV export.
 - Internationalization / currency display polish (money is already stored in
   minor units and formatted per-currency).
+- **Multi-currency reporting.** Individual invoices, payments, and budget
+  scenarios each carry their own currency, but the **analytics dashboard and
+  budget totals sum amounts across rows without converting** — correct for a
+  single-currency org, misleading otherwise. The analytics overview now returns
+  a `mixed_currencies` flag and the dashboard shows a warning banner when more
+  than one currency is present, but true per-currency (or FX-converted)
+  reporting is still to build. Likewise `budget seed-dues` annualizes each
+  tier's schedule amount into one scenario currency without conversion. Until
+  then, keep an organization on a single currency for accurate rollups.
 - WebAuthn / passkeys as a stronger second factor (or passwordless) later.
 
 ---

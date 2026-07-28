@@ -9,8 +9,10 @@ import (
 )
 
 // AnalyticsRepo runs read-only aggregate queries for the analytics dashboard.
-// It assumes a single reporting currency (amounts are summed across rows); mixed
-// currencies would need per-currency grouping.
+// It assumes a single reporting currency (amounts are summed across rows); when
+// more than one currency is present the summed figures are not meaningful, and
+// Overview reports MixedCurrencies so the UI can warn. Per-currency reporting is
+// a future enhancement.
 type AnalyticsRepo struct {
 	db *pgxpool.Pool
 }
@@ -81,6 +83,16 @@ func (r *AnalyticsRepo) Overview(ctx context.Context) (*model.AnalyticsOverview,
 			(SELECT count(*) FROM meetings WHERE scheduled_at >= now() AND status = 'scheduled')`).
 		Scan(&o.ActiveMembers, &o.YTDPaymentsMinor, &o.OutstandingMinor, &o.OpenMotions, &o.UpcomingMeetings)
 	if err != nil {
+		return nil, err
+	}
+	// Flag when money is spread across more than one currency, since the summed
+	// figures above ignore currency and would be misleading.
+	if err := r.db.QueryRow(ctx, `
+		SELECT count(*) > 1 FROM (
+			SELECT currency FROM transactions
+			UNION
+			SELECT currency FROM dues_invoices
+		) c`).Scan(&o.MixedCurrencies); err != nil {
 		return nil, err
 	}
 	return &o, nil
