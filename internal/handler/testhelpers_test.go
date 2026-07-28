@@ -439,3 +439,75 @@ func (m *mockPlansRepo) UpdateDecision(ctx context.Context, id string, summary, 
 func (m *mockPlansRepo) DeleteDecision(ctx context.Context, id string) error {
 	return m.DeleteDecisionFn(ctx, id)
 }
+
+// ---- mockGovernanceRepo ----
+
+type mockGovernanceRepo struct {
+	GetSettingsFn     func(ctx context.Context) (*model.GovernanceSettings, error)
+	UpdateSettingsFn  func(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error)
+	ComputeQuorumFn   func(ctx context.Context, meetingID string) (*model.QuorumStatus, error)
+	ListMotionsFn     func(ctx context.Context, meetingID string) ([]model.Motion, error)
+	GetMotionFn       func(ctx context.Context, id string) (*model.Motion, error)
+	CreateMotionFn    func(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
+	UpdateMotionFn    func(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
+	SetMotionStatusFn func(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
+	DeleteMotionFn    func(ctx context.Context, id string) error
+	MotionStatusFn    func(ctx context.Context, id string) (string, string, error)
+	CastVoteFn        func(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	GetVotesFn        func(ctx context.Context, motionID string) ([]model.MotionVote, error)
+	ListProxiesFn     func(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
+	CreateProxyFn     func(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
+	DeleteProxyFn     func(ctx context.Context, id string) error
+}
+
+func (m *mockGovernanceRepo) GetSettings(ctx context.Context) (*model.GovernanceSettings, error) {
+	if m.GetSettingsFn != nil {
+		return m.GetSettingsFn(ctx)
+	}
+	return &model.GovernanceSettings{QuorumMode: "majority", DefaultThreshold: "majority", ProxiesCountTowardQuorum: true}, nil
+}
+func (m *mockGovernanceRepo) UpdateSettings(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error) {
+	if m.UpdateSettingsFn != nil {
+		return m.UpdateSettingsFn(ctx, s)
+	}
+	return s, nil
+}
+func (m *mockGovernanceRepo) ComputeQuorum(ctx context.Context, meetingID string) (*model.QuorumStatus, error) {
+	return m.ComputeQuorumFn(ctx, meetingID)
+}
+func (m *mockGovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error) {
+	return m.ListMotionsFn(ctx, meetingID)
+}
+func (m *mockGovernanceRepo) GetMotion(ctx context.Context, id string) (*model.Motion, error) {
+	return m.GetMotionFn(ctx, id)
+}
+func (m *mockGovernanceRepo) CreateMotion(ctx context.Context, mo *model.Motion, createdBy string) (*model.Motion, error) {
+	return m.CreateMotionFn(ctx, mo, createdBy)
+}
+func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error) {
+	return m.UpdateMotionFn(ctx, id, title, detail, moverID, seconderID, threshold)
+}
+func (m *mockGovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
+	return m.SetMotionStatusFn(ctx, id, status, seconderID)
+}
+func (m *mockGovernanceRepo) DeleteMotion(ctx context.Context, id string) error {
+	return m.DeleteMotionFn(ctx, id)
+}
+func (m *mockGovernanceRepo) MotionStatus(ctx context.Context, id string) (string, string, error) {
+	return m.MotionStatusFn(ctx, id)
+}
+func (m *mockGovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error {
+	return m.CastVoteFn(ctx, motionID, memberID, choice, isProxy, castBy)
+}
+func (m *mockGovernanceRepo) GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error) {
+	return m.GetVotesFn(ctx, motionID)
+}
+func (m *mockGovernanceRepo) ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error) {
+	return m.ListProxiesFn(ctx, meetingID)
+}
+func (m *mockGovernanceRepo) CreateProxy(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error) {
+	return m.CreateProxyFn(ctx, meetingID, grantorID, holderID)
+}
+func (m *mockGovernanceRepo) DeleteProxy(ctx context.Context, id string) error {
+	return m.DeleteProxyFn(ctx, id)
+}

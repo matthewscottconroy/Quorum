@@ -1,0 +1,495 @@
+package handler
+
+import (
+	"net/http"
+
+	"quorum/internal/model"
+)
+
+// GovernanceHandler handles quorum settings, motions, voting, and proxies.
+type GovernanceHandler struct {
+	repo governanceRepo
+}
+
+// NewGovernanceHandler constructs a GovernanceHandler.
+func NewGovernanceHandler(r governanceRepo) *GovernanceHandler {
+	return &GovernanceHandler{repo: r}
+}
+
+// terminalMotionStatus reports whether a motion status is final (no more edits/votes).
+func terminalMotionStatus(s string) bool {
+	switch s {
+	case "carried", "failed", "tabled", "withdrawn":
+		return true
+	}
+	return false
+}
+
+// ---- Settings ----
+
+// GetSettings returns the org-wide governance settings (member+).
+func (h *GovernanceHandler) GetSettings(w http.ResponseWriter, r *http.Request) {
+	s, err := h.repo.GetSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// UpdateSettings writes the governance settings (admin+).
+func (h *GovernanceHandler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		QuorumMode               string `json:"quorum_mode"`
+		QuorumValue              int    `json:"quorum_value"`
+		ProxiesCountTowardQuorum bool   `json:"proxies_count_toward_quorum"`
+		DefaultThreshold         string `json:"default_threshold"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
+		return
+	}
+	if !model.ValidQuorumModes[body.QuorumMode] {
+		writeError(w, http.StatusBadRequest, "quorum_mode must be majority, percent, or fixed", "bad_request")
+		return
+	}
+	if !model.ValidThresholds[body.DefaultThreshold] {
+		writeError(w, http.StatusBadRequest, "default_threshold must be majority, two_thirds, or unanimous", "bad_request")
+		return
+	}
+	if body.QuorumValue < 0 || (body.QuorumMode == "percent" && (body.QuorumValue < 1 || body.QuorumValue > 100)) {
+		writeError(w, http.StatusBadRequest, "quorum_value out of range (1–100 for percent)", "bad_request")
+		return
+	}
+	out, err := h.repo.UpdateSettings(r.Context(), &model.GovernanceSettings{
+		QuorumMode:               body.QuorumMode,
+		QuorumValue:              body.QuorumValue,
+		ProxiesCountTowardQuorum: body.ProxiesCountTowardQuorum,
+		DefaultThreshold:         body.DefaultThreshold,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ---- Quorum ----
+
+// Quorum returns the live quorum status for a meeting (member+).
+func (h *GovernanceHandler) Quorum(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	q, err := h.repo.ComputeQuorum(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "quorum computation failed", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
+}
+
+// ---- Motions ----
+
+// ListMotions returns all motions for a meeting with tallies (member+).
+func (h *GovernanceHandler) ListMotions(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	motions, err := h.repo.ListMotions(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	if motions == nil {
+		motions = []model.Motion{}
+	}
+	writeJSON(w, http.StatusOK, motions)
+}
+
+// GetMotion returns one motion with its ballots (member+).
+func (h *GovernanceHandler) GetMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	m, err := h.repo.GetMotion(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// CreateMotion adds a draft motion to a meeting (officer+).
+func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request) {
+	meetingID, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Title      string  `json:"title"`
+		Detail     *string `json:"detail"`
+		MoverID    *string `json:"mover_id"`
+		SeconderID *string `json:"seconder_id"`
+		Threshold  string  `json:"threshold"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
+		return
+	}
+	if body.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required", "bad_request")
+		return
+	}
+	if body.Threshold == "" {
+		// Default to the org's configured threshold.
+		if s, err := h.repo.GetSettings(r.Context()); err == nil {
+			body.Threshold = s.DefaultThreshold
+		} else {
+			body.Threshold = "majority"
+		}
+	}
+	if !model.ValidThresholds[body.Threshold] {
+		writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
+		return
+	}
+	if !validOptionalUUID(body.MoverID) || !validOptionalUUID(body.SeconderID) {
+		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
+		return
+	}
+	status := "draft"
+	if body.SeconderID != nil {
+		status = "seconded"
+	}
+	m, err := h.repo.CreateMotion(r.Context(), &model.Motion{
+		MeetingID:  meetingID,
+		Title:      body.Title,
+		Detail:     body.Detail,
+		MoverID:    body.MoverID,
+		SeconderID: body.SeconderID,
+		Threshold:  body.Threshold,
+		Status:     status,
+	}, userIDFromCtx(r))
+	if err != nil {
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "meeting, mover, or seconder does not exist", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, m)
+}
+
+// UpdateMotion edits a non-terminal motion (officer+).
+func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	status, _, err := h.repo.MotionStatus(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if terminalMotionStatus(status) {
+		writeError(w, http.StatusConflict, "a decided motion can no longer be edited", "conflict")
+		return
+	}
+	var body struct {
+		Title      *string `json:"title"`
+		Detail     *string `json:"detail"`
+		MoverID    *string `json:"mover_id"`
+		SeconderID *string `json:"seconder_id"`
+		Threshold  *string `json:"threshold"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
+		return
+	}
+	if body.Threshold != nil && !model.ValidThresholds[*body.Threshold] {
+		writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
+		return
+	}
+	if !validOptionalUUID(body.MoverID) || !validOptionalUUID(body.SeconderID) {
+		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
+		return
+	}
+	m, err := h.repo.UpdateMotion(r.Context(), id, body.Title, body.Detail, body.MoverID, body.SeconderID, body.Threshold)
+	if err != nil {
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "mover or seconder does not exist", "bad_request")
+			return
+		}
+		writeRepoError(w, err, "motion not found", "update error")
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// SecondMotion records a seconder and advances the motion to "seconded" (officer+).
+func (h *GovernanceHandler) SecondMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		SeconderID string `json:"seconder_id"`
+	}
+	if err := decodeJSON(r, &body); err != nil || !isValidUUID(body.SeconderID) {
+		writeError(w, http.StatusBadRequest, "seconder_id (a member UUID) is required", "bad_request")
+		return
+	}
+	status, _, err := h.repo.MotionStatus(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if status != "draft" && status != "seconded" {
+		writeError(w, http.StatusConflict, "only a draft motion can be seconded", "conflict")
+		return
+	}
+	sid := body.SeconderID
+	m, err := h.repo.SetMotionStatus(r.Context(), id, "seconded", &sid)
+	if err != nil {
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "seconder does not exist", "bad_request")
+			return
+		}
+		writeRepoError(w, err, "motion not found", "update error")
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
+}
+
+// OpenMotion opens voting on a motion (officer+). Requires a seconder on record.
+func (h *GovernanceHandler) OpenMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	m, err := h.repo.GetMotion(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if terminalMotionStatus(m.Status) || m.Status == "open" {
+		writeError(w, http.StatusConflict, "motion is not in a state that can be opened", "conflict")
+		return
+	}
+	if m.SeconderID == nil {
+		writeError(w, http.StatusBadRequest, "a motion must be seconded before voting opens", "bad_request")
+		return
+	}
+	out, err := h.repo.SetMotionStatus(r.Context(), id, "open", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// CloseMotion ends voting. With no body it auto-decides carried/failed from the
+// tally and threshold; a body of {"status":"tabled"|"withdrawn"} closes without
+// a decision (officer+).
+func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	_ = decodeJSON(r, &body) // optional
+
+	m, err := h.repo.GetMotion(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if terminalMotionStatus(m.Status) {
+		writeError(w, http.StatusConflict, "motion is already decided", "conflict")
+		return
+	}
+
+	final := body.Status
+	switch final {
+	case "tabled", "withdrawn":
+		// explicit non-decision close
+	case "", "carried", "failed":
+		// auto-decide from the tally
+		if m.Tally.Carried {
+			final = "carried"
+		} else {
+			final = "failed"
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "status must be tabled or withdrawn (or omitted to auto-decide)", "bad_request")
+		return
+	}
+	out, err := h.repo.SetMotionStatus(r.Context(), id, final, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// DeleteMotion removes a motion (officer+).
+func (h *GovernanceHandler) DeleteMotion(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := h.repo.DeleteMotion(r.Context(), id); err != nil {
+		writeRepoError(w, err, "motion not found", "delete error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- Voting ----
+
+// CastVote lets an authenticated member cast their own ballot on an open motion.
+func (h *GovernanceHandler) CastVote(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	memberID := memberIDFromCtx(r)
+	if memberID == "" {
+		writeError(w, http.StatusBadRequest, "your account is not linked to a member record, so you cannot vote", "bad_request")
+		return
+	}
+	var body struct {
+		Choice string `json:"choice"`
+	}
+	if err := decodeJSON(r, &body); err != nil || !model.ValidVoteChoices[body.Choice] {
+		writeError(w, http.StatusBadRequest, "choice must be for, against, or abstain", "bad_request")
+		return
+	}
+	status, _, err := h.repo.MotionStatus(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if status != "open" {
+		writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
+		return
+	}
+	if err := h.repo.CastVote(r.Context(), id, memberID, body.Choice, false, userIDFromCtx(r)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not record vote", "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RecordVote lets an officer record a ballot on behalf of a member (in-person
+// tally or a proxy vote) on an open motion (officer+).
+func (h *GovernanceHandler) RecordVote(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		MemberID string `json:"member_id"`
+		Choice   string `json:"choice"`
+		IsProxy  bool   `json:"is_proxy"`
+	}
+	if err := decodeJSON(r, &body); err != nil || !isValidUUID(body.MemberID) || !model.ValidVoteChoices[body.Choice] {
+		writeError(w, http.StatusBadRequest, "member_id (UUID) and choice (for/against/abstain) are required", "bad_request")
+		return
+	}
+	status, _, err := h.repo.MotionStatus(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if status != "open" {
+		writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
+		return
+	}
+	if err := h.repo.CastVote(r.Context(), id, body.MemberID, body.Choice, body.IsProxy, userIDFromCtx(r)); err != nil {
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "member does not exist", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not record vote", "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- Proxies ----
+
+// ListProxies returns the proxy assignments for a meeting (member+).
+func (h *GovernanceHandler) ListProxies(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	proxies, err := h.repo.ListProxies(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	if proxies == nil {
+		proxies = []model.MeetingProxy{}
+	}
+	writeJSON(w, http.StatusOK, proxies)
+}
+
+// CreateProxy assigns a proxy for a meeting (officer+).
+func (h *GovernanceHandler) CreateProxy(w http.ResponseWriter, r *http.Request) {
+	meetingID, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		GrantorID string `json:"grantor_id"`
+		HolderID  string `json:"holder_id"`
+	}
+	if err := decodeJSON(r, &body); err != nil || !isValidUUID(body.GrantorID) || !isValidUUID(body.HolderID) {
+		writeError(w, http.StatusBadRequest, "grantor_id and holder_id (member UUIDs) are required", "bad_request")
+		return
+	}
+	if body.GrantorID == body.HolderID {
+		writeError(w, http.StatusBadRequest, "a member cannot hold their own proxy", "bad_request")
+		return
+	}
+	p, err := h.repo.CreateProxy(r.Context(), meetingID, body.GrantorID, body.HolderID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "this member has already granted a proxy for this meeting", "conflict")
+			return
+		}
+		if isFKViolation(err) {
+			writeError(w, http.StatusBadRequest, "meeting or member does not exist", "bad_request")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, p)
+}
+
+// DeleteProxy removes a proxy assignment (officer+).
+func (h *GovernanceHandler) DeleteProxy(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := h.repo.DeleteProxy(r.Context(), id); err != nil {
+		writeRepoError(w, err, "proxy not found", "delete error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// validOptionalUUID reports whether p is nil or a valid UUID string.
+func validOptionalUUID(p *string) bool {
+	return p == nil || isValidUUID(*p)
+}

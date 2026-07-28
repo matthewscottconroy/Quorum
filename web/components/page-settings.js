@@ -111,6 +111,38 @@ class PageSettings extends HTMLElement {
           <p style="font-size:.8rem;color:var(--color-text-muted);margin-top:.75rem">Linking a user to a member record is what lets a <strong>restricted</strong> user see their own profile, dues, and action items. Choose “— none —” to unlink.</p>
         </section>` : '<div></div>'}
       </div>
+
+      ${isAdmin() ? `
+      <section class="card" style="padding:1.25rem;max-width:860px;margin-top:1rem">
+        <h2 style="font-size:1rem;margin-bottom:.35rem">Governance &amp; quorum rules</h2>
+        <p style="font-size:.82rem;color:var(--color-text-muted);margin-bottom:1rem">How quorum is calculated at meetings and the default passing bar for new motions.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;align-items:end">
+          <div class="form-group">
+            <label for="g-mode">Quorum rule</label>
+            <select id="g-mode">
+              <option value="majority">Majority of active members</option>
+              <option value="percent">Percent of active members</option>
+              <option value="fixed">Fixed number of members</option>
+            </select>
+          </div>
+          <div class="form-group" id="g-value-wrap">
+            <label for="g-value"><span id="g-value-label">Value</span></label>
+            <input id="g-value" type="number" min="0" value="0">
+          </div>
+          <div class="form-group">
+            <label for="g-threshold">Default motion threshold</label>
+            <select id="g-threshold">
+              <option value="majority">Simple majority</option>
+              <option value="two_thirds">Two-thirds</option>
+              <option value="unanimous">Unanimous</option>
+            </select>
+          </div>
+          <label style="flex-direction:row;align-items:center;gap:.45rem;text-transform:none;letter-spacing:0;font-weight:400;font-size:.85rem;padding-bottom:.5rem">
+            <input type="checkbox" id="g-proxies"> Proxies count toward quorum
+          </label>
+        </div>
+        <button class="btn-primary" id="g-save" style="margin-top:.5rem">Save governance rules</button>
+      </section>` : ''}
     `;
 
     this.querySelector('#pw-btn')?.addEventListener('click', async () => {
@@ -141,6 +173,49 @@ class PageSettings extends HTMLElement {
 
     this.querySelectorAll('.reset-pw-btn').forEach(btn => {
       btn.addEventListener('click', () => this.openAdminReset(btn.dataset.id, btn.dataset.email));
+    });
+
+    this.wireGovernanceSettings();
+  }
+
+  /** Loads and saves the org-wide governance/quorum rules (admin only). */
+  async wireGovernanceSettings() {
+    const modeSel = this.querySelector('#g-mode');
+    if (!modeSel) return; // not an admin
+    const valueWrap  = this.querySelector('#g-value-wrap');
+    const valueLabel = this.querySelector('#g-value-label');
+    const valueInp   = this.querySelector('#g-value');
+
+    // The value field only applies to percent (1–100) and fixed (a count);
+    // majority derives its own threshold, so hide it there.
+    const syncValueField = () => {
+      const mode = modeSel.value;
+      valueWrap.style.display = mode === 'majority' ? 'none' : '';
+      valueLabel.textContent  = mode === 'percent' ? 'Percent (1–100)' : 'Member count';
+    };
+    modeSel.addEventListener('change', syncValueField);
+
+    try {
+      const s = await api('GET', '/governance/settings');
+      modeSel.value = s.quorum_mode;
+      valueInp.value = s.quorum_value;
+      this.querySelector('#g-threshold').value = s.default_threshold;
+      this.querySelector('#g-proxies').checked = s.proxies_count_toward_quorum;
+    } catch { /* leave defaults */ }
+    syncValueField();
+
+    this.querySelector('#g-save').addEventListener('click', async () => {
+      const mode = modeSel.value;
+      const body = {
+        quorum_mode: mode,
+        quorum_value: mode === 'majority' ? 0 : (Number.parseInt(valueInp.value, 10) || 0),
+        default_threshold: this.querySelector('#g-threshold').value,
+        proxies_count_toward_quorum: this.querySelector('#g-proxies').checked,
+      };
+      try {
+        await api('PUT', '/governance/settings', body);
+        toast('Governance rules saved','success');
+      } catch (err) { toast(err.error ?? 'Save failed','error'); }
     });
 
     this.querySelectorAll('.role-sel').forEach(sel => {

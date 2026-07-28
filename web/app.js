@@ -278,12 +278,23 @@ import './components/page-resources.js';
 import './components/page-settings.js';
 import './components/page-my-account.js';
 import './components/payment-status-badge.js';
+import './components/vote-tally.js';
 import './components/confirm-dialog.js';
 import './components/toast-notification.js';
 import './components/page-not-found.js';
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
 async function boot() {
+  // Mount the shell now, from module code that runs AFTER all of app.js's
+  // top-level state (auth vars, PUBLIC_ROUTES, the route table) is initialized.
+  // A static <app-shell> in index.html would instead be upgraded during this
+  // module's import phase — its connectedCallback would call isAuthenticated()
+  // while `_token`/`PUBLIC_ROUTES` are still in the temporal dead zone, throwing
+  // "Cannot access '_token' before initialization".
+  if (!document.querySelector('app-shell')) {
+    document.body.appendChild(document.createElement('app-shell'));
+  }
+
   const refreshed = await silentRefresh();
 
   const prevHash = location.hash;

@@ -170,6 +170,93 @@ type PlanDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
+// GovernanceSettings holds the org-wide quorum and voting rules (a single row).
+// QuorumMode: "majority" (floor(active/2)+1), "percent" (ceil(active*value/100)),
+// or "fixed" (value as an absolute count). DefaultThreshold seeds new motions.
+type GovernanceSettings struct {
+	QuorumMode               string    `json:"quorum_mode"`
+	QuorumValue              int       `json:"quorum_value"`
+	ProxiesCountTowardQuorum bool      `json:"proxies_count_toward_quorum"`
+	DefaultThreshold         string    `json:"default_threshold"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+// ValidQuorumModes and ValidThresholds are the authoritative allowed sets.
+var (
+	ValidQuorumModes = map[string]bool{"majority": true, "percent": true, "fixed": true}
+	ValidThresholds  = map[string]bool{"majority": true, "two_thirds": true, "unanimous": true}
+	ValidVoteChoices = map[string]bool{"for": true, "against": true, "abstain": true}
+)
+
+// QuorumStatus is the live quorum computation for a meeting.
+// EffectivePresent is PresentCount plus proxy-represented members (when proxies
+// count toward quorum); Met is EffectivePresent >= Required.
+type QuorumStatus struct {
+	Mode               string `json:"mode"`
+	Required           int    `json:"required"`
+	ActiveMembers      int    `json:"active_members"`
+	PresentCount       int    `json:"present_count"`
+	ProxiesRepresented int    `json:"proxies_represented"`
+	EffectivePresent   int    `json:"effective_present"`
+	Met                bool   `json:"met"`
+}
+
+// Motion is a formal proposal put to a vote within a meeting.
+// Status lifecycle: "draft" → "seconded" → "open" → terminal
+// ("carried", "failed", "tabled", "withdrawn"). Threshold is the passing bar:
+// "majority", "two_thirds", or "unanimous". Tally is computed from ballots and
+// populated when a motion is fetched or listed.
+type Motion struct {
+	ID           string       `json:"id"`
+	MeetingID    string       `json:"meeting_id"`
+	Title        string       `json:"title"`
+	Detail       *string      `json:"detail,omitempty"`
+	MoverID      *string      `json:"mover_id,omitempty"`
+	MoverName    *string      `json:"mover_name,omitempty"`
+	SeconderID   *string      `json:"seconder_id,omitempty"`
+	SeconderName *string      `json:"seconder_name,omitempty"`
+	Threshold    string       `json:"threshold"`
+	Status       string       `json:"status"`
+	CreatedBy    *string      `json:"created_by,omitempty"`
+	OpenedAt     *time.Time   `json:"opened_at,omitempty"`
+	ClosedAt     *time.Time   `json:"closed_at,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	Tally        MotionTally  `json:"tally"`
+	Votes        []MotionVote `json:"votes,omitempty"`
+}
+
+// MotionTally aggregates the ballots on a motion. Carried is set relative to the
+// motion's threshold, counting only for/against (abstentions don't count toward
+// the bar but are reported).
+type MotionTally struct {
+	For     int  `json:"for"`
+	Against int  `json:"against"`
+	Abstain int  `json:"abstain"`
+	Total   int  `json:"total"`
+	Carried bool `json:"carried"`
+}
+
+// MotionVote is a single member's ballot on a motion.
+type MotionVote struct {
+	MemberID   string    `json:"member_id"`
+	MemberName string    `json:"member_name"`
+	Choice     string    `json:"choice"`
+	IsProxy    bool      `json:"is_proxy"`
+	CastAt     time.Time `json:"cast_at"`
+}
+
+// MeetingProxy records that HolderID may cast GrantorID's ballot at a meeting.
+type MeetingProxy struct {
+	ID          string    `json:"id"`
+	MeetingID   string    `json:"meeting_id"`
+	GrantorID   string    `json:"grantor_id"`
+	GrantorName string    `json:"grantor_name"`
+	HolderID    string    `json:"holder_id"`
+	HolderName  string    `json:"holder_name"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // Contact is an entry in the organizational contact directory.
 type Contact struct {
 	ID           string    `json:"id"`

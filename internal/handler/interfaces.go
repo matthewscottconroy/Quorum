@@ -122,3 +122,22 @@ type actionItemsRepo interface {
 type auditRepo interface {
 	Log(ctx context.Context, userID, action, entityID string) error
 }
+
+// governanceRepo is satisfied by *repo.GovernanceRepo.
+type governanceRepo interface {
+	GetSettings(ctx context.Context) (*model.GovernanceSettings, error)
+	UpdateSettings(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error)
+	ComputeQuorum(ctx context.Context, meetingID string) (*model.QuorumStatus, error)
+	ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error)
+	GetMotion(ctx context.Context, id string) (*model.Motion, error)
+	CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
+	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
+	SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
+	DeleteMotion(ctx context.Context, id string) error
+	MotionStatus(ctx context.Context, id string) (status, meetingID string, err error)
+	CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error)
+	ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
+	CreateProxy(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
+	DeleteProxy(ctx context.Context, id string) error
+}

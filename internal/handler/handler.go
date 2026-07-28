@@ -223,6 +223,13 @@ func isCheckViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23514"
 }
 
+// isUniqueViolation reports whether err is a PostgreSQL unique-constraint
+// violation (SQLSTATE 23505) — e.g. inserting a duplicate key.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // writeRepoError maps common repository errors to HTTP responses: missing rows
 // → 404; a check-constraint violation (e.g. a too-long field) or a foreign-key
 // violation → 400 (client's fault); everything else → 500 with fallbackMsg.

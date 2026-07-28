@@ -64,6 +64,7 @@ func main() {
 	actionItemsRepo := repo.NewActionItemsRepo(pool)
 	auditRepo := repo.NewAuditRepo(pool)
 	maintenanceRepo := repo.NewMaintenanceRepo(pool)
+	governanceRepo := repo.NewGovernanceRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -83,6 +84,7 @@ func main() {
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
+	governanceH := handler.NewGovernanceHandler(governanceRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -187,6 +189,30 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/decisions", meetingsH.CreateDecision)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}/decisions/{did}", meetingsH.UpdateDecision)
 			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}/decisions/{did}", meetingsH.DeleteDecision)
+
+			// Governance & voting. Reads are member+ (so members can watch the
+			// live quorum meter and cast their own ballots); managing motions,
+			// proxies, and settings is officer/admin.
+			r.With(mw.RequireRole("member")).Get("/governance/settings", governanceH.GetSettings)
+			r.With(mw.RequireRole("admin")).Put("/governance/settings", governanceH.UpdateSettings)
+
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/quorum", governanceH.Quorum)
+
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/motions", governanceH.ListMotions)
+			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/motions", governanceH.CreateMotion)
+			r.With(mw.RequireRole("member")).Get("/motions/{id}", governanceH.GetMotion)
+			r.With(mw.RequireRole("officer")).Patch("/motions/{id}", governanceH.UpdateMotion)
+			r.With(mw.RequireRole("officer")).Delete("/motions/{id}", governanceH.DeleteMotion)
+			r.With(mw.RequireRole("officer")).Post("/motions/{id}/second", governanceH.SecondMotion)
+			r.With(mw.RequireRole("officer")).Post("/motions/{id}/open", governanceH.OpenMotion)
+			r.With(mw.RequireRole("officer")).Post("/motions/{id}/close", governanceH.CloseMotion)
+			// A member casts their OWN ballot; an officer records on behalf / tallies.
+			r.With(mw.RequireRole("member")).Post("/motions/{id}/vote", governanceH.CastVote)
+			r.With(mw.RequireRole("officer")).Post("/motions/{id}/votes", governanceH.RecordVote)
+
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/proxies", governanceH.ListProxies)
+			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/proxies", governanceH.CreateProxy)
+			r.With(mw.RequireRole("officer")).Delete("/proxies/{id}", governanceH.DeleteProxy)
 
 			r.With(mw.RequireRole("member")).Get("/action-items", actionItemsH.List)
 			r.With(mw.RequireRole("officer")).Post("/action-items", actionItemsH.Create)

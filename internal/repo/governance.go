@@ -1,0 +1,463 @@
+package repo
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"quorum/internal/model"
+)
+
+// GovernanceRepo provides PostgreSQL data access for quorum settings, motions,
+// ballots, and meeting proxies.
+type GovernanceRepo struct {
+	db *pgxpool.Pool
+}
+
+// NewGovernanceRepo constructs a GovernanceRepo backed by the given pool.
+func NewGovernanceRepo(db *pgxpool.Pool) *GovernanceRepo {
+	return &GovernanceRepo{db: db}
+}
+
+// ---- Settings ----
+
+// GetSettings returns the singleton governance settings row.
+func (r *GovernanceRepo) GetSettings(ctx context.Context) (*model.GovernanceSettings, error) {
+	var s model.GovernanceSettings
+	err := r.db.QueryRow(ctx, `
+		SELECT quorum_mode, quorum_value, proxies_count_toward_quorum, default_threshold, updated_at
+		FROM governance_settings WHERE id = 1`).
+		Scan(&s.QuorumMode, &s.QuorumValue, &s.ProxiesCountTowardQuorum, &s.DefaultThreshold, &s.UpdatedAt)
+	return &s, err
+}
+
+// UpdateSettings writes the governance settings and returns the stored row.
+func (r *GovernanceRepo) UpdateSettings(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error) {
+	var out model.GovernanceSettings
+	err := r.db.QueryRow(ctx, `
+		UPDATE governance_settings SET
+			quorum_mode                 = $1,
+			quorum_value                = $2,
+			proxies_count_toward_quorum = $3,
+			default_threshold           = $4,
+			updated_at                  = now()
+		WHERE id = 1
+		RETURNING quorum_mode, quorum_value, proxies_count_toward_quorum, default_threshold, updated_at`,
+		s.QuorumMode, s.QuorumValue, s.ProxiesCountTowardQuorum, s.DefaultThreshold).
+		Scan(&out.QuorumMode, &out.QuorumValue, &out.ProxiesCountTowardQuorum, &out.DefaultThreshold, &out.UpdatedAt)
+	return &out, err
+}
+
+// ---- Quorum ----
+
+// RequiredQuorum computes the quorum threshold for the given active-member count
+// under the configured mode. Exported so the outcome math can be unit-tested.
+func RequiredQuorum(mode string, value, active int) int {
+	switch mode {
+	case "fixed":
+		return value
+	case "percent":
+		// ceil(active * value / 100)
+		return (active*value + 99) / 100
+	default: // "majority"
+		return active/2 + 1
+	}
+}
+
+// ComputeQuorum returns the live quorum status for a meeting: the active roster
+// size, how many attendees are present, how many absent members are represented
+// by a present proxy holder, and whether quorum is met.
+func (r *GovernanceRepo) ComputeQuorum(ctx context.Context, meetingID string) (*model.QuorumStatus, error) {
+	settings, err := r.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var active int
+	if err := r.db.QueryRow(ctx, `SELECT count(*) FROM members WHERE status = 'active'`).Scan(&active); err != nil {
+		return nil, err
+	}
+
+	// Present member ids for this meeting.
+	present := map[string]bool{}
+	rows, err := r.db.Query(ctx, `
+		SELECT member_id::text FROM meeting_attendees
+		WHERE meeting_id = $1::uuid AND present = TRUE`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		present[id] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Proxies: an absent grantor whose holder is present is "represented".
+	proxyRepresented := 0
+	prows, err := r.db.Query(ctx, `
+		SELECT grantor_id::text, holder_id::text FROM meeting_proxies
+		WHERE meeting_id = $1::uuid`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	for prows.Next() {
+		var grantor, holder string
+		if err := prows.Scan(&grantor, &holder); err != nil {
+			prows.Close()
+			return nil, err
+		}
+		if present[holder] && !present[grantor] {
+			proxyRepresented++
+		}
+	}
+	prows.Close()
+	if err := prows.Err(); err != nil {
+		return nil, err
+	}
+
+	presentCount := len(present)
+	effective := presentCount
+	if settings.ProxiesCountTowardQuorum {
+		effective += proxyRepresented
+	}
+	required := RequiredQuorum(settings.QuorumMode, settings.QuorumValue, active)
+
+	return &model.QuorumStatus{
+		Mode:               settings.QuorumMode,
+		Required:           required,
+		ActiveMembers:      active,
+		PresentCount:       presentCount,
+		ProxiesRepresented: proxyRepresented,
+		EffectivePresent:   effective,
+		Met:                effective >= required,
+	}, nil
+}
+
+// ---- Motions ----
+
+// motionCarried applies the threshold to a for/against tally. Abstentions are
+// excluded from the base. Exported logic lives in ComputeMotionOutcome.
+func ComputeMotionOutcome(threshold string, votesFor, against int) bool {
+	if votesFor == 0 {
+		return false
+	}
+	switch threshold {
+	case "unanimous":
+		return against == 0
+	case "two_thirds":
+		// for / (for+against) >= 2/3  ⇔  3*for >= 2*(for+against)
+		return 3*votesFor >= 2*(votesFor+against)
+	default: // "majority"
+		return votesFor > against
+	}
+}
+
+// ListMotions returns all motions for a meeting with their tallies, newest last.
+func (r *GovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
+		       mo.mover_id::text, mv.display_name,
+		       mo.seconder_id::text, sc.display_name,
+		       mo.threshold, mo.status, mo.created_by::text,
+		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
+		FROM motions mo
+		LEFT JOIN members mv ON mv.id = mo.mover_id
+		LEFT JOIN members sc ON sc.id = mo.seconder_id
+		WHERE mo.meeting_id = $1::uuid
+		ORDER BY mo.created_at`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var motions []model.Motion
+	var ids []string
+	for rows.Next() {
+		m, err := scanMotion(rows)
+		if err != nil {
+			return nil, err
+		}
+		motions = append(motions, m)
+		ids = append(ids, m.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(motions) == 0 {
+		return motions, nil
+	}
+
+	// One pass to tally every motion's ballots, avoiding N+1.
+	tallies, err := r.tallyMotions(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range motions {
+		t := tallies[motions[i].ID]
+		t.Carried = ComputeMotionOutcome(motions[i].Threshold, t.For, t.Against)
+		motions[i].Tally = t
+	}
+	return motions, nil
+}
+
+// tallyMotions counts ballots for a set of motion ids in a single query.
+func (r *GovernanceRepo) tallyMotions(ctx context.Context, ids []string) (map[string]model.MotionTally, error) {
+	out := map[string]model.MotionTally{}
+	rows, err := r.db.Query(ctx, `
+		SELECT motion_id::text, choice, count(*)
+		FROM motion_votes
+		WHERE motion_id = ANY($1::uuid[])
+		GROUP BY motion_id, choice`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, choice string
+		var n int
+		if err := rows.Scan(&id, &choice, &n); err != nil {
+			return nil, err
+		}
+		t := out[id]
+		switch choice {
+		case "for":
+			t.For = n
+		case "against":
+			t.Against = n
+		case "abstain":
+			t.Abstain = n
+		}
+		t.Total = t.For + t.Against + t.Abstain
+		out[id] = t
+	}
+	return out, rows.Err()
+}
+
+// GetMotion returns a single motion with its tally and full ballot list.
+func (r *GovernanceRepo) GetMotion(ctx context.Context, id string) (*model.Motion, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
+		       mo.mover_id::text, mv.display_name,
+		       mo.seconder_id::text, sc.display_name,
+		       mo.threshold, mo.status, mo.created_by::text,
+		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
+		FROM motions mo
+		LEFT JOIN members mv ON mv.id = mo.mover_id
+		LEFT JOIN members sc ON sc.id = mo.seconder_id
+		WHERE mo.id = $1::uuid`, id)
+	m, err := scanMotion(row)
+	if err != nil {
+		return nil, err
+	}
+	m.Votes, err = r.GetVotes(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range m.Votes {
+		switch v.Choice {
+		case "for":
+			m.Tally.For++
+		case "against":
+			m.Tally.Against++
+		case "abstain":
+			m.Tally.Abstain++
+		}
+	}
+	m.Tally.Total = m.Tally.For + m.Tally.Against + m.Tally.Abstain
+	m.Tally.Carried = ComputeMotionOutcome(m.Threshold, m.Tally.For, m.Tally.Against)
+	return &m, nil
+}
+
+// CreateMotion inserts a new draft motion.
+func (r *GovernanceRepo) CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO motions (meeting_id, title, detail, mover_id, seconder_id, threshold, status, created_by)
+		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8::uuid)
+		RETURNING id::text`,
+		m.MeetingID, m.Title, m.Detail, m.MoverID, m.SeconderID, m.Threshold, m.Status, createdBy).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return r.GetMotion(ctx, id)
+}
+
+// UpdateMotion edits an editable motion's fields (title/detail/threshold/mover/
+// seconder). Callers gate this to non-terminal motions.
+func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE motions SET
+			title       = coalesce($1, title),
+			detail      = coalesce($2, detail),
+			mover_id    = coalesce($3::uuid, mover_id),
+			seconder_id = coalesce($4::uuid, seconder_id),
+			threshold   = coalesce($5, threshold),
+			updated_at  = now()
+		WHERE id = $6::uuid`,
+		title, detail, moverID, seconderID, threshold, id)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	return r.GetMotion(ctx, id)
+}
+
+// SetMotionStatus transitions a motion's status, stamping opened_at when it goes
+// to "open" and closed_at when it reaches a terminal state. Returns the motion.
+func (r *GovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE motions SET
+			status      = $1,
+			seconder_id = coalesce($2::uuid, seconder_id),
+			opened_at   = CASE WHEN $1 = 'open' AND opened_at IS NULL THEN now() ELSE opened_at END,
+			closed_at   = CASE WHEN $1 IN ('carried','failed','tabled','withdrawn') THEN now() ELSE closed_at END,
+			updated_at  = now()
+		WHERE id = $3::uuid`, status, seconderID, id)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	return r.GetMotion(ctx, id)
+}
+
+// DeleteMotion removes a motion (and its ballots via cascade).
+func (r *GovernanceRepo) DeleteMotion(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM motions WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// MotionStatus returns just the status and meeting id of a motion, for gating.
+func (r *GovernanceRepo) MotionStatus(ctx context.Context, id string) (status, meetingID string, err error) {
+	err = r.db.QueryRow(ctx, `SELECT status, meeting_id::text FROM motions WHERE id = $1::uuid`, id).
+		Scan(&status, &meetingID)
+	return
+}
+
+// ---- Votes ----
+
+// CastVote records or replaces a member's ballot on a motion (one per member).
+func (r *GovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy, cast_by)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid)
+		ON CONFLICT (motion_id, member_id)
+		DO UPDATE SET choice = excluded.choice, is_proxy = excluded.is_proxy,
+		              cast_by = excluded.cast_by, cast_at = now()`,
+		motionID, memberID, choice, isProxy, castBy)
+	return err
+}
+
+// GetVotes returns the ballots on a motion, ordered by member name.
+func (r *GovernanceRepo) GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT v.member_id::text, m.display_name, v.choice, v.is_proxy, v.cast_at
+		FROM motion_votes v
+		JOIN members m ON m.id = v.member_id
+		WHERE v.motion_id = $1::uuid
+		ORDER BY m.display_name`, motionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var votes []model.MotionVote
+	for rows.Next() {
+		var v model.MotionVote
+		if err := rows.Scan(&v.MemberID, &v.MemberName, &v.Choice, &v.IsProxy, &v.CastAt); err != nil {
+			return nil, err
+		}
+		votes = append(votes, v)
+	}
+	return votes, rows.Err()
+}
+
+// ---- Proxies ----
+
+// ListProxies returns the proxy assignments for a meeting.
+func (r *GovernanceRepo) ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT p.id::text, p.meeting_id::text,
+		       p.grantor_id::text, g.display_name,
+		       p.holder_id::text, h.display_name, p.created_at
+		FROM meeting_proxies p
+		JOIN members g ON g.id = p.grantor_id
+		JOIN members h ON h.id = p.holder_id
+		WHERE p.meeting_id = $1::uuid
+		ORDER BY g.display_name`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var proxies []model.MeetingProxy
+	for rows.Next() {
+		var p model.MeetingProxy
+		if err := rows.Scan(&p.ID, &p.MeetingID, &p.GrantorID, &p.GrantorName,
+			&p.HolderID, &p.HolderName, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, p)
+	}
+	return proxies, rows.Err()
+}
+
+// CreateProxy assigns a proxy for a meeting (one grantor may grant once).
+func (r *GovernanceRepo) CreateProxy(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO meeting_proxies (meeting_id, grantor_id, holder_id)
+		VALUES ($1::uuid, $2::uuid, $3::uuid)
+		RETURNING id::text`, meetingID, grantorID, holderID).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	var p model.MeetingProxy
+	err = r.db.QueryRow(ctx, `
+		SELECT p.id::text, p.meeting_id::text,
+		       p.grantor_id::text, g.display_name,
+		       p.holder_id::text, h.display_name, p.created_at
+		FROM meeting_proxies p
+		JOIN members g ON g.id = p.grantor_id
+		JOIN members h ON h.id = p.holder_id
+		WHERE p.id = $1::uuid`, id).
+		Scan(&p.ID, &p.MeetingID, &p.GrantorID, &p.GrantorName, &p.HolderID, &p.HolderName, &p.CreatedAt)
+	return &p, err
+}
+
+// DeleteProxy removes a proxy assignment.
+func (r *GovernanceRepo) DeleteProxy(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM meeting_proxies WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// scanMotion scans a motion row (without tally/votes, which are filled by callers).
+func scanMotion(row scannable) (model.Motion, error) {
+	var m model.Motion
+	err := row.Scan(&m.ID, &m.MeetingID, &m.Title, &m.Detail,
+		&m.MoverID, &m.MoverName, &m.SeconderID, &m.SeconderName,
+		&m.Threshold, &m.Status, &m.CreatedBy,
+		&m.OpenedAt, &m.ClosedAt, &m.CreatedAt, &m.UpdatedAt)
+	return m, err
+}
