@@ -170,6 +170,71 @@ type PlanDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
+// CategoryValue is a labeled magnitude for bar/donut charts.
+type CategoryValue struct {
+	Label string `json:"label"`
+	Value int64  `json:"value"`
+}
+
+// SeriesPoint is one point in a time series (x is a period label, e.g. "2026-07").
+type SeriesPoint struct {
+	X string `json:"x"`
+	Y int64  `json:"y"`
+}
+
+// StatusAmount pairs a status with its count and summed amount (minor units).
+type StatusAmount struct {
+	Status      string `json:"status"`
+	Count       int    `json:"count"`
+	AmountMinor int64  `json:"amount_minor"`
+}
+
+// MeetingAttendanceStat summarizes attendance at one meeting.
+type MeetingAttendanceStat struct {
+	Label     string `json:"label"`
+	Present   int    `json:"present"`
+	Attendees int    `json:"attendees"`
+}
+
+// AnalyticsOverview holds the headline KPIs for the analytics dashboard.
+type AnalyticsOverview struct {
+	ActiveMembers    int    `json:"active_members"`
+	YTDPaymentsMinor int64  `json:"ytd_payments_minor"`
+	OutstandingMinor int64  `json:"outstanding_minor"`
+	OpenMotions      int    `json:"open_motions"`
+	UpcomingMeetings int    `json:"upcoming_meetings"`
+	Currency         string `json:"currency"`
+}
+
+// MembershipAnalytics breaks the roster down by status and tier, with monthly joins.
+type MembershipAnalytics struct {
+	ByStatus    []CategoryValue `json:"by_status"`
+	ByTier      []CategoryValue `json:"by_tier"`
+	Growth      []SeriesPoint   `json:"growth"`
+	ActiveTotal int             `json:"active_total"`
+}
+
+// AttendanceAnalytics holds per-meeting attendance and the average present count.
+type AttendanceAnalytics struct {
+	Meetings   []MeetingAttendanceStat `json:"meetings"`
+	AvgPresent float64                 `json:"avg_present"`
+}
+
+// GovernanceAnalytics summarizes motion outcomes and the overall vote split.
+type GovernanceAnalytics struct {
+	ByOutcome    []CategoryValue `json:"by_outcome"`
+	Votes        []CategoryValue `json:"votes"`
+	TotalMotions int             `json:"total_motions"`
+}
+
+// PaymentsAnalytics holds monthly collections, dues status breakdown, and outstanding total.
+type PaymentsAnalytics struct {
+	Monthly          []SeriesPoint  `json:"monthly"`
+	DuesByStatus     []StatusAmount `json:"dues_by_status"`
+	OutstandingMinor int64          `json:"outstanding_minor"`
+	Currency         string         `json:"currency"`
+}
+
 // BudgetScenario is a named draft budget for what-if planning. Lines and Totals
 // are populated when a single scenario is fetched (and Totals also on list).
 type BudgetScenario struct {

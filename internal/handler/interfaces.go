@@ -129,6 +129,15 @@ type auditRepo interface {
 	Log(ctx context.Context, userID, action, entityID string) error
 }
 
+// analyticsRepo is satisfied by *repo.AnalyticsRepo.
+type analyticsRepo interface {
+	Overview(ctx context.Context) (*model.AnalyticsOverview, error)
+	Membership(ctx context.Context) (*model.MembershipAnalytics, error)
+	Attendance(ctx context.Context) (*model.AttendanceAnalytics, error)
+	Governance(ctx context.Context) (*model.GovernanceAnalytics, error)
+	Payments(ctx context.Context) (*model.PaymentsAnalytics, error)
+}
+
 // budgetRepo is satisfied by *repo.BudgetRepo.
 type budgetRepo interface {
 	ListScenarios(ctx context.Context) ([]model.BudgetScenario, error)

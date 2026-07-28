@@ -66,6 +66,7 @@ func main() {
 	maintenanceRepo := repo.NewMaintenanceRepo(pool)
 	governanceRepo := repo.NewGovernanceRepo(pool)
 	budgetRepo := repo.NewBudgetRepo(pool)
+	analyticsRepo := repo.NewAnalyticsRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -87,6 +88,7 @@ func main() {
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
 	governanceH := handler.NewGovernanceHandler(governanceRepo)
 	budgetH := handler.NewBudgetHandler(budgetRepo)
+	analyticsH := handler.NewAnalyticsHandler(analyticsRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -196,6 +198,13 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/lines", budgetH.AddLine)
 			r.With(mw.RequireRole("officer")).Patch("/budget-lines/{id}", budgetH.UpdateLine)
 			r.With(mw.RequireRole("officer")).Delete("/budget-lines/{id}", budgetH.DeleteLine)
+
+			// Analytics dashboard aggregates (officer+ — a leadership overview).
+			r.With(mw.RequireRole("officer")).Get("/analytics/overview", analyticsH.Overview)
+			r.With(mw.RequireRole("officer")).Get("/analytics/membership", analyticsH.Membership)
+			r.With(mw.RequireRole("officer")).Get("/analytics/attendance", analyticsH.Attendance)
+			r.With(mw.RequireRole("officer")).Get("/analytics/governance", analyticsH.Governance)
+			r.With(mw.RequireRole("officer")).Get("/analytics/payments", analyticsH.Payments)
 
 			// CSV data exports. Member roster is visible to members and up; the
 			// financial exports (dues, transactions) require officer and up.

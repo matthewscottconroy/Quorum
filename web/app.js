@@ -227,6 +227,7 @@ const routes = {
   '#/members':         '<page-members>',
   '#/dues':            '<page-dues>',
   '#/budget':          '<page-budget>',
+  '#/analytics':       '<page-analytics>',
   '#/meetings':        '<page-meetings>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
@@ -273,6 +274,7 @@ import './components/page-dashboard.js';
 import './components/page-members.js';
 import './components/page-dues.js';
 import './components/page-budget.js';
+import './components/page-analytics.js';
 import './components/page-meetings.js';
 import './components/page-plans.js';
 import './components/page-contacts.js';

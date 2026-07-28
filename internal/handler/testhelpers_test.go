@@ -586,3 +586,29 @@ func (m *mockBudgetRepo) UpdateLine(ctx context.Context, id string, kind, catego
 func (m *mockBudgetRepo) DeleteLine(ctx context.Context, id string) error {
 	return m.DeleteLineFn(ctx, id)
 }
+
+// ---- mockAnalyticsRepo ----
+
+type mockAnalyticsRepo struct {
+	OverviewFn   func(ctx context.Context) (*model.AnalyticsOverview, error)
+	MembershipFn func(ctx context.Context) (*model.MembershipAnalytics, error)
+	AttendanceFn func(ctx context.Context) (*model.AttendanceAnalytics, error)
+	GovernanceFn func(ctx context.Context) (*model.GovernanceAnalytics, error)
+	PaymentsFn   func(ctx context.Context) (*model.PaymentsAnalytics, error)
+}
+
+func (m *mockAnalyticsRepo) Overview(ctx context.Context) (*model.AnalyticsOverview, error) {
+	return m.OverviewFn(ctx)
+}
+func (m *mockAnalyticsRepo) Membership(ctx context.Context) (*model.MembershipAnalytics, error) {
+	return m.MembershipFn(ctx)
+}
+func (m *mockAnalyticsRepo) Attendance(ctx context.Context) (*model.AttendanceAnalytics, error) {
+	return m.AttendanceFn(ctx)
+}
+func (m *mockAnalyticsRepo) Governance(ctx context.Context) (*model.GovernanceAnalytics, error) {
+	return m.GovernanceFn(ctx)
+}
+func (m *mockAnalyticsRepo) Payments(ctx context.Context) (*model.PaymentsAnalytics, error) {
+	return m.PaymentsFn(ctx)
+}
