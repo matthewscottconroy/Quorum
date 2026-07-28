@@ -99,6 +99,7 @@ func main() {
 	notifier := service.NewNotifier(emailSvc, authRepo)
 	authH.SetNotifier(notifier)
 	authH.SetMailer(emailSvc)       // password-reset links (no-ops when SMTP is unconfigured)
+	authH.SetAuditLogger(auditRepo) // auth endpoints live outside AuditMiddleware
 	governanceH.SetMailer(emailSvc) // async ballot links
 	meetingsH.SetNotifier(notifier)
 	plansH.SetNotifier(notifier)

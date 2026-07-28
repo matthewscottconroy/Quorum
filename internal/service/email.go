@@ -74,10 +74,19 @@ func (s *EmailService) Send(to []string, subject, body string) error {
 		}
 	}
 
+	// The visible To: header discloses recipients to each other, so only name a
+	// single recipient. For a multi-recipient send (admin digest, deletion
+	// notice) address the header to the From mailbox instead — the envelope
+	// RCPT-TO list below still delivers to everyone, without leaking the org's
+	// address book.
+	toHeader := s.cfg.EmailFrom
+	if len(to) == 1 {
+		toHeader = to[0]
+	}
 	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, s.cfg.SMTPPort)
 	msg := []byte(
 		"From: " + s.cfg.EmailFrom + "\r\n" +
-			"To: " + strings.Join(to, ", ") + "\r\n" +
+			"To: " + toHeader + "\r\n" +
 			"Subject: " + subject + "\r\n" +
 			"Content-Type: text/plain; charset=UTF-8\r\n" +
 			"\r\n" +

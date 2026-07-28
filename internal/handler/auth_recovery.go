@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -162,7 +163,15 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 				"A password reset was requested for your Quorum account.\n\n"+
 					"Open this link to choose a new password (valid for 1 hour):\n\n%s\n\n"+
 					"If you did not request this, you can safely ignore this email.\n", link)
-			h.mailer.Send([]string{user.Email}, subject, text) //nolint:errcheck
+			// Send in the background so the response time does not depend on
+			// whether the email exists (a synchronous SMTP round-trip only on the
+			// known-account path would leak account existence via timing).
+			to, mailer := user.Email, h.mailer
+			go func() {
+				if serr := mailer.Send([]string{to}, subject, text); serr != nil {
+					log.Printf("password-reset email error: %v", serr)
+				}
+			}()
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": ok})
@@ -207,6 +216,7 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.repo.RevokeAllRefreshTokensForUser(r.Context(), userID) //nolint:errcheck
+	h.logAudit(r, userID, "auth.password_reset")
 	w.WriteHeader(http.StatusNoContent)
 }
 

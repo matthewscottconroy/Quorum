@@ -41,6 +41,7 @@ type AuthHandler struct {
 	cfg      *config.Config
 	notifier deletionNotifier
 	mailer   mailer
+	audit    auditRepo
 }
 
 // NewAuthHandler constructs an AuthHandler backed by the given repo and config.
@@ -53,6 +54,17 @@ func (h *AuthHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
 
 // SetMailer attaches the email service used to deliver password-reset links.
 func (h *AuthHandler) SetMailer(m mailer) { h.mailer = m }
+
+// SetAuditLogger attaches the audit log. Auth endpoints live outside the
+// AuditMiddleware group, so they record security-relevant events themselves.
+func (h *AuthHandler) SetAuditLogger(a auditRepo) { h.audit = a }
+
+// logAudit records an auth event (best-effort; never blocks the response).
+func (h *AuthHandler) logAudit(r *http.Request, userID, action string) {
+	if h.audit != nil && userID != "" {
+		h.audit.Log(r.Context(), userID, action, userID) //nolint:errcheck
+	}
+}
 
 // issueSession mints an access token, stores a rotated refresh token, sets the
 // refresh cookie, and writes the standard login response. Shared by the
@@ -74,6 +86,7 @@ func (h *AuthHandler) issueSession(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 	h.repo.UpdateLastLogin(r.Context(), user.ID) //nolint:errcheck
+	h.logAudit(r, user.ID, "auth.login")
 	http.SetCookie(w, &http.Cookie{
 		Name:     "quorum_refresh",
 		Value:    plain,
@@ -121,8 +134,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// If the account has two-factor enabled, do NOT issue a session yet. Return
 	// an interim token (Purpose=mfa) that authorizes only the second step; the
-	// API middleware rejects it for everything else.
-	if _, enabled, err := h.repo.GetTOTP(r.Context(), user.ID); err == nil && enabled {
+	// API middleware rejects it for everything else. Fail CLOSED: a lookup error
+	// must never skip the second factor and mint a full session.
+	_, enabled, err := h.repo.GetTOTP(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "login unavailable", "internal_error")
+		return
+	}
+	if enabled {
 		mfaToken, err := auth.IssueMFAToken(user.ID, h.cfg.JWTSecret, 5*time.Minute)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "token error", "internal_error")
@@ -353,6 +372,7 @@ func (h *AuthHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "db error", "internal_error")
 		return
 	}
+	h.logAudit(r, user.ID, "auth.bootstrap")
 	writeJSON(w, http.StatusCreated, user)
 }
 
@@ -372,6 +392,12 @@ func (h *AuthHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Email == "" || body.Password == "" {
 		writeError(w, http.StatusBadRequest, "email and password required", "bad_request")
+		return
+	}
+	// Same password policy as bootstrap / change / reset, so accounts created by
+	// an admin aren't a weaker-password back door.
+	if len(body.Password) < 10 {
+		writeError(w, http.StatusBadRequest, "password must be at least 10 characters", "bad_request")
 		return
 	}
 	role := body.Role

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,11 +241,11 @@ func TestForgotPassword_AlwaysOK_SendsWhenKnown(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d", rr.Code)
 	}
-	if len(m.sent) != 1 {
-		t.Fatalf("expected one email, got %d", len(m.sent))
+	if !m.waitForCount(1) {
+		t.Fatalf("expected one email, got %d", m.count())
 	}
-	if !strings.Contains(m.sent[0].body, "/#/reset-password?token=") {
-		t.Errorf("email should carry a reset link, got: %s", m.sent[0].body)
+	if first, _ := m.first(); !strings.Contains(first.body, "/#/reset-password?token=") {
+		t.Errorf("email should carry a reset link, got: %s", first.body)
 	}
 }
 
@@ -263,7 +264,8 @@ func TestForgotPassword_UnknownEmail_NoLeak(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d — must not reveal that the account is unknown", rr.Code)
 	}
-	if len(m.sent) != 0 {
+	time.Sleep(30 * time.Millisecond) // give any (erroneous) async send a chance to fire
+	if m.count() != 0 {
 		t.Errorf("must not send mail for an unknown account")
 	}
 }
@@ -393,9 +395,42 @@ type sentMail struct {
 	body    string
 }
 
-type captureMailer struct{ sent []sentMail }
+// captureMailer records sends. ForgotPassword dispatches email on a goroutine,
+// so access is mutex-guarded and tests wait via count()/waitFor().
+type captureMailer struct {
+	mu   sync.Mutex
+	sent []sentMail
+}
 
 func (m *captureMailer) Send(to []string, subject, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sent = append(m.sent, sentMail{to, subject, body})
 	return nil
+}
+
+func (m *captureMailer) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sent)
+}
+
+func (m *captureMailer) first() (sentMail, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sent) == 0 {
+		return sentMail{}, false
+	}
+	return m.sent[0], true
+}
+
+// waitForCount waits up to ~1s for the mailer to reach n sends.
+func (m *captureMailer) waitForCount(n int) bool {
+	for i := 0; i < 100; i++ {
+		if m.count() >= n {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return m.count() >= n
 }
