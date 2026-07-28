@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +22,43 @@ import (
 
 	"quorum/internal/auth"
 )
+
+// sensitiveQueryParams are redacted from request logs so single-use secrets
+// passed in the query string (ballot / reset tokens) never reach access logs.
+var sensitiveQueryParams = []string{"token", "code"}
+
+// RequestLogger logs one line per request (method, path, status, duration) with
+// sensitive query-parameter values redacted. It replaces chi's default Logger,
+// which would write the raw query string — and thus any ballot token — to stdout.
+func RequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		lw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(lw, r)
+		log.Printf("%s %s %d %s", r.Method, redactURI(r.URL), lw.status, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+// redactURI returns the request URI with sensitive query-param values masked.
+func redactURI(u *url.URL) string {
+	if u.RawQuery == "" {
+		return u.Path
+	}
+	q := u.Query()
+	changed := false
+	for _, k := range sensitiveQueryParams {
+		if q.Has(k) {
+			q.Set(k, "REDACTED")
+			changed = true
+		}
+	}
+	if !changed {
+		return u.RequestURI()
+	}
+	clone := *u
+	clone.RawQuery = q.Encode()
+	return clone.RequestURI()
+}
 
 // maxPageSize caps all paginated list endpoints.
 const maxPageSize = 200

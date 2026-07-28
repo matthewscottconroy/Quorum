@@ -111,7 +111,7 @@ func main() {
 	// X-Forwarded-For from any client, which would let attackers rotate the
 	// header to bypass the login rate limiter. Rate limiting keys on the raw
 	// socket address instead.
-	r.Use(chimiddleware.Logger)
+	r.Use(handler.RequestLogger) // like chi's Logger but redacts token/code query params
 	r.Use(chimiddleware.Recoverer)
 	r.Use(handler.SecurityHeaders)
 	r.Use(handler.MaxRequestBody)

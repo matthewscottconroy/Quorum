@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 const testMeetingID = "33333333-3333-3333-3333-333333333333"
@@ -287,19 +288,11 @@ func TestGetMotion_NotFound(t *testing.T) {
 // ---- Async ballots ----
 
 func TestSubmitBallot_RecordsVoteAndConsumes(t *testing.T) {
-	var castMember, castChoice string
-	consumed := false
+	var gotChoice string
 	repo := &mockGovernanceRepo{
-		GetBallotContextFn: func(_ context.Context, _ string) (*model.BallotContext, error) {
-			return &model.BallotContext{MotionID: testMotionID, MemberID: "mem-1", Status: "open", Title: "Adopt budget"}, nil
-		},
-		ConsumeBallotTokenFn: func(_ context.Context, _ string) (string, string, error) {
-			consumed = true
-			return testMotionID, "mem-1", nil
-		},
-		CastBallotVoteFn: func(_ context.Context, motionID, memberID, choice string) error {
-			castMember, castChoice = memberID, choice
-			return nil
+		ConsumeBallotAndVoteFn: func(_ context.Context, _, choice string) (string, error) {
+			gotChoice = choice
+			return testMotionID, nil
 		},
 	}
 	req := httptest.NewRequest("POST", "/public/ballot", strings.NewReader(`{"token":"abc","choice":"for"}`))
@@ -308,22 +301,34 @@ func TestSubmitBallot_RecordsVoteAndConsumes(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body)
 	}
-	if !consumed || castMember != "mem-1" || castChoice != "for" {
-		t.Errorf("ballot not recorded correctly: consumed=%v member=%q choice=%q", consumed, castMember, castChoice)
+	if gotChoice != "for" {
+		t.Errorf("ballot not recorded correctly: choice=%q", gotChoice)
 	}
 }
 
 func TestSubmitBallot_ClosedMotionRejected(t *testing.T) {
 	repo := &mockGovernanceRepo{
-		GetBallotContextFn: func(_ context.Context, _ string) (*model.BallotContext, error) {
-			return &model.BallotContext{Status: "carried"}, nil
+		ConsumeBallotAndVoteFn: func(_ context.Context, _, _ string) (string, error) {
+			return "", repo.ErrMotionNotOpen
 		},
 	}
 	req := httptest.NewRequest("POST", "/public/ballot", strings.NewReader(`{"token":"abc","choice":"for"}`))
 	rr := httptest.NewRecorder()
 	govHandler(repo).SubmitBallot(rr, req)
 	if rr.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for closed motion, got %d", rr.Code)
+		t.Fatalf("expected 409 for closed motion, got %d: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestSubmitBallot_InvalidToken(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		ConsumeBallotAndVoteFn: func(_ context.Context, _, _ string) (string, error) { return "", pgx.ErrNoRows },
+	}
+	req := httptest.NewRequest("POST", "/public/ballot", strings.NewReader(`{"token":"bad","choice":"for"}`))
+	rr := httptest.NewRecorder()
+	govHandler(repo).SubmitBallot(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
 	}
 }
 
@@ -336,5 +341,78 @@ func TestGetBallot_InvalidToken(t *testing.T) {
 	govHandler(repo).GetBallot(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+// ---- New integrity guards ----
+
+func TestCloseMotion_RejectsNeverOpened(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
+			return &model.Motion{ID: testMotionID, Status: "draft"}, nil // never opened
+		},
+	}
+	req := reqWithParam("POST", "/motions/"+testMotionID+"/close", "", map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(repo).CloseMotion(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 closing a never-opened motion, got %d: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestUpdateMotion_ThresholdFrozenWhenOpen(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		MotionStatusFn: func(_ context.Context, _ string) (string, string, error) { return "open", testMeetingID, nil },
+	}
+	req := reqWithParam("PATCH", "/motions/"+testMotionID, `{"threshold":"unanimous"}`, map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(repo).UpdateMotion(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 changing threshold on an open motion, got %d: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestCastVote_RejectsInactiveMember(t *testing.T) {
+	repo := &mockGovernanceRepo{
+		MotionStatusFn:   func(_ context.Context, _ string) (string, string, error) { return "open", testMeetingID, nil },
+		MemberIsActiveFn: func(_ context.Context, _ string) (bool, error) { return false, nil },
+	}
+	req := reqWithParam("POST", "/motions/"+testMotionID+"/vote", `{"choice":"for"}`, map[string]string{"id": testMotionID})
+	req = withCtxUserMember(req, "u", "member", "member-123")
+	rr := httptest.NewRecorder()
+	govHandler(repo).CastVote(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for inactive member, got %d: %s", rr.Code, rr.Body)
+	}
+}
+
+func TestRecordVote_Success(t *testing.T) {
+	var gotChoice string
+	repo := &mockGovernanceRepo{
+		MotionStatusFn: func(_ context.Context, _ string) (string, string, error) { return "open", testMeetingID, nil },
+		CastVoteFn: func(_ context.Context, _, _, choice string, _ bool, _ string) error {
+			gotChoice = choice
+			return nil
+		},
+	}
+	body := `{"member_id":"` + testMemberID + `","choice":"against","is_proxy":true}`
+	req := reqWithParam("POST", "/motions/"+testMotionID+"/votes", body, map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(repo).RecordVote(rr, req)
+	if rr.Code != http.StatusNoContent || gotChoice != "against" {
+		t.Fatalf("record vote: code=%d choice=%q", rr.Code, gotChoice)
+	}
+}
+
+func TestSendBallots_NoMailer(t *testing.T) {
+	req := reqWithParam("POST", "/motions/"+testMotionID+"/ballots", "", map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(&mockGovernanceRepo{}).SendBallots(rr, req) // no mailer set
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without a mailer, got %d", rr.Code)
 	}
 }

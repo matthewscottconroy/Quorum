@@ -166,6 +166,7 @@ type governanceRepo interface {
 	DeleteMotion(ctx context.Context, id string) error
 	MotionStatus(ctx context.Context, id string) (status, meetingID string, err error)
 	CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	MemberIsActive(ctx context.Context, memberID string) (bool, error)
 	GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error)
 	ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
 	CreateProxy(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
@@ -173,6 +174,5 @@ type governanceRepo interface {
 	EligibleBallotMembers(ctx context.Context, motionID string) ([]repo.BallotRecipient, error)
 	UpsertBallotToken(ctx context.Context, motionID, memberID, hash string, expiresAt time.Time) error
 	GetBallotContext(ctx context.Context, hash string) (*model.BallotContext, error)
-	ConsumeBallotToken(ctx context.Context, hash string) (motionID, memberID string, err error)
-	CastBallotVote(ctx context.Context, motionID, memberID, choice string) error
+	ConsumeBallotAndVote(ctx context.Context, hash, choice string) (motionID string, err error)
 }

@@ -35,6 +35,12 @@ func (m *mockJanitor) PruneAuditLog(_ context.Context, retain time.Duration) (in
 	m.auditRetain = retain
 	return 1, nil
 }
+func (m *mockJanitor) PruneBallotTokens(_ context.Context) (int64, error)        { return 0, nil }
+func (m *mockJanitor) PrunePasswordResetTokens(_ context.Context) (int64, error) { return 0, nil }
+func (m *mockJanitor) WithLeaderLock(ctx context.Context, _ int64, fn func(context.Context)) (bool, error) {
+	fn(ctx)
+	return true, nil
+}
 
 func TestPruneBookkeeping_CallsAllWithRetention(t *testing.T) {
 	j := &mockJanitor{}

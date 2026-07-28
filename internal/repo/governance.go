@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -9,6 +10,10 @@ import (
 
 	"quorum/internal/model"
 )
+
+// ErrMotionNotOpen is returned when a ballot is submitted for a motion whose
+// voting is not open. The token is left unconsumed so the member can retry.
+var ErrMotionNotOpen = errors.New("motion is not open for voting")
 
 // GovernanceRepo provides PostgreSQL data access for quorum settings, motions,
 // ballots, and meeting proxies.
@@ -80,11 +85,13 @@ func (r *GovernanceRepo) ComputeQuorum(ctx context.Context, meetingID string) (*
 		return nil, err
 	}
 
-	// Present member ids for this meeting.
+	// Present member ids for this meeting — active members only, since quorum is
+	// a fraction of the active roster (an inactive attendee must not count).
 	present := map[string]bool{}
 	rows, err := r.db.Query(ctx, `
-		SELECT member_id::text FROM meeting_attendees
-		WHERE meeting_id = $1::uuid AND present = TRUE`, meetingID)
+		SELECT ma.member_id::text FROM meeting_attendees ma
+		JOIN members m ON m.id = ma.member_id
+		WHERE ma.meeting_id = $1::uuid AND ma.present = TRUE AND m.status = 'active'`, meetingID)
 	if err != nil {
 		return nil, err
 	}
@@ -101,11 +108,13 @@ func (r *GovernanceRepo) ComputeQuorum(ctx context.Context, meetingID string) (*
 		return nil, err
 	}
 
-	// Proxies: an absent grantor whose holder is present is "represented".
+	// Proxies: an absent (active) grantor whose holder is present is "represented".
+	// Only proxies granted by an active member count toward quorum.
 	proxyRepresented := 0
 	prows, err := r.db.Query(ctx, `
-		SELECT grantor_id::text, holder_id::text FROM meeting_proxies
-		WHERE meeting_id = $1::uuid`, meetingID)
+		SELECT p.grantor_id::text, p.holder_id::text FROM meeting_proxies p
+		JOIN members g ON g.id = p.grantor_id AND g.status = 'active'
+		WHERE p.meeting_id = $1::uuid`, meetingID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +182,8 @@ func (r *GovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]m
 		LEFT JOIN members mv ON mv.id = mo.mover_id
 		LEFT JOIN members sc ON sc.id = mo.seconder_id
 		WHERE mo.meeting_id = $1::uuid
-		ORDER BY mo.created_at`, meetingID)
+		ORDER BY mo.created_at
+		LIMIT 500`, meetingID)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +376,17 @@ func (r *GovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choic
 	return err
 }
 
+// MemberIsActive reports whether the member exists and has status 'active'.
+// A missing member returns (false, nil).
+func (r *GovernanceRepo) MemberIsActive(ctx context.Context, memberID string) (bool, error) {
+	var active bool
+	err := r.db.QueryRow(ctx, `SELECT status = 'active' FROM members WHERE id = $1::uuid`, memberID).Scan(&active)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	return active, err
+}
+
 // GetVotes returns the ballots on a motion, ordered by member name.
 func (r *GovernanceRepo) GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error) {
 	rows, err := r.db.Query(ctx, `
@@ -401,7 +422,8 @@ func (r *GovernanceRepo) ListProxies(ctx context.Context, meetingID string) ([]m
 		JOIN members g ON g.id = p.grantor_id
 		JOIN members h ON h.id = p.holder_id
 		WHERE p.meeting_id = $1::uuid
-		ORDER BY g.display_name`, meetingID)
+		ORDER BY g.display_name
+		LIMIT 1000`, meetingID)
 	if err != nil {
 		return nil, err
 	}
@@ -518,25 +540,44 @@ func (r *GovernanceRepo) GetBallotContext(ctx context.Context, hash string) (*mo
 	return &b, nil
 }
 
-// ConsumeBallotToken atomically marks a ballot token used and returns the motion
-// and member it authorized. Returns pgx.ErrNoRows if unknown/used/expired.
-func (r *GovernanceRepo) ConsumeBallotToken(ctx context.Context, hash string) (motionID, memberID string, err error) {
-	err = r.db.QueryRow(ctx, `
-		UPDATE ballot_tokens SET used = TRUE
-		WHERE token_hash = $1 AND used = FALSE AND expires_at > now()
-		RETURNING motion_id::text, member_id::text`, hash).Scan(&motionID, &memberID)
-	return
-}
+// ConsumeBallotAndVote atomically, in one transaction: consumes an unused,
+// unexpired ballot token and records the member's vote — but only if the motion
+// is open. Returns the motion id on success. Returns pgx.ErrNoRows when the token
+// is unknown/used/expired, and ErrMotionNotOpen (leaving the token unconsumed)
+// when voting has closed. Recording the vote and burning the token now succeed
+// or fail together, so a token can never be spent without a vote landing.
+func (r *GovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice string) (motionID string, err error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
 
-// CastBallotVote records an async ballot with no casting user (cast_by NULL).
-func (r *GovernanceRepo) CastBallotVote(ctx context.Context, motionID, memberID, choice string) error {
-	_, err := r.db.Exec(ctx, `
+	var memberID, status string
+	err = tx.QueryRow(ctx, `
+		UPDATE ballot_tokens t SET used = TRUE
+		FROM motions mo
+		WHERE t.token_hash = $1 AND t.used = FALSE AND t.expires_at > now() AND mo.id = t.motion_id
+		RETURNING t.motion_id::text, t.member_id::text, mo.status`, hash).
+		Scan(&motionID, &memberID, &status)
+	if err != nil {
+		return "", err // pgx.ErrNoRows when the token is invalid
+	}
+	if status != "open" {
+		return "", ErrMotionNotOpen // Rollback leaves the token unconsumed
+	}
+	if _, err = tx.Exec(ctx, `
 		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy)
 		VALUES ($1::uuid, $2::uuid, $3, FALSE)
 		ON CONFLICT (motion_id, member_id)
 		DO UPDATE SET choice = excluded.choice, is_proxy = FALSE, cast_at = now()`,
-		motionID, memberID, choice)
-	return err
+		motionID, memberID, choice); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return motionID, nil
 }
 
 // scanMotion scans a motion row (without tally/votes, which are filled by callers).

@@ -41,12 +41,20 @@ func reminderStageForDaysOverdue(days int) int {
 	}
 }
 
-// janitor prunes bookkeeping tables that would otherwise grow without bound.
+// janitor prunes bookkeeping tables that would otherwise grow without bound and
+// provides the advisory lock that elects a single nightly-job leader.
 type janitor interface {
 	PruneRefreshTokens(ctx context.Context) (int64, error)
+	PruneBallotTokens(ctx context.Context) (int64, error)
+	PrunePasswordResetTokens(ctx context.Context) (int64, error)
 	PruneProcessedEvents(ctx context.Context, retain time.Duration) (int64, error)
 	PruneAuditLog(ctx context.Context, retain time.Duration) (int64, error)
+	WithLeaderLock(ctx context.Context, key int64, fn func(context.Context)) (bool, error)
 }
+
+// nightlyJobLockKey is the fixed advisory-lock key that serializes the nightly
+// job across replicas (arbitrary constant).
+const nightlyJobLockKey int64 = 0x9110C0DE
 
 // duesGenerator materializes recurring dues for the current billing period. The
 // nightly job runs it for every active schedule; generation is idempotent.
@@ -214,6 +222,16 @@ func (s *DuesService) pruneBookkeeping(ctx context.Context) {
 	} else if n > 0 {
 		log.Printf("pruned %d expired/revoked refresh tokens", n)
 	}
+	if n, err := s.janitor.PruneBallotTokens(ctx); err != nil {
+		log.Printf("prune ballot_tokens error: %v", err)
+	} else if n > 0 {
+		log.Printf("pruned %d spent/expired ballot tokens", n)
+	}
+	if n, err := s.janitor.PrunePasswordResetTokens(ctx); err != nil {
+		log.Printf("prune password_reset_tokens error: %v", err)
+	} else if n > 0 {
+		log.Printf("pruned %d used/expired reset tokens", n)
+	}
 	if n, err := s.janitor.PruneProcessedEvents(ctx, processedEventRetention); err != nil {
 		log.Printf("prune processed_events error: %v", err)
 	} else if n > 0 {
@@ -246,14 +264,27 @@ func (s *DuesService) StartScheduler(ctx context.Context) <-chan struct{} {
 }
 
 // runNightlyJobSafely recovers from panics per run, so one bad night cannot
-// kill the scheduler for the remaining lifetime of the process.
+// kill the scheduler for the remaining lifetime of the process. It also elects a
+// single leader via an advisory lock so that, with multiple replicas, exactly
+// one instance runs the job (no duplicate invoices or reminder emails).
 func (s *DuesService) runNightlyJobSafely(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("dues scheduler panic: %v", r)
 		}
 	}()
-	s.RunNightlyJob(ctx)
+	if s.janitor == nil {
+		s.RunNightlyJob(ctx) // no lock provider (single-instance / dev)
+		return
+	}
+	ran, err := s.janitor.WithLeaderLock(ctx, nightlyJobLockKey, s.RunNightlyJob)
+	if err != nil {
+		log.Printf("nightly job: leader-lock error, skipping this run: %v", err)
+		return
+	}
+	if !ran {
+		log.Printf("nightly job: another instance holds the leader lock; skipping this run")
+	}
 }
 
 // nextScheduledRun returns the duration until the next 2 AM local time.

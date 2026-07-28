@@ -479,6 +479,7 @@ type mockGovernanceRepo struct {
 	DeleteMotionFn          func(ctx context.Context, id string) error
 	MotionStatusFn          func(ctx context.Context, id string) (string, string, error)
 	CastVoteFn              func(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	MemberIsActiveFn        func(ctx context.Context, memberID string) (bool, error)
 	GetVotesFn              func(ctx context.Context, motionID string) ([]model.MotionVote, error)
 	ListProxiesFn           func(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)
 	CreateProxyFn           func(ctx context.Context, meetingID, grantorID, holderID string) (*model.MeetingProxy, error)
@@ -486,8 +487,7 @@ type mockGovernanceRepo struct {
 	EligibleBallotMembersFn func(ctx context.Context, motionID string) ([]repo.BallotRecipient, error)
 	UpsertBallotTokenFn     func(ctx context.Context, motionID, memberID, hash string, expiresAt time.Time) error
 	GetBallotContextFn      func(ctx context.Context, hash string) (*model.BallotContext, error)
-	ConsumeBallotTokenFn    func(ctx context.Context, hash string) (string, string, error)
-	CastBallotVoteFn        func(ctx context.Context, motionID, memberID, choice string) error
+	ConsumeBallotAndVoteFn  func(ctx context.Context, hash, choice string) (string, error)
 }
 
 func (m *mockGovernanceRepo) EligibleBallotMembers(ctx context.Context, motionID string) ([]repo.BallotRecipient, error) {
@@ -499,11 +499,8 @@ func (m *mockGovernanceRepo) UpsertBallotToken(ctx context.Context, motionID, me
 func (m *mockGovernanceRepo) GetBallotContext(ctx context.Context, hash string) (*model.BallotContext, error) {
 	return m.GetBallotContextFn(ctx, hash)
 }
-func (m *mockGovernanceRepo) ConsumeBallotToken(ctx context.Context, hash string) (string, string, error) {
-	return m.ConsumeBallotTokenFn(ctx, hash)
-}
-func (m *mockGovernanceRepo) CastBallotVote(ctx context.Context, motionID, memberID, choice string) error {
-	return m.CastBallotVoteFn(ctx, motionID, memberID, choice)
+func (m *mockGovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice string) (string, error) {
+	return m.ConsumeBallotAndVoteFn(ctx, hash, choice)
 }
 
 func (m *mockGovernanceRepo) GetSettings(ctx context.Context) (*model.GovernanceSettings, error) {
@@ -544,6 +541,12 @@ func (m *mockGovernanceRepo) MotionStatus(ctx context.Context, id string) (strin
 }
 func (m *mockGovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error {
 	return m.CastVoteFn(ctx, motionID, memberID, choice, isProxy, castBy)
+}
+func (m *mockGovernanceRepo) MemberIsActive(ctx context.Context, memberID string) (bool, error) {
+	if m.MemberIsActiveFn != nil {
+		return m.MemberIsActiveFn(ctx, memberID)
+	}
+	return true, nil // default: eligible, so existing tests are unaffected
 }
 func (m *mockGovernanceRepo) GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error) {
 	return m.GetVotesFn(ctx, motionID)

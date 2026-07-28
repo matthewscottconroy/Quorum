@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"quorum/internal/auth"
 	"quorum/internal/config"
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 // ballotTokenTTL bounds how long an emailed ballot link stays valid.
@@ -227,9 +229,17 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
 		return
 	}
-	if body.Threshold != nil && !model.ValidThresholds[*body.Threshold] {
-		writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
-		return
+	if body.Threshold != nil {
+		if !model.ValidThresholds[*body.Threshold] {
+			writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
+			return
+		}
+		// Changing the passing bar once voting is open would retroactively flip
+		// the meaning of ballots already cast — forbid it.
+		if status == "open" {
+			writeError(w, http.StatusConflict, "the threshold cannot be changed once voting is open", "conflict")
+			return
+		}
 	}
 	if !validOptionalUUID(body.MoverID) || !validOptionalUUID(body.SeconderID) {
 		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
@@ -335,9 +345,14 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 	final := body.Status
 	switch final {
 	case "tabled", "withdrawn":
-		// explicit non-decision close
+		// explicit non-decision close — allowed from any non-terminal state.
 	case "", "carried", "failed":
-		// auto-decide from the tally
+		// auto-decide from the tally — only a motion whose vote is actually open
+		// can be decided, otherwise a never-opened draft would be recorded failed.
+		if m.Status != "open" {
+			writeError(w, http.StatusConflict, "voting must be open before a motion can be decided", "conflict")
+			return
+		}
 		if m.Tally.Carried {
 			final = "carried"
 		} else {
@@ -386,6 +401,13 @@ func (h *GovernanceHandler) CastVote(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &body); err != nil || !model.ValidVoteChoices[body.Choice] {
 		writeError(w, http.StatusBadRequest, "choice must be for, against, or abstain", "bad_request")
+		return
+	}
+	if active, err := h.repo.MemberIsActive(r.Context(), memberID); err != nil {
+		writeError(w, http.StatusInternalServerError, "eligibility check failed", "internal_error")
+		return
+	} else if !active {
+		writeError(w, http.StatusForbidden, "your membership is not active, so you cannot vote", "forbidden")
 		return
 	}
 	status, _, err := h.repo.MotionStatus(r.Context(), id)
@@ -538,8 +560,12 @@ func (h *GovernanceHandler) SendBallots(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not load recipients", "internal_error")
 		return
 	}
+	// Create tokens synchronously (fast, and the links must be valid on return),
+	// but queue the SMTP sends to run in the background so a large roster cannot
+	// exceed the HTTP write timeout mid-loop.
 	base := strings.TrimRight(h.cfg.BaseURL, "/")
-	sent := 0
+	type outbound struct{ to, subject, body string }
+	var queue []outbound
 	for _, rec := range recipients {
 		plain, hashed, gerr := auth.GenerateResetToken()
 		if gerr != nil {
@@ -549,16 +575,21 @@ func (h *GovernanceHandler) SendBallots(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		link := fmt.Sprintf("%s/#/ballot?token=%s", base, plain)
-		subject := "Your ballot: " + m.Title
 		body := fmt.Sprintf(
 			"Hello %s,\n\nA vote is open on the motion \"%s\".\n\n"+
 				"Cast your ballot here (valid for 14 days, one use):\n\n%s\n\n"+
 				"If you did not expect this, you can ignore this email.\n", rec.Name, m.Title, link)
-		if h.mailer.Send([]string{rec.Email}, subject, body) == nil {
-			sent++
-		}
+		queue = append(queue, outbound{rec.Email, "Your ballot: " + m.Title, body})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sent": sent, "eligible": len(recipients)})
+	mailer := h.mailer
+	go func(items []outbound) {
+		for _, it := range items {
+			if err := mailer.Send([]string{it.to}, it.subject, it.body); err != nil {
+				log.Printf("ballot email error (%s): %v", it.to, err)
+			}
+		}
+	}(queue)
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(queue), "eligible": len(recipients)})
 }
 
 // GetBallot returns the motion context for a ballot token (public, unauthenticated).
@@ -598,28 +629,18 @@ func (h *GovernanceHandler) SubmitBallot(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "token required", "bad_request")
 		return
 	}
-	// Verify the motion is still open before consuming the single-use token, so a
-	// closed-motion attempt doesn't burn the member's link.
-	ctx, err := h.repo.GetBallotContext(r.Context(), auth.HashResetToken(body.Token))
+	// Consume the token and record the vote atomically: the token is only spent
+	// if the vote lands (and only while the motion is open).
+	_, err := h.repo.ConsumeBallotAndVote(r.Context(), auth.HashResetToken(body.Token), body.Choice)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusBadRequest, "this ballot link is invalid or has expired", "bad_request")
-			return
+		switch {
+		case errors.Is(err, repo.ErrMotionNotOpen):
+			writeError(w, http.StatusConflict, "voting on this motion has closed", "conflict")
+		case errors.Is(err, pgx.ErrNoRows):
+			writeError(w, http.StatusBadRequest, "this ballot link is invalid, expired, or already used", "bad_request")
+		default:
+			writeError(w, http.StatusInternalServerError, "could not record your vote", "internal_error")
 		}
-		writeError(w, http.StatusInternalServerError, "lookup failed", "internal_error")
-		return
-	}
-	if ctx.Status != "open" {
-		writeError(w, http.StatusConflict, "voting on this motion has closed", "conflict")
-		return
-	}
-	motionID, memberID, cerr := h.repo.ConsumeBallotToken(r.Context(), auth.HashResetToken(body.Token))
-	if cerr != nil {
-		writeError(w, http.StatusBadRequest, "this ballot link is invalid or already used", "bad_request")
-		return
-	}
-	if err := h.repo.CastBallotVote(r.Context(), motionID, memberID, body.Choice); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record your vote", "internal_error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
