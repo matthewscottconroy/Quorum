@@ -346,9 +346,12 @@ func TestMembersUpdate_FiltersUnknownFields(t *testing.T) {
 
 func TestMembersDelete_Success(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Test"}, nil
+		},
 		DeleteFn: func(_ context.Context, _ string) error { return nil },
 	})
-	req := chiRequest("DELETE", "/members/m1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := chiRequest("DELETE", "/members/m1?confirm=Test", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
 	rr := httptest.NewRecorder()
 	h.Delete(rr, req)
 	if rr.Code != 204 {
@@ -356,9 +359,24 @@ func TestMembersDelete_Success(t *testing.T) {
 	}
 }
 
+func TestMembersDelete_ConfirmMismatch(t *testing.T) {
+	h := membersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Test"}, nil
+		},
+	})
+	// Missing/wrong ?confirm must be rejected before any delete.
+	req := chiRequest("DELETE", "/members/m1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("status: got %d, want 400 without confirmation", rr.Code)
+	}
+}
+
 func TestMembersDelete_NotFound(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
-		DeleteFn: func(_ context.Context, _ string) error { return pgx.ErrNoRows },
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) { return nil, pgx.ErrNoRows },
 	})
 	req := chiRequest("DELETE", "/members/m1", "", map[string]string{"id": testUUID2})
 	rr := httptest.NewRecorder()
@@ -370,9 +388,12 @@ func TestMembersDelete_NotFound(t *testing.T) {
 
 func TestMembersDelete_Error(t *testing.T) {
 	h := membersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Test"}, nil
+		},
 		DeleteFn: func(_ context.Context, _ string) error { return errors.New("constraint") },
 	})
-	req := chiRequest("DELETE", "/members/m1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	req := chiRequest("DELETE", "/members/m1?confirm=Test", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
 	rr := httptest.NewRecorder()
 	h.Delete(rr, req)
 	if rr.Code != 500 {

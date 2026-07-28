@@ -178,10 +178,20 @@ func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, updated)
 }
 
-// Delete handles deleting a member.
+// Delete soft-deletes a member (sets status to inactive). It requires the same
+// type-to-confirm gate as every other destructive action: the caller must echo
+// the member's display name via ?confirm=<name>.
 func (h *MembersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
+		return
+	}
+	m, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "member not found", "query error")
+		return
+	}
+	if !confirmMatches(w, r, m.DisplayName) {
 		return
 	}
 	if err := h.repo.Delete(r.Context(), id); err != nil {
