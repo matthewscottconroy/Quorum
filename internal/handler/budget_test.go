@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"quorum/internal/model"
 )
 
@@ -113,5 +115,43 @@ func TestBudgetCompare_RequiresIDs(t *testing.T) {
 	budgetHandler(&mockBudgetRepo{}).Compare(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 without ids, got %d", rr.Code)
+	}
+}
+
+func TestBudgetUpdate_NotFound(t *testing.T) {
+	repo := &mockBudgetRepo{
+		UpdateScenarioFn: func(_ context.Context, _ string, _, _, _, _, _ *string) (*model.BudgetScenario, error) {
+			return nil, pgx.ErrNoRows
+		},
+	}
+	req := reqWithParam("PATCH", "/budgets/"+testBudgetID, `{"name":"x"}`, map[string]string{"id": testBudgetID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	budgetHandler(repo).Update(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestBudgetSeedDues_NotFound(t *testing.T) {
+	repo := &mockBudgetRepo{
+		SeedDuesIncomeFn: func(_ context.Context, _ string) (int, error) { return 0, pgx.ErrNoRows },
+	}
+	req := reqWithParam("POST", "/budgets/"+testBudgetID+"/seed-dues", "", map[string]string{"id": testBudgetID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	budgetHandler(repo).SeedDues(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestBudgetAddLine_OverflowRejected(t *testing.T) {
+	req := reqWithParam("POST", "/budgets/"+testBudgetID+"/lines", `{"kind":"income","label":"x","quantity":999999999999}`, map[string]string{"id": testBudgetID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	budgetHandler(&mockBudgetRepo{}).AddLine(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for out-of-range quantity, got %d", rr.Code)
 	}
 }

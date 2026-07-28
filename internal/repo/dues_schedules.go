@@ -36,7 +36,7 @@ func PeriodFor(cadence string, dueDays int, t time.Time) (label string, start, d
 func (r *DuesRepo) ListSchedules(ctx context.Context) ([]model.DuesSchedule, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, tier, amount_minor, currency, cadence, due_days, active, created_at, updated_at
-		FROM dues_schedules ORDER BY created_at DESC`)
+		FROM dues_schedules ORDER BY created_at DESC LIMIT 500`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,15 +135,14 @@ func (r *DuesRepo) DeleteSchedule(ctx context.Context, id string) error {
 func (r *DuesRepo) GenerateInvoicesForSchedule(ctx context.Context, s model.DuesSchedule, label string, due time.Time) (int, error) {
 	// NOTE: the invoice amount column is named "amount" but stores integer minor
 	// units (see migration 0006); model.DuesInvoice maps it to AmountMinor.
+	// ON CONFLICT on the (member_id, period_label) unique index (migration 0013)
+	// makes generation atomically idempotent even under concurrent runs.
 	tag, err := r.db.Exec(ctx, `
 		INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status)
 		SELECT m.id, $1, $2, $3, $4, 'pending'
 		FROM members m
 		WHERE m.status = 'active' AND m.tier = $5
-		  AND NOT EXISTS (
-		      SELECT 1 FROM dues_invoices di
-		      WHERE di.member_id = m.id AND di.period_label = $3
-		  )`,
+		ON CONFLICT (member_id, period_label) DO NOTHING`,
 		s.AmountMinor, s.Currency, label, due, s.Tier)
 	if err != nil {
 		return 0, err

@@ -45,7 +45,7 @@ func scanScenarioWithTotals(row scannable) (model.BudgetScenario, error) {
 // ListScenarios returns all scenarios with rolled-up totals, newest first.
 func (r *BudgetRepo) ListScenarios(ctx context.Context) ([]model.BudgetScenario, error) {
 	rows, err := r.db.Query(ctx, scenarioSelectWithTotals+`
-		GROUP BY s.id ORDER BY s.created_at DESC`)
+		GROUP BY s.id ORDER BY s.created_at DESC LIMIT 500`)
 	if err != nil {
 		return nil, err
 	}
@@ -208,21 +208,39 @@ func (r *BudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy s
 	return r.GetScenario(ctx, newID)
 }
 
-// SeedDuesIncome adds one income line per member tier, projecting annualized dues
-// from the active members in that tier and the tier's active dues schedule
-// (quantity = member count, unit = annualized dues). Returns the number of lines
-// added. Requires dues schedules to exist for the relevant tiers.
+// SeedDuesIncome (re)projects annualized dues income into the scenario: one line
+// per member tier, quantity = active-member count, unit = the tier's annualized
+// dues. It is idempotent — prior "Dues" lines are cleared first, so re-seeding
+// replaces rather than doubles. Only schedules whose currency matches the
+// scenario's are used, so amounts are never mixed across currencies. Returns the
+// number of lines seeded, or pgx.ErrNoRows if the scenario does not exist.
 func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, error) {
-	tag, err := r.db.Exec(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var currency string
+	if err := tx.QueryRow(ctx, `SELECT currency FROM budget_scenarios WHERE id = $1::uuid`, scenarioID).Scan(&currency); err != nil {
+		return 0, err // pgx.ErrNoRows when the scenario is missing
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM budget_lines WHERE scenario_id = $1::uuid AND category = 'Dues'`, scenarioID); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, sort_order)
 		SELECT $1::uuid, 'income', 'Dues', 'Dues — ' || m.tier, count(*),
 		       s.amount_minor * CASE s.cadence WHEN 'monthly' THEN 12 WHEN 'quarterly' THEN 4 ELSE 1 END,
 		       0
 		FROM members m
-		JOIN dues_schedules s ON s.tier = m.tier AND s.active
+		JOIN dues_schedules s ON s.tier = m.tier AND s.active AND s.currency = $2
 		WHERE m.status = 'active'
-		GROUP BY m.tier, s.amount_minor, s.cadence`, scenarioID)
+		GROUP BY m.tier, s.amount_minor, s.cadence`, scenarioID, currency)
 	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return int(tag.RowsAffected()), nil

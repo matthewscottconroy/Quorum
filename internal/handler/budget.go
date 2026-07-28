@@ -7,6 +7,15 @@ import (
 	"quorum/internal/model"
 )
 
+// Bounds on budget line inputs. The product quantity × unit stays well within
+// int64 (max ~9.2e18), so the Go rollup and the Postgres SUM agree instead of
+// one silently wrapping while the other errors.
+const (
+	maxBudgetQuantity  = 1_000_000         // e.g. members or months
+	maxBudgetUnitMinor = 1_000_000_000_000 // 10 billion major units
+	maxCompareIDs      = 50
+)
+
 // BudgetHandler handles budget scenario planning endpoints.
 type BudgetHandler struct {
 	repo budgetRepo
@@ -38,6 +47,10 @@ func (h *BudgetHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := strings.Split(raw, ",")
+	if len(ids) > maxCompareIDs {
+		writeError(w, http.StatusBadRequest, "too many scenarios to compare at once", "bad_request")
+		return
+	}
 	for _, id := range ids {
 		if !isValidUUID(strings.TrimSpace(id)) {
 			writeError(w, http.StatusBadRequest, "each id must be a UUID", "bad_request")
@@ -180,11 +193,7 @@ func (h *BudgetHandler) SeedDues(w http.ResponseWriter, r *http.Request) {
 	}
 	added, err := h.repo.SeedDuesIncome(r.Context(), id)
 	if err != nil {
-		if isFKViolation(err) {
-			writeError(w, http.StatusNotFound, "scenario not found", "not_found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "seed failed", "internal_error")
+		writeRepoError(w, err, "scenario not found", "seed failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines_added": added})
@@ -219,11 +228,11 @@ func (h *BudgetHandler) AddLine(w http.ResponseWriter, r *http.Request) {
 	}
 	qty := int64(1)
 	if body.Quantity != nil {
-		if *body.Quantity < 0 {
-			writeError(w, http.StatusBadRequest, "quantity must be 0 or more", "bad_request")
-			return
-		}
 		qty = *body.Quantity
+	}
+	if msg := validateLineAmounts(qty, body.UnitAmountMinor); msg != "" {
+		writeError(w, http.StatusBadRequest, msg, "bad_request")
+		return
 	}
 	l, err := h.repo.AddLine(r.Context(), &model.BudgetLine{
 		ScenarioID: scenarioID, Kind: body.Kind, Category: body.Category, Label: body.Label,
@@ -263,9 +272,18 @@ func (h *BudgetHandler) UpdateLine(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "kind must be income or expense", "bad_request")
 		return
 	}
-	if body.Quantity != nil && *body.Quantity < 0 {
-		writeError(w, http.StatusBadRequest, "quantity must be 0 or more", "bad_request")
-		return
+	if body.Quantity != nil || body.UnitAmountMinor != nil {
+		q, u := int64(1), int64(0)
+		if body.Quantity != nil {
+			q = *body.Quantity
+		}
+		if body.UnitAmountMinor != nil {
+			u = *body.UnitAmountMinor
+		}
+		if msg := validateLineAmounts(q, u); msg != "" {
+			writeError(w, http.StatusBadRequest, msg, "bad_request")
+			return
+		}
 	}
 	l, err := h.repo.UpdateLine(r.Context(), id, body.Kind, body.Category, body.Label, body.Quantity, body.UnitAmountMinor, body.Note, body.SortOrder)
 	if err != nil {
@@ -273,6 +291,18 @@ func (h *BudgetHandler) UpdateLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, l)
+}
+
+// validateLineAmounts bounds quantity and unit amount so quantity × unit cannot
+// overflow int64. Returns "" when valid, else a user-facing error message.
+func validateLineAmounts(quantity, unitAmountMinor int64) string {
+	if quantity < 0 || quantity > maxBudgetQuantity {
+		return "quantity must be between 0 and 1,000,000"
+	}
+	if unitAmountMinor < -maxBudgetUnitMinor || unitAmountMinor > maxBudgetUnitMinor {
+		return "unit amount is out of range"
+	}
+	return ""
 }
 
 // DeleteLine removes a budget line (officer+).

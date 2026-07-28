@@ -166,17 +166,13 @@ func TestIntegration_EmptyPageCountFallback(t *testing.T) {
 	dues := repo.NewDuesRepo(pool)
 	period := "count-" + t.Name()
 
-	memberID, _ := makeInvoice(t, pool, 100, "USD", period)
-	// Two more invoices for the same member/period.
-	_, err := dues.CreateInvoiceBatch(ctx, []*model.DuesInvoice{
-		{MemberID: memberID, AmountMinor: 100, Currency: "USD", PeriodLabel: period, DueDate: time.Now(), Status: "pending"},
-		{MemberID: memberID, AmountMinor: 100, Currency: "USD", PeriodLabel: period, DueDate: time.Now(), Status: "pending"},
-	})
-	if err != nil {
-		t.Fatalf("create invoices: %v", err)
-	}
+	// Three invoices for the same period across three distinct members (the
+	// unique (member_id, period_label) index forbids duplicating one member).
+	makeInvoice(t, pool, 100, "USD", period)
+	makeInvoice(t, pool, 100, "USD", period)
+	makeInvoice(t, pool, 100, "USD", period)
 
-	invs, total, err := dues.ListInvoices(ctx, repo.InvoiceFilter{MemberID: memberID, PeriodLabel: period, Limit: 10, Offset: 100})
+	invs, total, err := dues.ListInvoices(ctx, repo.InvoiceFilter{PeriodLabel: period, Limit: 10, Offset: 100})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
