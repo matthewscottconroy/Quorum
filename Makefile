@@ -1,4 +1,5 @@
 .PHONY: build run dev test lint \
+        local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
         secret bootstrap help
@@ -22,8 +23,32 @@ test:
 lint:
 	golangci-lint run
 
-# ── Podman (local development) ────────────────────────────────────────────────
-# Requires Podman >= 4.7 (podman compose built-in) or the podman-compose package.
+# ── Local stack via plain Podman (no compose provider needed) ─────────────────
+# Runs Postgres + the app in one Podman pod (shared netns → app reaches the DB
+# on localhost:5432, matching .env). Works with just `podman` — no
+# podman-compose / docker-compose required. See scripts/local.sh.
+
+local:
+	scripts/local.sh up
+
+local-down:
+	scripts/local.sh down
+
+local-reset:
+	scripts/local.sh reset
+
+local-restart:
+	scripts/local.sh restart
+
+local-logs:
+	scripts/local.sh logs
+
+local-status:
+	scripts/local.sh status
+
+# ── Podman Compose (local development) ────────────────────────────────────────
+# Requires Podman >= 4.7 with a compose provider (podman-compose or
+# docker-compose). If you don't have one, use `make local` above instead.
 # The Containerfile/Dockerfile format is identical; no changes needed.
 
 # IMAGE can be overridden: make pod-build IMAGE=my-registry.io/quorum:dev
@@ -76,6 +101,13 @@ help:
 	@echo "  dev             Run with .env loaded (no Docker)"
 	@echo "  test            Run go test -race ./..."
 	@echo "  lint            Run golangci-lint"
+	@echo ""
+	@echo "  local           Start the local stack with plain Podman (no compose needed)"
+	@echo "  local-down      Stop the local stack (keeps the database volume)"
+	@echo "  local-reset     Stop and wipe the local database volume"
+	@echo "  local-restart   Rebuild the image and restart the app container"
+	@echo "  local-logs      Follow the app logs"
+	@echo "  local-status    Show pod/container status"
 	@echo ""
 	@echo "  pod-up          Start with Podman Compose (builds image)"
 	@echo "  pod-down        Stop Podman Compose stack"

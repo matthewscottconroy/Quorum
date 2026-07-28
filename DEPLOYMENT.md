@@ -11,10 +11,11 @@ This guide covers every supported deployment path from a laptop to a production 
    - 2.1 [Prerequisites](#21-prerequisites)
    - 2.2 [First-time setup](#22-first-time-setup)
    - 2.3 [Mode A — Go binary only (fastest iteration)](#23-mode-a--go-binary-only-fastest-iteration)
-   - 2.4 [Mode B — Podman Compose (recommended)](#24-mode-b--podman-compose-recommended)
-   - 2.5 [Mode C — Docker Compose (alternative)](#25-mode-c--docker-compose-alternative)
-   - 2.6 [Bootstrap the first admin user](#26-bootstrap-the-first-admin-user)
-   - 2.7 [Day-to-day development workflow](#27-day-to-day-development-workflow)
+   - 2.4 [Mode B — Plain Podman, no compose provider (easiest)](#24-mode-b--plain-podman-no-compose-provider-easiest)
+   - 2.5 [Mode C — Podman Compose](#25-mode-c--podman-compose)
+   - 2.6 [Mode D — Docker Compose (alternative)](#26-mode-d--docker-compose-alternative)
+   - 2.7 [Bootstrap the first admin user](#27-bootstrap-the-first-admin-user)
+   - 2.8 [Day-to-day development workflow](#28-day-to-day-development-workflow)
 3. [Staging (non-production Kubernetes)](#3-staging-non-production-kubernetes)
    - 3.1 [What staging differs from production](#31-what-staging-differs-from-production)
    - 3.2 [Deploy with Kustomize](#32-deploy-with-kustomize)
@@ -77,13 +78,13 @@ Variables split by sensitivity:
 
 | Tool | Minimum version | Install |
 |---|---|---|
-| Go | 1.23 | https://go.dev/dl/ |
+| Go | 1.23 | https://go.dev/dl/ — needed only for Modes A and local Go builds; the container modes build Go inside the image |
 | Podman | 4.7 | `dnf install podman` / `brew install podman` |
-| podman-compose | any | included in Podman ≥ 4.7 or `pip install podman-compose` |
+| podman-compose | any | **only for Mode C** — `dnf install podman-compose` or `pip install podman-compose`. Not needed for Mode B (plain Podman). |
 | PostgreSQL client | 16 | optional, for direct `psql` access |
 | golangci-lint | 1.57 | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` |
 
-Docker can be used instead of Podman for all Compose operations — see [Mode C](#25-mode-c--docker-compose-alternative).
+The fastest path on a fresh machine is [Mode B — plain Podman](#24-mode-b--plain-podman-no-compose-provider-easiest), which needs only `podman`. Docker can be used instead of Podman — see [Mode D](#26-mode-d--docker-compose-alternative).
 
 ### 2.2 First-time setup
 
@@ -130,9 +131,59 @@ The app starts at `http://localhost:8080`. The migration runner executes automat
 
 Restart by pressing `Ctrl-C` and re-running `make dev`. There is no hot-reload; the rebuild is fast (<2 seconds for incremental builds).
 
-### 2.4 Mode B — Podman Compose (recommended)
+### 2.4 Mode B — Plain Podman, no compose provider (easiest)
+
+This is the quickest way to get the full stack running on a fresh machine: it
+needs **only `podman`** — no `podman-compose`, no `docker-compose`, no Docker.
+The helper script `scripts/local.sh` runs PostgreSQL and the app together inside
+a single Podman **pod**. Containers in a pod share one network namespace, so the
+app reaches the database on `localhost:5432` — exactly matching the
+`QUORUM_DATABASE_URL` in `.env`. (This mirrors what `podman-compose` does under
+the hood, which is why the same `.env` works for both.)
+
+```sh
+# One-time: create .env with real secrets (if you haven't already)
+cp .env.example .env
+# then set QUORUM_JWT_SECRET (make secret) and DB_PASSWORD in .env,
+# making sure DB_PASSWORD matches the password inside QUORUM_DATABASE_URL.
+
+# Build the image and start Postgres + the app in the 'quorum' pod
+make local            # equivalent to: scripts/local.sh up
+
+# Create the first admin user (once, on a fresh database)
+make bootstrap        # or: scripts/local.sh bootstrap
+```
+
+The app is available at `http://localhost:8080`. Migrations run automatically on
+startup. PostgreSQL data lives in the `quorum-pgdata` named volume and survives
+`make local-down`.
+
+Lifecycle:
+
+```sh
+make local            # build image + start the pod (Postgres + app)
+make local-status     # show pod/container status
+make local-logs       # follow the app logs
+make local-down       # stop and remove the pod (KEEPS the data volume)
+make local-restart    # rebuild the image and restart just the app container
+make local-reset      # stop and DELETE the data volume (wipes all data)
+```
+
+The pod does not auto-start after a reboot. Bring it back with `make local`
+(idempotent — it recreates the pod and reuses the existing data volume), or
+`podman pod start quorum` if the containers already exist.
+
+**Podman Desktop:** enable the user API socket once with
+`systemctl --user enable --now podman.socket`; Podman Desktop (install via
+`flatpak install flathub io.podman_desktop.PodmanDesktop`) then shows the
+`quorum` pod, both containers, logs, and the volume in its GUI.
+
+### 2.5 Mode C — Podman Compose
 
 Podman Compose starts both the PostgreSQL container and the app container, wiring them together on an isolated network. The image is rebuilt automatically on `pod-up` if source files have changed.
+
+Requires a compose provider (`sudo dnf install podman-compose`, or
+`pip install podman-compose`). If you don't have one, use [Mode B](#24-mode-b--plain-podman-no-compose-provider-easiest) instead.
 
 ```sh
 # Start the full stack (builds image, starts postgres + app)
@@ -164,7 +215,7 @@ IMAGE=registry.example.com/quorum:dev make pod-build
 IMAGE=registry.example.com/quorum:dev make pod-push
 ```
 
-### 2.5 Mode C — Docker Compose (alternative)
+### 2.6 Mode D — Docker Compose (alternative)
 
 For teams that use Docker instead of Podman:
 
@@ -173,9 +224,15 @@ make docker-up     # docker compose up --build -d
 make docker-down   # docker compose down
 ```
 
-All `docker compose` and `podman compose` commands are interchangeable — the `docker-compose.yml` file is identical.
+> **Note on the database host.** `docker-compose.yml` reads
+> `QUORUM_DATABASE_URL` from `.env`, where the host is `localhost`. That works
+> with **podman-compose** and the plain-Podman pod (Mode B), because both share
+> a network namespace between the app and the database. Under **plain Docker
+> Compose**, services get separate network namespaces, so the app must reach the
+> database by its service name — set `QUORUM_DATABASE_URL=postgres://quorum:<pass>@db:5432/quorum?sslmode=disable`
+> (host `db`) in `.env` before running `make docker-up`.
 
-### 2.6 Bootstrap the first admin user
+### 2.7 Bootstrap the first admin user
 
 Run this once after the first start, regardless of which mode you chose:
 
@@ -197,7 +254,7 @@ curl -s -X POST http://localhost:8080/api/v1/auth/bootstrap \
   | python3 -m json.tool
 ```
 
-### 2.7 Day-to-day development workflow
+### 2.8 Day-to-day development workflow
 
 ```sh
 # Run all tests with race detector
