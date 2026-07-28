@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Go build, vet & test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: quorum
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: quorum
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U quorum"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l internal/ cmd/)
+          if [ -n "$unformatted" ]; then echo "gofmt needed on:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test -race
+        run: go test -race -count=1 ./...
+      - name: integration tests
+        env:
+          QUORUM_TEST_DATABASE_URL: postgres://quorum:test@localhost:5432/quorum?sslmode=disable
+        run: go test -tags integration -count=1 ./internal/repo/...
+
+  lint:
+    name: golangci-lint & govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  frontend:
+    name: Frontend syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: node --check web JS
+        run: |
+          for f in web/app.js web/utils.js web/components/*.js; do
+            node --check "$f" || exit 1
+          done

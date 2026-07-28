@@ -1,0 +1,25 @@
+# golangci-lint configuration for Quorum.
+# Run locally with `make lint` (golangci-lint run).
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+
+issues:
+  # The codebase deliberately ignores some errors (fire-and-forget audit/email,
+  # best-effort cleanup) with //nolint:errcheck; honor those.
+  exclude-use-default: true
+  max-issues-per-linter: 0
+  max-same-issues: 0
