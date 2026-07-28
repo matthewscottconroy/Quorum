@@ -38,7 +38,7 @@ func (m *mockJanitor) PruneAuditLog(_ context.Context, retain time.Duration) (in
 
 func TestPruneBookkeeping_CallsAllWithRetention(t *testing.T) {
 	j := &mockJanitor{}
-	svc := NewDuesService(nil, nil, j)
+	svc := NewDuesService(nil, nil, j, nil)
 	svc.pruneBookkeeping(context.Background())
 
 	if j.refreshCalls != 1 || j.eventCalls != 1 || j.auditCalls != 1 {
@@ -56,7 +56,7 @@ func TestPruneBookkeeping_CallsAllWithRetention(t *testing.T) {
 func TestPruneBookkeeping_ContinuesAfterError(t *testing.T) {
 	// A failure in one prune must not skip the others.
 	j := &mockJanitor{refreshErr: errors.New("db down")}
-	svc := NewDuesService(nil, nil, j)
+	svc := NewDuesService(nil, nil, j, nil)
 	svc.pruneBookkeeping(context.Background())
 
 	if j.eventCalls != 1 || j.auditCalls != 1 {
@@ -66,7 +66,7 @@ func TestPruneBookkeeping_ContinuesAfterError(t *testing.T) {
 }
 
 func TestPruneBookkeeping_NilJanitorNoPanic(t *testing.T) {
-	svc := NewDuesService(nil, nil, nil)
+	svc := NewDuesService(nil, nil, nil, nil)
 	svc.pruneBookkeeping(context.Background()) // must not panic
 }
 
@@ -177,7 +177,7 @@ func TestSendMemberReminders_UnconfiguredEmailSkips(t *testing.T) {
 		},
 	}
 	email := NewEmailService(&config.Config{}, nil) // SMTPHost="" => not configured
-	svc := NewDuesService(ager, email, nil)
+	svc := NewDuesService(ager, email, nil, nil)
 	svc.RunNightlyJob(context.Background())
 	if queried {
 		t.Error("reminders must not be queried when email is unconfigured")
@@ -217,7 +217,7 @@ func TestSendMemberReminders_Escalation(t *testing.T) {
 		AdvanceReminderStageFn: func(_ context.Context, id string, stage int) error { advanced[id] = stage; return nil },
 	}
 	fs := &fakeSender{isConfigured: true}
-	svc := NewDuesService(ager, fs, nil)
+	svc := NewDuesService(ager, fs, nil, nil)
 	svc.sendMemberReminders(context.Background())
 
 	if len(fs.sends) != 2 {
@@ -243,7 +243,7 @@ func TestSendMemberReminders_FailedSendDoesNotAdvance(t *testing.T) {
 		OverdueForRemindersFn:  func(_ context.Context) ([]repo.OverdueReminder, error) { return reminders, nil },
 		AdvanceReminderStageFn: func(_ context.Context, _ string, _ int) error { advanced = true; return nil },
 	}
-	svc := NewDuesService(ager, &fakeSender{isConfigured: true, failSend: true}, nil)
+	svc := NewDuesService(ager, &fakeSender{isConfigured: true, failSend: true}, nil, nil)
 	svc.sendMemberReminders(context.Background())
 	if advanced {
 		t.Error("stage must not advance when the send fails (retry next night)")
@@ -261,7 +261,7 @@ func TestRunNightlyJobSafely_RecoversPanic(t *testing.T) {
 	ager := &mockInvoiceAger{
 		MarkOverdueFn: func(_ context.Context) (int64, error) { panic("boom") },
 	}
-	svc := NewDuesService(ager, NewEmailService(&config.Config{}, nil), nil)
+	svc := NewDuesService(ager, NewEmailService(&config.Config{}, nil), nil, nil)
 	svc.runNightlyJobSafely(context.Background()) // must not panic
 }
 

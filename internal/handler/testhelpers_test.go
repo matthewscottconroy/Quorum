@@ -193,17 +193,42 @@ func (m *mockMembersRepo) Count(ctx context.Context) (int, error) { return m.Cou
 // ---- mockDuesRepo ----
 
 type mockDuesRepo struct {
-	ListInvoicesFn             func(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
-	GetInvoiceFn               func(ctx context.Context, id string) (*model.DuesInvoice, error)
-	CreateInvoiceBatchFn       func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
-	UpdateInvoiceStatusFn      func(ctx context.Context, id, status string, notes *string) error
-	RecomputeInvoiceStatusFn   func(ctx context.Context, id string) error
-	CountByStatusFn            func(ctx context.Context, status string) (int, error)
-	ListTransactionsFn         func(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
-	CreateTransactionFn        func(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
-	FindInvoiceByProviderRefFn func(ctx context.Context, ref string) (string, error)
-	MarkEventProcessedFn       func(ctx context.Context, eventID string) error
-	RecordWebhookPaymentFn     func(ctx context.Context, eventID string, t *model.Transaction) (bool, error)
+	ListInvoicesFn                func(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
+	GetInvoiceFn                  func(ctx context.Context, id string) (*model.DuesInvoice, error)
+	CreateInvoiceBatchFn          func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
+	UpdateInvoiceStatusFn         func(ctx context.Context, id, status string, notes *string) error
+	RecomputeInvoiceStatusFn      func(ctx context.Context, id string) error
+	CountByStatusFn               func(ctx context.Context, status string) (int, error)
+	ListTransactionsFn            func(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
+	CreateTransactionFn           func(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
+	FindInvoiceByProviderRefFn    func(ctx context.Context, ref string) (string, error)
+	MarkEventProcessedFn          func(ctx context.Context, eventID string) error
+	RecordWebhookPaymentFn        func(ctx context.Context, eventID string, t *model.Transaction) (bool, error)
+	ListSchedulesFn               func(ctx context.Context) ([]model.DuesSchedule, error)
+	GetScheduleFn                 func(ctx context.Context, id string) (*model.DuesSchedule, error)
+	CreateScheduleFn              func(ctx context.Context, s *model.DuesSchedule) (*model.DuesSchedule, error)
+	UpdateScheduleFn              func(ctx context.Context, id string, tier *string, amountMinor *int64, currency, cadence *string, dueDays *int, active *bool) (*model.DuesSchedule, error)
+	DeleteScheduleFn              func(ctx context.Context, id string) error
+	GenerateInvoicesForScheduleFn func(ctx context.Context, s model.DuesSchedule, label string, due time.Time) (int, error)
+}
+
+func (m *mockDuesRepo) ListSchedules(ctx context.Context) ([]model.DuesSchedule, error) {
+	return m.ListSchedulesFn(ctx)
+}
+func (m *mockDuesRepo) GetSchedule(ctx context.Context, id string) (*model.DuesSchedule, error) {
+	return m.GetScheduleFn(ctx, id)
+}
+func (m *mockDuesRepo) CreateSchedule(ctx context.Context, s *model.DuesSchedule) (*model.DuesSchedule, error) {
+	return m.CreateScheduleFn(ctx, s)
+}
+func (m *mockDuesRepo) UpdateSchedule(ctx context.Context, id string, tier *string, amountMinor *int64, currency, cadence *string, dueDays *int, active *bool) (*model.DuesSchedule, error) {
+	return m.UpdateScheduleFn(ctx, id, tier, amountMinor, currency, cadence, dueDays, active)
+}
+func (m *mockDuesRepo) DeleteSchedule(ctx context.Context, id string) error {
+	return m.DeleteScheduleFn(ctx, id)
+}
+func (m *mockDuesRepo) GenerateInvoicesForSchedule(ctx context.Context, s model.DuesSchedule, label string, due time.Time) (int, error) {
+	return m.GenerateInvoicesForScheduleFn(ctx, s, label, due)
 }
 
 func (m *mockDuesRepo) ListInvoices(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error) {

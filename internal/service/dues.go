@@ -48,6 +48,13 @@ type janitor interface {
 	PruneAuditLog(ctx context.Context, retain time.Duration) (int64, error)
 }
 
+// duesGenerator materializes recurring dues for the current billing period. The
+// nightly job runs it for every active schedule; generation is idempotent.
+type duesGenerator interface {
+	ListActiveDuesSchedules(ctx context.Context) ([]model.DuesSchedule, error)
+	GenerateInvoicesForSchedule(ctx context.Context, s model.DuesSchedule, label string, due time.Time) (int, error)
+}
+
 // Retention windows for the nightly prune. Providers retry webhooks for a few
 // days at most, so 90 days keeps dedup safe; audit entries are kept a year.
 const (
@@ -57,20 +64,23 @@ const (
 
 // DuesService runs the nightly dues aging, member reminders, table pruning, and admin digest.
 type DuesService struct {
-	repo    invoiceAger
-	email   emailSender
-	janitor janitor
+	repo      invoiceAger
+	email     emailSender
+	janitor   janitor
+	generator duesGenerator
 }
 
-// NewDuesService constructs the service. janitor may be nil, in which case the
-// nightly prune step is skipped.
-func NewDuesService(r invoiceAger, e emailSender, j janitor) *DuesService {
-	return &DuesService{repo: r, email: e, janitor: j}
+// NewDuesService constructs the service. janitor and generator may be nil, in
+// which case the nightly prune / recurring-dues steps are skipped.
+func NewDuesService(r invoiceAger, e emailSender, j janitor, g duesGenerator) *DuesService {
+	return &DuesService{repo: r, email: e, janitor: j, generator: g}
 }
 
 // RunNightlyJob ages pending invoices to overdue, prunes bookkeeping tables,
 // sends escalating member reminders, and emails the admin digest.
 func (s *DuesService) RunNightlyJob(ctx context.Context) {
+	s.generateRecurringDues(ctx)
+
 	count, err := s.repo.MarkOverdue(ctx)
 	if err != nil {
 		log.Printf("dues aging error: %v", err)
@@ -86,6 +96,34 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 
 	s.sendMemberReminders(ctx)
 	s.sendAdminDigest(ctx)
+}
+
+// generateRecurringDues materializes invoices for the current period of every
+// active dues schedule. Idempotent, so running nightly simply fills in the new
+// period's invoices once it begins (and bills any newly-added active members).
+func (s *DuesService) generateRecurringDues(ctx context.Context) {
+	if s.generator == nil {
+		return
+	}
+	schedules, err := s.generator.ListActiveDuesSchedules(ctx)
+	if err != nil {
+		log.Printf("recurring dues: schedule query error: %v", err)
+		return
+	}
+	total := 0
+	now := time.Now()
+	for _, sc := range schedules {
+		label, _, due := repo.PeriodFor(sc.Cadence, sc.DueDays, now)
+		n, err := s.generator.GenerateInvoicesForSchedule(ctx, sc, label, due)
+		if err != nil {
+			log.Printf("recurring dues: generation error (tier %s): %v", sc.Tier, err)
+			continue
+		}
+		total += n
+	}
+	if total > 0 {
+		log.Printf("recurring dues: generated %d invoice(s)", total)
+	}
 }
 
 // sendMemberReminders emails each member whose dues are overdue, escalating

@@ -68,7 +68,7 @@ func main() {
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
-	duesSvc := service.NewDuesService(duesRepo, emailSvc, maintenanceRepo)
+	duesSvc := service.NewDuesService(duesRepo, emailSvc, maintenanceRepo, duesRepo)
 	schedDone := duesSvc.StartScheduler(ctx)
 
 	// Middleware
@@ -173,6 +173,13 @@ func main() {
 			r.With(mw.RequireRole("officer")).Patch("/dues/{id}", duesH.Update)
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/transactions", duesH.CreateTransaction)
 			r.With(mw.RequireRole("officer")).Get("/dues/transactions", duesH.ListTransactions)
+
+			// Recurring dues schedules (auto-generate invoices per tier).
+			r.With(mw.RequireRole("officer")).Get("/dues/schedules", duesH.ListSchedules)
+			r.With(mw.RequireRole("officer")).Post("/dues/schedules", duesH.CreateSchedule)
+			r.With(mw.RequireRole("officer")).Patch("/dues/schedules/{id}", duesH.UpdateSchedule)
+			r.With(mw.RequireRole("officer")).Delete("/dues/schedules/{id}", duesH.DeleteSchedule)
+			r.With(mw.RequireRole("officer")).Post("/dues/schedules/{id}/generate", duesH.GenerateSchedule)
 
 			// CSV data exports. Member roster is visible to members and up; the
 			// financial exports (dues, transactions) require officer and up.

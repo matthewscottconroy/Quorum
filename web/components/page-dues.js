@@ -29,6 +29,7 @@ class PageDues extends HTMLElement {
         <div style="display:flex;gap:.5rem">
           <button class="btn-secondary" id="export-dues-btn">Export dues</button>
           <button class="btn-secondary" id="export-tx-btn">Export payments</button>
+          ${canWrite() ? '<button class="btn-secondary" id="schedules-btn">Recurring dues</button>' : ''}
           ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Create invoice</button>' : ''}
         </div>
       </div>
@@ -59,6 +60,95 @@ class PageDues extends HTMLElement {
       try { await apiDownload('/export/transactions.csv', 'transactions.csv'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
+    this.querySelector('#schedules-btn')?.addEventListener('click', () => this.openSchedulesModal());
+  }
+
+  /** Manage recurring dues schedules: list, add, generate-now, delete. */
+  async openSchedulesModal() {
+    const CADENCE = { annual: 'Annually', quarterly: 'Quarterly', monthly: 'Monthly' };
+    const { dialog, close } = openModal({
+      title: 'Recurring dues schedules',
+      maxWidth: '640px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:1rem">
+            Each schedule auto-generates a dues invoice for every active member of a tier, once per period.
+            The nightly job fills in each new period; “Generate now” materializes the current period immediately.
+          </p>
+          <div id="sched-list"><div style="text-align:center;padding:1rem"><span class="spinner"></span></div></div>
+          <div style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.75rem;margin-top:.75rem">
+            <div style="font-weight:600;font-size:.85rem;margin-bottom:.5rem">Add a schedule</div>
+            <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:end">
+              <div class="form-group" style="flex:1;min-width:110px;margin:0"><label for="s-tier">Tier</label><input id="s-tier" placeholder="standard"></div>
+              <div class="form-group" style="max-width:110px;margin:0"><label for="s-amount">Amount</label><input id="s-amount" placeholder="50.00"></div>
+              <div class="form-group" style="max-width:90px;margin:0"><label for="s-currency">Currency</label><input id="s-currency" value="USD"></div>
+              <div class="form-group" style="max-width:120px;margin:0"><label for="s-cadence">Cadence</label>
+                <select id="s-cadence"><option value="annual">Annually</option><option value="quarterly">Quarterly</option><option value="monthly">Monthly</option></select>
+              </div>
+              <div class="form-group" style="max-width:90px;margin:0"><label for="s-duedays">Due (days)</label><input id="s-duedays" type="number" value="30" min="0"></div>
+              <button class="btn-primary" id="s-add" style="height:38px">Add</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer"><button class="btn-secondary" id="close-btn">Close</button></div>
+      `,
+    });
+    dialog.querySelector('#close-btn').addEventListener('click', close);
+    // Refresh the invoice list on close in case generation created invoices.
+    dialog.addEventListener('close', () => { if (this.isConnected) this.load(); });
+
+    const listEl = dialog.querySelector('#sched-list');
+    const reload = async () => {
+      let schedules = [];
+      try { schedules = await api('GET', '/dues/schedules'); } catch { listEl.innerHTML = '<p class="empty-state">Failed to load.</p>'; return; }
+      listEl.innerHTML = (schedules ?? []).length ? schedules.map(s => `
+        <div class="sched-row" data-id="${esc(s.id)}" style="display:flex;align-items:center;gap:.6rem;border:1px solid var(--color-border);border-radius:var(--radius);padding:.55rem .75rem;margin-bottom:.5rem">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.9rem">${esc(s.tier)} — ${formatMoney(s.amount_minor, s.currency)} ${esc(s.currency)}</div>
+            <div style="font-size:.78rem;color:var(--color-text-muted)">${CADENCE[s.cadence]||s.cadence} · due ${s.due_days}d after period start ${s.active?'':'· <em>inactive</em>'}</div>
+          </div>
+          <button class="btn-secondary sched-gen" style="font-size:.78rem;padding:.25rem .6rem">Generate now</button>
+          <button class="btn-ghost sched-del" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
+        </div>`).join('') : '<p style="font-size:.85rem;color:var(--color-text-muted)">No schedules yet.</p>';
+    };
+
+    listEl.addEventListener('click', async e => {
+      const row = e.target.closest('.sched-row'); if (!row) return;
+      const id = row.dataset.id;
+      try {
+        if (e.target.classList.contains('sched-gen')) {
+          const res = await api('POST', `/dues/schedules/${id}/generate`);
+          toast(`Generated ${res.created} invoice${res.created===1?'':'s'} for ${res.period_label}`, 'success');
+        } else if (e.target.classList.contains('sched-del')) {
+          await api('DELETE', `/dues/schedules/${id}`);
+          toast('Schedule deleted','success');
+          await reload();
+        }
+      } catch (err) { toast(err.error ?? 'Action failed','error'); }
+    });
+
+    dialog.querySelector('#s-add').addEventListener('click', async () => {
+      const tier = dialog.querySelector('#s-tier').value.trim();
+      const currency = dialog.querySelector('#s-currency').value.trim() || 'USD';
+      const amountStr = dialog.querySelector('#s-amount').value.trim();
+      if (!tier || !amountStr) { toast('Tier and amount are required','error'); return; }
+      let amount_minor;
+      try { amount_minor = parseMoney(amountStr, currency); }
+      catch { toast('Enter a valid amount','error'); return; }
+      try {
+        await api('POST', '/dues/schedules', {
+          tier, amount_minor, currency,
+          cadence: dialog.querySelector('#s-cadence').value,
+          due_days: Number.parseInt(dialog.querySelector('#s-duedays').value, 10) || 0,
+        });
+        toast('Schedule added','success');
+        dialog.querySelector('#s-tier').value = '';
+        dialog.querySelector('#s-amount').value = '';
+        await reload();
+      } catch (err) { toast(err.error ?? 'Failed','error'); }
+    });
+
+    await reload();
   }
 
   async load() {

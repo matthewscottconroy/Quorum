@@ -170,6 +170,24 @@ type PlanDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
+// DuesSchedule defines recurring dues for a member tier: the amount and how
+// often it is billed. Cadence is "annual", "quarterly", or "monthly"; DueDays
+// is how many days after each period's start the invoice falls due.
+type DuesSchedule struct {
+	ID          string    `json:"id"`
+	Tier        string    `json:"tier"`
+	AmountMinor int64     `json:"amount_minor"`
+	Currency    string    `json:"currency"`
+	Cadence     string    `json:"cadence"`
+	DueDays     int       `json:"due_days"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ValidCadences is the authoritative set of dues-schedule cadences.
+var ValidCadences = map[string]bool{"annual": true, "quarterly": true, "monthly": true}
+
 // GovernanceSettings holds the org-wide quorum and voting rules (a single row).
 // QuorumMode: "majority" (floor(active/2)+1), "percent" (ceil(active*value/100)),
 // or "fixed" (value as an absolute count). DefaultThreshold seeds new motions.

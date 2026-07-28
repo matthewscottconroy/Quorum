@@ -59,6 +59,12 @@ type duesRepo interface {
 	FindInvoiceByProviderRef(ctx context.Context, providerRef string) (string, error)
 	MarkEventProcessed(ctx context.Context, eventID string) error
 	RecordWebhookPayment(ctx context.Context, eventID string, t *model.Transaction) (already bool, err error)
+	ListSchedules(ctx context.Context) ([]model.DuesSchedule, error)
+	GetSchedule(ctx context.Context, id string) (*model.DuesSchedule, error)
+	CreateSchedule(ctx context.Context, s *model.DuesSchedule) (*model.DuesSchedule, error)
+	UpdateSchedule(ctx context.Context, id string, tier *string, amountMinor *int64, currency, cadence *string, dueDays *int, active *bool) (*model.DuesSchedule, error)
+	DeleteSchedule(ctx context.Context, id string) error
+	GenerateInvoicesForSchedule(ctx context.Context, s model.DuesSchedule, label string, due time.Time) (int, error)
 }
 
 // meetingsRepo is satisfied by *repo.MeetingsRepo.
