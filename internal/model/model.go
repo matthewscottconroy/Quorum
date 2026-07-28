@@ -170,6 +170,53 @@ type PlanDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
+// BudgetScenario is a named draft budget for what-if planning. Lines and Totals
+// are populated when a single scenario is fetched (and Totals also on list).
+type BudgetScenario struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Description *string      `json:"description,omitempty"`
+	PeriodLabel *string      `json:"period_label,omitempty"`
+	Status      string       `json:"status"`
+	Currency    string       `json:"currency"`
+	CreatedBy   *string      `json:"created_by,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	Lines       []BudgetLine `json:"lines,omitempty"`
+	Totals      BudgetTotals `json:"totals"`
+}
+
+// BudgetLine is one income or expense line. AmountMinor is the computed
+// contribution (Quantity × UnitAmountMinor), filled by the repo.
+type BudgetLine struct {
+	ID              string    `json:"id"`
+	ScenarioID      string    `json:"scenario_id"`
+	Kind            string    `json:"kind"`
+	Category        *string   `json:"category,omitempty"`
+	Label           string    `json:"label"`
+	Quantity        int64     `json:"quantity"`
+	UnitAmountMinor int64     `json:"unit_amount_minor"`
+	AmountMinor     int64     `json:"amount_minor"`
+	Note            *string   `json:"note,omitempty"`
+	SortOrder       int       `json:"sort_order"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// BudgetTotals summarizes a scenario: total income, total expense, and the net
+// (surplus if positive, deficit if negative), all in minor units.
+type BudgetTotals struct {
+	IncomeMinor  int64  `json:"income_minor"`
+	ExpenseMinor int64  `json:"expense_minor"`
+	NetMinor     int64  `json:"net_minor"`
+	Currency     string `json:"currency"`
+}
+
+// ValidBudgetStatuses and ValidBudgetKinds are the authoritative allowed sets.
+var (
+	ValidBudgetStatuses = map[string]bool{"draft": true, "active": true, "archived": true}
+	ValidBudgetKinds    = map[string]bool{"income": true, "expense": true}
+)
+
 // DuesSchedule defines recurring dues for a member tier: the amount and how
 // often it is billed. Cadence is "annual", "quarterly", or "monthly"; DueDays
 // is how many days after each period's start the invoice falls due.

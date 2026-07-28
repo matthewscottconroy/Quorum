@@ -536,3 +536,53 @@ func (m *mockGovernanceRepo) CreateProxy(ctx context.Context, meetingID, grantor
 func (m *mockGovernanceRepo) DeleteProxy(ctx context.Context, id string) error {
 	return m.DeleteProxyFn(ctx, id)
 }
+
+// ---- mockBudgetRepo ----
+
+type mockBudgetRepo struct {
+	ListScenariosFn    func(ctx context.Context) ([]model.BudgetScenario, error)
+	CompareScenariosFn func(ctx context.Context, ids []string) ([]model.BudgetScenario, error)
+	GetScenarioFn      func(ctx context.Context, id string) (*model.BudgetScenario, error)
+	CreateScenarioFn   func(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error)
+	UpdateScenarioFn   func(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error)
+	DeleteScenarioFn   func(ctx context.Context, id string) error
+	CloneScenarioFn    func(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error)
+	SeedDuesIncomeFn   func(ctx context.Context, scenarioID string) (int, error)
+	AddLineFn          func(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error)
+	UpdateLineFn       func(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error)
+	DeleteLineFn       func(ctx context.Context, id string) error
+}
+
+func (m *mockBudgetRepo) ListScenarios(ctx context.Context) ([]model.BudgetScenario, error) {
+	return m.ListScenariosFn(ctx)
+}
+func (m *mockBudgetRepo) CompareScenarios(ctx context.Context, ids []string) ([]model.BudgetScenario, error) {
+	return m.CompareScenariosFn(ctx, ids)
+}
+func (m *mockBudgetRepo) GetScenario(ctx context.Context, id string) (*model.BudgetScenario, error) {
+	return m.GetScenarioFn(ctx, id)
+}
+func (m *mockBudgetRepo) CreateScenario(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error) {
+	return m.CreateScenarioFn(ctx, s, createdBy)
+}
+func (m *mockBudgetRepo) UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error) {
+	return m.UpdateScenarioFn(ctx, id, name, description, periodLabel, status, currency)
+}
+func (m *mockBudgetRepo) DeleteScenario(ctx context.Context, id string) error {
+	return m.DeleteScenarioFn(ctx, id)
+}
+func (m *mockBudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error) {
+	return m.CloneScenarioFn(ctx, id, newName, createdBy)
+}
+func (m *mockBudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, error) {
+	return m.SeedDuesIncomeFn(ctx, scenarioID)
+}
+func (m *mockBudgetRepo) AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error) {
+	return m.AddLineFn(ctx, l)
+}
+func (m *mockBudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error) {
+	return m.UpdateLineFn(ctx, id, kind, category, label, quantity, unitAmountMinor, note, sortOrder)
+}
+func (m *mockBudgetRepo) DeleteLine(ctx context.Context, id string) error {
+	return m.DeleteLineFn(ctx, id)
+}

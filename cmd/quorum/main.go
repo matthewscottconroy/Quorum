@@ -65,6 +65,7 @@ func main() {
 	auditRepo := repo.NewAuditRepo(pool)
 	maintenanceRepo := repo.NewMaintenanceRepo(pool)
 	governanceRepo := repo.NewGovernanceRepo(pool)
+	budgetRepo := repo.NewBudgetRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -85,6 +86,7 @@ func main() {
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
 	governanceH := handler.NewGovernanceHandler(governanceRepo)
+	budgetH := handler.NewBudgetHandler(budgetRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -180,6 +182,20 @@ func main() {
 			r.With(mw.RequireRole("officer")).Patch("/dues/schedules/{id}", duesH.UpdateSchedule)
 			r.With(mw.RequireRole("officer")).Delete("/dues/schedules/{id}", duesH.DeleteSchedule)
 			r.With(mw.RequireRole("officer")).Post("/dues/schedules/{id}/generate", duesH.GenerateSchedule)
+
+			// Budget scenario planning (officer+). Static paths (compare) are
+			// registered before the {id} param route so chi matches them first.
+			r.With(mw.RequireRole("officer")).Get("/budgets", budgetH.List)
+			r.With(mw.RequireRole("officer")).Post("/budgets", budgetH.Create)
+			r.With(mw.RequireRole("officer")).Get("/budgets/compare", budgetH.Compare)
+			r.With(mw.RequireRole("officer")).Get("/budgets/{id}", budgetH.Get)
+			r.With(mw.RequireRole("officer")).Patch("/budgets/{id}", budgetH.Update)
+			r.With(mw.RequireRole("officer")).Delete("/budgets/{id}", budgetH.Delete)
+			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/clone", budgetH.Clone)
+			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/seed-dues", budgetH.SeedDues)
+			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/lines", budgetH.AddLine)
+			r.With(mw.RequireRole("officer")).Patch("/budget-lines/{id}", budgetH.UpdateLine)
+			r.With(mw.RequireRole("officer")).Delete("/budget-lines/{id}", budgetH.DeleteLine)
 
 			// CSV data exports. Member roster is visible to members and up; the
 			// financial exports (dues, transactions) require officer and up.

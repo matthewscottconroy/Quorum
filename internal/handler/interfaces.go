@@ -129,6 +129,21 @@ type auditRepo interface {
 	Log(ctx context.Context, userID, action, entityID string) error
 }
 
+// budgetRepo is satisfied by *repo.BudgetRepo.
+type budgetRepo interface {
+	ListScenarios(ctx context.Context) ([]model.BudgetScenario, error)
+	CompareScenarios(ctx context.Context, ids []string) ([]model.BudgetScenario, error)
+	GetScenario(ctx context.Context, id string) (*model.BudgetScenario, error)
+	CreateScenario(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error)
+	UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error)
+	DeleteScenario(ctx context.Context, id string) error
+	CloneScenario(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error)
+	SeedDuesIncome(ctx context.Context, scenarioID string) (int, error)
+	AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error)
+	UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error)
+	DeleteLine(ctx context.Context, id string) error
+}
+
 // governanceRepo is satisfied by *repo.GovernanceRepo.
 type governanceRepo interface {
 	GetSettings(ctx context.Context) (*model.GovernanceSettings, error)
