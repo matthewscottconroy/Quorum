@@ -4,7 +4,7 @@ This document tracks the remaining work to get Quorum from "works end-to-end in
 a smoke test" to "confidently running in production." It is a living checklist,
 not a release gate — triage by your own risk tolerance and deployment scale.
 
-Last reviewed: **2026-07-24**.
+Last reviewed: **2026-07-29**.
 
 ---
 
@@ -33,6 +33,19 @@ plus the items below):
   any authenticated user (including `restricted`, scoped to their own record).
   Downloads carry the bearer token via a dedicated `apiDownload` helper.
 - **Root-route fix.** `/` now serves `index.html` (previously 404'd).
+- **Audit trail with entity attribution.** Every mutating request is logged with
+  the acting user, the resource type, and the affected row id — including POST
+  creates, whose id is recovered from the response body (migration 0014 adds
+  `entity_type` and an `(entity_type, entity_id)` index). Auth events
+  (login/bootstrap/password-reset) self-log. An admin audit-log **viewer UI** is
+  still to build (see future list).
+- **Governance-history integrity.** Deleting a meeting that recorded decisions
+  or a decided motion is refused with 409 (cancel it instead), so a hard delete
+  can no longer cascade away governance history.
+- **Per-account 2FA lockout.** See §4 below.
+- **Frontend money-helper tests.** The JS minor-unit money math (which mirrors
+  the Go parser) has unit tests run in CI via Node's built-in test runner
+  (`make test-web`).
 
 Constraint honored: **no SSO** — recovery is fully in-app.
 
@@ -77,9 +90,12 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   their authenticator and recovery codes, there is currently no recovery except
   direct DB access. Document a runbook (SQL to clear `totp_enabled` for a user)
   or add a CLI/`make` target.
-- Consider rate-limiting `POST /auth/login/2fa` per-account (today it shares the
-  per-IP login limiter). A stolen password + unlimited code attempts is 10^6
-  guesses; the ±1 window and per-IP limit mitigate but do not eliminate this.
+- **Done:** `POST /auth/login/2fa` is now throttled **per-account** (5 failed
+  attempts / 15 min → temporary lockout) on top of the per-IP login limiter, so
+  an attacker rotating IPs can no longer get unlimited guesses at one account's
+  6-digit code. The throttle counts only failures and clears on a successful
+  login. It is **in-process** (like the rate limiter — see §6): a multi-replica
+  deployment should move this to a shared store or enforce it at the ingress.
 - Consider requiring password re-entry (or a fresh login) before **enabling**
   2FA, not just disabling it. Today enrollment relies on the existing session.
 - Recovery codes are shown once and stored hashed — confirm the UI copy tells
@@ -139,6 +155,51 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 
 ---
 
+## Deferred architectural work (larger efforts)
+
+These are known, scoped, and deliberately **not** attempted in the recent
+hardening passes because each is a multi-day effort touching schema, API, and UI
+— too large to land safely alongside bounded fixes. Listed with why-deferred and
+a rough shape so they can be picked up as their own projects.
+
+1. **Multi-currency reporting / FX conversion.** *The one with real correctness
+   impact.* Invoices, payments, and budget lines each carry their own currency,
+   but analytics and budget totals sum across rows without converting (see the
+   `mixed_currencies` warning banner — a stopgap, not a fix). Real support needs:
+   a rate source (stored `fx_rates` table, effective-dated, manual entry at
+   minimum), a chosen reporting currency per org, and conversion at the
+   aggregation boundary in the analytics/budget repos. Until then: **keep an org
+   on a single currency for accurate rollups.**
+
+2. **CRUD-handler generics refactor.** The eight resource handlers (members,
+   contacts, resources, action-items, plans, …) repeat the same list/get/create/
+   update/delete + filter/paginate shape. A generic handler (Go 1.23 generics +
+   a small per-resource descriptor) would cut a few hundred lines and make
+   cross-cutting changes (like the audit/confirm gates) land in one place.
+   Deferred because it is pure refactor with wide blast radius and no user-facing
+   change — best done behind the existing handler test suite in one focused pass.
+
+3. **Observability: metrics + structured logging + error aggregation.** §5
+   above. Prometheus metrics (request rate/latency/error, DB pool saturation),
+   Sentry-style panic aggregation, and switching the chi logger to structured
+   JSON (`slog`) with a request-id field. Deferred because it is deployment-infra
+   work (needs a metrics backend and alerting rules to be useful) rather than a
+   code change in isolation.
+
+4. **Backups / disaster recovery.** §3 above. Automated `pg_dump` or WAL
+   archiving, a **tested** restore runbook, retention policy for the audit log
+   and soft-deleted rows. Deferred because it is operational tooling around the
+   deployment, not application code.
+
+5. **Automatic notifications system.** Today deletions notify affected members
+   and the dues scheduler emails reminders (`reminder_stage`, see DESIGN.md
+   §13). A general in-app + email notification system (motion opened, ballot
+   requested, meeting scheduled, quorum reached) would need a `notifications`
+   table, per-user preferences, a delivery worker, and UI. Deferred because it is
+   a feature area of its own, not a hardening item.
+
+---
+
 ## Nice-to-have / future
 
 - Email verification on account creation.
@@ -150,15 +211,8 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 - Bulk import (CSV) to complement the CSV export.
 - Internationalization / currency display polish (money is already stored in
   minor units and formatted per-currency).
-- **Multi-currency reporting.** Individual invoices, payments, and budget
-  scenarios each carry their own currency, but the **analytics dashboard and
-  budget totals sum amounts across rows without converting** — correct for a
-  single-currency org, misleading otherwise. The analytics overview now returns
-  a `mixed_currencies` flag and the dashboard shows a warning banner when more
-  than one currency is present, but true per-currency (or FX-converted)
-  reporting is still to build. Likewise `budget seed-dues` annualizes each
-  tier's schedule amount into one scenario currency without conversion. Until
-  then, keep an organization on a single currency for accurate rollups.
+- Multi-currency reporting / FX conversion — see **Deferred architectural work
+  §1** above (the analytics `mixed_currencies` banner is the current stopgap).
 - WebAuthn / passkeys as a stronger second factor (or passwordless) later.
 
 ---
