@@ -65,8 +65,9 @@ func main() {
 	auditRepo := repo.NewAuditRepo(pool)
 	maintenanceRepo := repo.NewMaintenanceRepo(pool)
 	governanceRepo := repo.NewGovernanceRepo(pool)
-	budgetRepo := repo.NewBudgetRepo(pool)
-	analyticsRepo := repo.NewAnalyticsRepo(pool)
+	fxRepo := repo.NewFXRepo(pool)
+	budgetRepo := repo.NewBudgetRepo(pool, fxRepo)
+	analyticsRepo := repo.NewAnalyticsRepo(pool, fxRepo)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -89,6 +90,7 @@ func main() {
 	governanceH := handler.NewGovernanceHandler(governanceRepo, cfg)
 	budgetH := handler.NewBudgetHandler(budgetRepo)
 	analyticsH := handler.NewAnalyticsHandler(analyticsRepo)
+	fxH := handler.NewFXHandler(fxRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -212,6 +214,15 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/analytics/attendance", analyticsH.Attendance)
 			r.With(mw.RequireRole("officer")).Get("/analytics/governance", analyticsH.Governance)
 			r.With(mw.RequireRole("officer")).Get("/analytics/payments", analyticsH.Payments)
+
+			// Multi-currency: reporting currency + exchange rates. Reads are
+			// officer+ (they drive the same financial dashboards); changes are
+			// admin+ because they reprice every aggregate.
+			r.With(mw.RequireRole("officer")).Get("/fx/settings", fxH.GetSettings)
+			r.With(mw.RequireRole("admin")).Put("/fx/settings", fxH.UpdateSettings)
+			r.With(mw.RequireRole("officer")).Get("/fx/rates", fxH.ListRates)
+			r.With(mw.RequireRole("admin")).Post("/fx/rates", fxH.CreateRate)
+			r.With(mw.RequireRole("admin")).Delete("/fx/rates/{id}", fxH.DeleteRate)
 
 			// CSV data exports. Member roster is visible to members and up; the
 			// financial exports (dues, transactions) require officer and up.

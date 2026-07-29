@@ -130,6 +130,15 @@ type auditRepo interface {
 	Log(ctx context.Context, userID, action, entityType, entityID string) error
 }
 
+// fxRepo is satisfied by *repo.FXRepo.
+type fxRepo interface {
+	ReportingCurrency(ctx context.Context) (string, error)
+	SetReportingCurrency(ctx context.Context, code string) error
+	ListRates(ctx context.Context) ([]model.FXRate, error)
+	CreateRate(ctx context.Context, from, to, rate, effectiveAt, createdBy string) (*model.FXRate, error)
+	DeleteRate(ctx context.Context, id string) error
+}
+
 // analyticsRepo is satisfied by *repo.AnalyticsRepo.
 type analyticsRepo interface {
 	Overview(ctx context.Context) (*model.AnalyticsOverview, error)

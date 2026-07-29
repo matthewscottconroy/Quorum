@@ -196,18 +196,21 @@ type MeetingAttendanceStat struct {
 	Attendees int    `json:"attendees"`
 }
 
-// AnalyticsOverview holds the headline KPIs for the analytics dashboard.
-// MixedCurrencies is true when payments/invoices span more than one currency, in
-// which case the summed money figures (which ignore currency) are not
-// meaningful — the UI surfaces a warning.
+// AnalyticsOverview holds the headline KPIs for the analytics dashboard. Money
+// figures are converted into Currency (the org reporting currency).
+// UnconvertibleCurrencies lists any currencies present in the data that had no
+// exchange rate to the reporting currency and were therefore left out of the
+// totals — the UI warns when it is non-empty. MixedCurrencies is retained for
+// backward compatibility (true when money spans more than one currency at all).
 type AnalyticsOverview struct {
-	ActiveMembers    int    `json:"active_members"`
-	YTDPaymentsMinor int64  `json:"ytd_payments_minor"`
-	OutstandingMinor int64  `json:"outstanding_minor"`
-	OpenMotions      int    `json:"open_motions"`
-	UpcomingMeetings int    `json:"upcoming_meetings"`
-	Currency         string `json:"currency"`
-	MixedCurrencies  bool   `json:"mixed_currencies"`
+	ActiveMembers           int      `json:"active_members"`
+	YTDPaymentsMinor        int64    `json:"ytd_payments_minor"`
+	OutstandingMinor        int64    `json:"outstanding_minor"`
+	OpenMotions             int      `json:"open_motions"`
+	UpcomingMeetings        int      `json:"upcoming_meetings"`
+	Currency                string   `json:"currency"`
+	MixedCurrencies         bool     `json:"mixed_currencies"`
+	UnconvertibleCurrencies []string `json:"unconvertible_currencies,omitempty"`
 }
 
 // MembershipAnalytics breaks the roster down by status and tier, with monthly joins.
@@ -231,12 +234,16 @@ type GovernanceAnalytics struct {
 	TotalMotions int             `json:"total_motions"`
 }
 
-// PaymentsAnalytics holds monthly collections, dues status breakdown, and outstanding total.
+// PaymentsAnalytics holds monthly collections, dues status breakdown, and
+// outstanding total, all converted into Currency (the reporting currency).
+// UnconvertibleCurrencies lists currencies left out of the totals for lack of a
+// rate.
 type PaymentsAnalytics struct {
-	Monthly          []SeriesPoint  `json:"monthly"`
-	DuesByStatus     []StatusAmount `json:"dues_by_status"`
-	OutstandingMinor int64          `json:"outstanding_minor"`
-	Currency         string         `json:"currency"`
+	Monthly                 []SeriesPoint  `json:"monthly"`
+	DuesByStatus            []StatusAmount `json:"dues_by_status"`
+	OutstandingMinor        int64          `json:"outstanding_minor"`
+	Currency                string         `json:"currency"`
+	UnconvertibleCurrencies []string       `json:"unconvertible_currencies,omitempty"`
 }
 
 // BudgetScenario is a named draft budget for what-if planning. Lines and Totals

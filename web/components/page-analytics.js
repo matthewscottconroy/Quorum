@@ -68,12 +68,18 @@ class PageAnalytics extends HTMLElement {
     const cur = overview.currency;
     const money = v => formatMoney(v, cur);
 
-    // Summed money figures ignore currency; warn if the data spans more than one.
+    // Money is converted into the reporting currency via the configured FX
+    // rates. Warn only about currencies that had no rate and were left out.
     const warn = this.querySelector('#a-warn');
-    if (overview.mixed_currencies) {
+    const unconvertible = overview.unconvertible_currencies ?? [];
+    if (unconvertible.length) {
       warn.style.display = 'block';
       warn.innerHTML = `<div style="background:var(--color-warning);color:#fff;border-radius:var(--radius);padding:.6rem .9rem;font-size:.85rem;margin-bottom:1rem">
-        ⚠ Your payments and dues span more than one currency. The money totals below are summed across currencies and shown in ${esc(cur)}, so treat them as approximate until per-currency reporting is added.</div>`;
+        ⚠ Totals are shown in ${esc(cur)}. Amounts in ${unconvertible.map(esc).join(', ')} were left out because no exchange rate into ${esc(cur)} is configured — add rates under Currencies to include them.</div>`;
+    } else if (overview.mixed_currencies) {
+      warn.style.display = 'block';
+      warn.innerHTML = `<div style="background:var(--color-info,#0891b2);color:#fff;border-radius:var(--radius);padding:.6rem .9rem;font-size:.85rem;margin-bottom:1rem">
+        Your money spans more than one currency; totals are converted into ${esc(cur)} using the configured exchange rates.</div>`;
     } else {
       warn.style.display = 'none';
     }

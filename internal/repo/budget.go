@@ -13,11 +13,14 @@ import (
 // BudgetRepo provides PostgreSQL data access for budget scenarios and lines.
 type BudgetRepo struct {
 	db *pgxpool.Pool
+	fx fxConverterSource
 }
 
-// NewBudgetRepo constructs a BudgetRepo backed by the given pool.
-func NewBudgetRepo(db *pgxpool.Pool) *BudgetRepo {
-	return &BudgetRepo{db: db}
+// NewBudgetRepo constructs a BudgetRepo backed by the given pool. fx supplies the
+// currency converter used to fold dues schedules in other currencies into a
+// scenario's currency when seeding dues income.
+func NewBudgetRepo(db *pgxpool.Pool, fx fxConverterSource) *BudgetRepo {
+	return &BudgetRepo{db: db, fx: fx}
 }
 
 // scenarioSelectWithTotals lists scenarios with income/expense rolled up in one
@@ -210,40 +213,93 @@ func (r *BudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy s
 
 // SeedDuesIncome (re)projects annualized dues income into the scenario: one line
 // per member tier, quantity = active-member count, unit = the tier's annualized
-// dues. It is idempotent — prior "Dues" lines are cleared first, so re-seeding
-// replaces rather than doubles. Only schedules whose currency matches the
-// scenario's are used, so amounts are never mixed across currencies. Returns the
-// number of lines seeded, or pgx.ErrNoRows if the scenario does not exist.
+// per-member dues in the scenario currency. It is idempotent — prior "Dues"
+// lines are cleared first, so re-seeding replaces rather than doubles. Schedules
+// denominated in another currency are converted into the scenario currency via
+// the current FX rates; a schedule whose currency has no rate is skipped (rather
+// than silently summed at par). Returns the number of lines seeded, or
+// pgx.ErrNoRows if the scenario does not exist.
 func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, error) {
+	var currency string
+	if err := r.db.QueryRow(ctx, `SELECT currency FROM budget_scenarios WHERE id = $1::uuid`, scenarioID).Scan(&currency); err != nil {
+		return 0, err // pgx.ErrNoRows when the scenario is missing
+	}
+	conv, err := r.fx.ConverterFor(ctx, currency)
+	if err != nil {
+		return 0, err
+	}
+
+	// Gather each tier's active-member count and its active schedule (amount,
+	// currency, cadence). Convert the annualized per-member amount into the
+	// scenario currency in Go so cross-currency schedules fold in exactly.
+	rows, err := r.db.Query(ctx, `
+		SELECT m.tier, count(*), s.amount_minor, s.currency, s.cadence
+		FROM members m
+		JOIN dues_schedules s ON s.tier = m.tier AND s.active
+		WHERE m.status = 'active'
+		GROUP BY m.tier, s.amount_minor, s.currency, s.cadence
+		ORDER BY m.tier`)
+	if err != nil {
+		return 0, err
+	}
+	type seedLine struct {
+		tier      string
+		count     int64
+		unitMinor int64
+	}
+	var lines []seedLine
+	for rows.Next() {
+		var tier, cur, cadence string
+		var count, amountMinor int64
+		if err := rows.Scan(&tier, &count, &amountMinor, &cur, &cadence); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		annualized := amountMinor * cadenceMultiplier(cadence)
+		unit, ok := conv.Convert(annualized, cur)
+		if !ok {
+			continue // no rate into the scenario currency — skip rather than mis-sum
+		}
+		lines = append(lines, seedLine{tier: tier, count: count, unitMinor: unit})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-
-	var currency string
-	if err := tx.QueryRow(ctx, `SELECT currency FROM budget_scenarios WHERE id = $1::uuid`, scenarioID).Scan(&currency); err != nil {
-		return 0, err // pgx.ErrNoRows when the scenario is missing
-	}
 	if _, err := tx.Exec(ctx, `DELETE FROM budget_lines WHERE scenario_id = $1::uuid AND category = 'Dues'`, scenarioID); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `
-		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, sort_order)
-		SELECT $1::uuid, 'income', 'Dues', 'Dues — ' || m.tier, count(*),
-		       s.amount_minor * CASE s.cadence WHEN 'monthly' THEN 12 WHEN 'quarterly' THEN 4 ELSE 1 END,
-		       0
-		FROM members m
-		JOIN dues_schedules s ON s.tier = m.tier AND s.active AND s.currency = $2
-		WHERE m.status = 'active'
-		GROUP BY m.tier, s.amount_minor, s.cadence`, scenarioID, currency)
-	if err != nil {
-		return 0, err
+	for _, l := range lines {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, sort_order)
+			VALUES ($1::uuid, 'income', 'Dues', $2, $3, $4, 0)`,
+			scenarioID, "Dues — "+l.tier, l.count, l.unitMinor); err != nil {
+			return 0, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return int(tag.RowsAffected()), nil
+	return len(lines), nil
+}
+
+// cadenceMultiplier annualizes a per-period dues amount.
+func cadenceMultiplier(cadence string) int64 {
+	switch cadence {
+	case "monthly":
+		return 12
+	case "quarterly":
+		return 4
+	default:
+		return 1
+	}
 }
 
 // ---- Lines ----
