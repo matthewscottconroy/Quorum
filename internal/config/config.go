@@ -66,6 +66,16 @@ type Config struct {
 	// forwarding headers (e.g. the k8s ingress); otherwise leave false so
 	// clients cannot spoof their rate-limit key.
 	TrustProxyHeaders bool
+
+	// LogLevel sets the minimum structured-log level: debug, info, warn, or
+	// error (default: info).
+	LogLevel string
+
+	// MetricsToken gates the Prometheus /metrics endpoint. When empty (default)
+	// the endpoint is disabled entirely; when set, scrapers must present it as a
+	// bearer token (Authorization: Bearer <token>) or ?token=<token>. This keeps
+	// internal metrics from leaking when the service is exposed directly.
+	MetricsToken string
 }
 
 // Load reads configuration from environment variables and returns a validated Config.
@@ -88,6 +98,9 @@ func Load() (*Config, error) {
 
 		AllowUnsignedWebhooks: getEnv("QUORUM_ALLOW_UNSIGNED_WEBHOOKS", "") == "true",
 		TrustProxyHeaders:     getEnv("QUORUM_TRUST_PROXY_HEADERS", "") == "true",
+
+		LogLevel:     getEnv("QUORUM_LOG_LEVEL", "info"),
+		MetricsToken: getEnv("QUORUM_METRICS_TOKEN", ""),
 	}
 
 	cfg.SecureCookies = strings.HasPrefix(cfg.BaseURL, "https://")

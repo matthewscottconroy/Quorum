@@ -102,15 +102,23 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   users to save them, and consider a "regenerate recovery codes" action.
 
 ### 5. Observability
-- Structured request logging is present (chi Logger). Add:
-  - Metrics endpoint (Prometheus) for request rates, latencies, error rates,
-    DB pool saturation.
-  - Alerting on 5xx rate, failed-login spikes, and scheduler failures (dues
-    aging / reminders).
-  - Error aggregation (Sentry or similar) for panics recovered by
-    `chimiddleware.Recoverer`.
-- `/healthz` (liveness) and `/readyz` (readiness, checks the DB) exist — wire
-  them to your orchestrator's probes.
+- **Done:** structured JSON request logging via `slog` — one object per request
+  with method, path (token-redacted), status, `duration_ms`, and a `request_id`
+  (also echoed in the `X-Request-Id` response header; an inbound one from a
+  trusted proxy is honored). Level is `QUORUM_LOG_LEVEL` (debug/info/warn/error).
+- **Done:** a dependency-free Prometheus exposition at `/metrics`, gated by
+  `QUORUM_METRICS_TOKEN` (disabled when unset): `quorum_http_requests_total`
+  (by method/route-pattern/status), a request-latency histogram,
+  `quorum_http_requests_in_flight`, `quorum_http_panics_total`, and DB pool
+  gauges (acquired/idle/total/max). Panics are recovered, counted, and logged
+  with a stack + request id by the app's own recoverer.
+- Still to wire (deployment-side): scrape `/metrics` from Prometheus and alert
+  on 5xx rate, failed-login spikes, panic count, DB pool saturation, and
+  scheduler failures (dues aging / reminders). Optionally forward panics to an
+  error aggregator (Sentry) — the structured `http_panic` log line is the hook.
+- The metrics are **in-process** (per replica); aggregate across replicas in
+  Prometheus. `/healthz` (liveness) and `/readyz` (readiness, checks the DB)
+  exist — wire them to your orchestrator's probes.
 
 ### 6. Rate limiting at scale
 - The current limiter is **in-process** (per-instance sliding window). Running

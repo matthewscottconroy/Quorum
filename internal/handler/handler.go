@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,8 +35,36 @@ func RequestLogger(next http.Handler) http.Handler {
 		start := time.Now()
 		lw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(lw, r)
-		log.Printf("%s %s %d %s", r.Method, redactURI(r.URL), lw.status, time.Since(start).Round(time.Millisecond))
+		attrs := []any{
+			slog.String("method", r.Method),
+			slog.String("path", redactURI(r.URL)),
+			slog.Int("status", lw.status),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+		}
+		if id, _ := r.Context().Value(ctxRequestID).(string); id != "" {
+			attrs = append(attrs, slog.String("request_id", id))
+		}
+		if uid, _ := r.Context().Value(ctxUserID).(string); uid != "" {
+			attrs = append(attrs, slog.String("user_id", uid))
+		}
+		// 5xx is a server-side failure; surface it at a higher level for alerting.
+		level := slog.LevelInfo
+		if lw.status >= 500 {
+			level = slog.LevelError
+		}
+		slog.LogAttrs(r.Context(), level, "http_request", toLogAttrs(attrs)...)
 	})
+}
+
+// toLogAttrs narrows a []any of slog.Attr to []slog.Attr for LogAttrs.
+func toLogAttrs(vals []any) []slog.Attr {
+	out := make([]slog.Attr, 0, len(vals))
+	for _, v := range vals {
+		if a, ok := v.(slog.Attr); ok {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // redactURI returns the request URI with sensitive query-param values masked.
@@ -81,9 +109,10 @@ func requireUUID(w http.ResponseWriter, r *http.Request, param string) (string, 
 type contextKey string
 
 const (
-	ctxUserID   contextKey = "user_id"
-	ctxRole     contextKey = "role"
-	ctxMemberID contextKey = "member_id"
+	ctxUserID    contextKey = "user_id"
+	ctxRole      contextKey = "role"
+	ctxMemberID  contextKey = "member_id"
+	ctxRequestID contextKey = "request_id"
 )
 
 // roleRank orders the privilege ladder. restricted sees only its own record;

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,12 +17,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	quorum "quorum"
 	"quorum/internal/config"
 	"quorum/internal/db"
 	"quorum/internal/handler"
+	"quorum/internal/metrics"
 	"quorum/internal/repo"
 	"quorum/internal/service"
 )
@@ -39,6 +40,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	// Structured JSON logging to stdout; the standard log package still works
+	// (it's used for early fatals above), but request logs and panics go through
+	// slog with a request_id for correlation.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel(cfg.LogLevel)})))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -109,18 +115,33 @@ func main() {
 	resourcesH.SetNotifier(notifier)
 	actionItemsH.SetNotifier(notifier)
 
+	// Metrics registry with DB pool saturation gauges sampled at scrape time.
+	reg := metrics.New()
+	reg.RegisterGauge("quorum_db_pool_acquired_conns", "Connections currently in use.",
+		func() float64 { return float64(pool.Stat().AcquiredConns()) })
+	reg.RegisterGauge("quorum_db_pool_idle_conns", "Idle connections in the pool.",
+		func() float64 { return float64(pool.Stat().IdleConns()) })
+	reg.RegisterGauge("quorum_db_pool_total_conns", "Total connections in the pool.",
+		func() float64 { return float64(pool.Stat().TotalConns()) })
+	reg.RegisterGauge("quorum_db_pool_max_conns", "Maximum pool size.",
+		func() float64 { return float64(pool.Stat().MaxConns()) })
+
 	r := chi.NewRouter()
 	// Note: chi's RealIP middleware is deliberately NOT used — it trusts
 	// X-Forwarded-For from any client, which would let attackers rotate the
 	// header to bypass the login rate limiter. Rate limiting keys on the raw
 	// socket address instead.
-	r.Use(handler.RequestLogger) // like chi's Logger but redacts token/code query params
-	r.Use(chimiddleware.Recoverer)
+	r.Use(handler.RequestID)      // assign/propagate X-Request-Id for log correlation
+	r.Use(handler.Metrics(reg))   // request count / latency / in-flight
+	r.Use(handler.RequestLogger)  // structured slog line per request (redacts tokens)
+	r.Use(handler.Recoverer(reg)) // recover panics, count them, log with stack
 	r.Use(handler.SecurityHeaders)
 	r.Use(handler.MaxRequestBody)
 
 	r.Get("/healthz", handler.Healthz)
 	r.Get("/readyz", handler.Readyz(pool))
+	// Prometheus exposition, gated by QUORUM_METRICS_TOKEN (disabled when unset).
+	r.Get("/metrics", handler.MetricsEndpoint(reg, cfg.MetricsToken))
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(mw.LoginRateLimit).Post("/auth/bootstrap", authH.Bootstrap)
@@ -347,6 +368,20 @@ func main() {
 // resolves to a directory) returns 404 so no auto-generated listing is exposed.
 // A short cache lifetime lets same-session revisits skip re-downloading
 // unchanged JS/CSS.
+// logLevel maps a config log-level string to an slog.Level (default info).
+func logLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func staticHandler(webFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(webFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
