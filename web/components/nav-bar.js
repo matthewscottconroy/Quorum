@@ -1,5 +1,6 @@
 import { getUser, clearAuth, api, navigate, hasRole } from '../app.js';
 import { esc } from '../utils.js';
+import './notification-bell.js';
 
 // `minRole` is the lowest ladder role that may see each item.
 // My Account (minRole 'restricted') is visible to everyone; for a restricted
@@ -42,7 +43,10 @@ class NavBar extends HTMLElement {
             </li>`).join('')}
         </ul>
         <div class="sidebar-footer">
-          <span class="user-info">${esc(user?.email ?? '')}</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+            <span class="user-info">${esc(user?.email ?? '')}</span>
+            <notification-bell></notification-bell>
+          </div>
           <button id="logout-btn" class="btn-ghost">Sign out</button>
         </div>
       </nav>

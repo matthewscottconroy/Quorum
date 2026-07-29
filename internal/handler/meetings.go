@@ -13,6 +13,7 @@ import (
 type MeetingsHandler struct {
 	repo     meetingsRepo
 	notifier deletionNotifier
+	events   eventNotifier
 }
 
 // NewMeetingsHandler constructs a MeetingsHandler.
@@ -22,6 +23,10 @@ func NewMeetingsHandler(r meetingsRepo) *MeetingsHandler {
 
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *MeetingsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
+
+// SetEventNotifier attaches the notification service used to alert members when
+// a meeting is scheduled. Optional (no-op when unset).
+func (h *MeetingsHandler) SetEventNotifier(n eventNotifier) { h.events = n }
 
 // List handles GET requests for a paginated, filterable list of meetings.
 func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +86,11 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeRepoError(w, err, "", "create error")
 		return
+	}
+	if h.events != nil {
+		link := "#/meetings"
+		body := "A new meeting has been scheduled for " + mt.ScheduledAt.Format("Mon 2 Jan 2006, 15:04 MST") + "."
+		h.events.NotifyMembers("meeting.scheduled", "Meeting scheduled: "+mt.Title, &body, &link)
 	}
 	writeJSON(w, 201, mt)
 }

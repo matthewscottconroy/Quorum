@@ -1,7 +1,10 @@
 // Package model defines the core data types shared across the application.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // User represents an application login account.
 // A User may optionally be linked to a Member record via MemberID.
@@ -455,4 +458,40 @@ type DashboardSummary struct {
 	UpcomingMeetings  []Meeting    `json:"upcoming_meetings"`
 	OpenActionItems   []ActionItem `json:"open_action_items"`
 	ActiveMemberCount int          `json:"active_member_count"`
+}
+
+// Notification is a single in-app notice for a user. Type is a dotted event key
+// (e.g. "motion.opened"); Link is an in-app hash route to open on click.
+type Notification struct {
+	ID        string     `json:"id"`
+	Type      string     `json:"type"`
+	Title     string     `json:"title"`
+	Body      *string    `json:"body,omitempty"`
+	Link      *string    `json:"link,omitempty"`
+	ReadAt    *time.Time `json:"read_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// NotificationPreferences captures a user's per-category email opt-outs. In-app
+// notices are always recorded regardless of these flags.
+type NotificationPreferences struct {
+	GovernanceEmail  bool `json:"governance_email"`
+	MeetingsEmail    bool `json:"meetings_email"`
+	DuesEmail        bool `json:"dues_email"`
+	AssignmentsEmail bool `json:"assignments_email"`
+}
+
+// NotificationCategory maps a dotted notification type to the preference
+// category that gates its email delivery. Unknown types default to governance.
+func NotificationCategory(notifType string) string {
+	switch {
+	case strings.HasPrefix(notifType, "meeting."):
+		return "meetings"
+	case strings.HasPrefix(notifType, "dues."):
+		return "dues"
+	case strings.HasPrefix(notifType, "action_item."):
+		return "assignments"
+	default:
+		return "governance" // motion.*, ballot.*, and anything else
+	}
 }

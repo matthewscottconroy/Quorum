@@ -21,12 +21,17 @@ var validActionItemPriorities = map[string]bool{
 type ActionItemsHandler struct {
 	repo     actionItemsRepo
 	notifier deletionNotifier
+	events   eventNotifier
 }
 
 // NewActionItemsHandler constructs an ActionItemsHandler.
 func NewActionItemsHandler(r actionItemsRepo) *ActionItemsHandler {
 	return &ActionItemsHandler{repo: r}
 }
+
+// SetEventNotifier attaches the notification service used to alert an assignee
+// when an action item is assigned to them. Optional (no-op when unset).
+func (h *ActionItemsHandler) SetEventNotifier(n eventNotifier) { h.events = n }
 
 // SetNotifier attaches an optional notifier used on gated deletes.
 func (h *ActionItemsHandler) SetNotifier(n deletionNotifier) { h.notifier = n }
@@ -121,6 +126,12 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeRepoError(w, err, "", "create error")
 		return
+	}
+	// Notify the assignee's linked user account, if any.
+	if h.events != nil && created.AssigneeID != nil {
+		link := "#/dashboard"
+		body := "You have been assigned a new action item in Quorum."
+		h.events.NotifyMember(*created.AssigneeID, "action_item.assigned", "Assigned: "+created.Title, &body, &link)
 	}
 	writeJSON(w, 201, created)
 }

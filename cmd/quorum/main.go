@@ -74,11 +74,13 @@ func main() {
 	fxRepo := repo.NewFXRepo(pool)
 	budgetRepo := repo.NewBudgetRepo(pool, fxRepo)
 	analyticsRepo := repo.NewAnalyticsRepo(pool, fxRepo)
+	notifyRepo := repo.NewNotifyRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
 	duesSvc := service.NewDuesService(duesRepo, emailSvc, maintenanceRepo, duesRepo)
 	schedDone := duesSvc.StartScheduler(ctx)
+	notifySvc := service.NewNotificationService(notifyRepo, emailSvc)
 
 	// Middleware
 	mw := handler.NewMiddleware(cfg.JWTSecret, cfg.TrustProxyHeaders)
@@ -97,6 +99,7 @@ func main() {
 	budgetH := handler.NewBudgetHandler(budgetRepo)
 	analyticsH := handler.NewAnalyticsHandler(analyticsRepo)
 	fxH := handler.NewFXHandler(fxRepo)
+	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -114,6 +117,12 @@ func main() {
 	contactsH.SetNotifier(notifier)
 	resourcesH.SetNotifier(notifier)
 	actionItemsH.SetNotifier(notifier)
+
+	// Automatic event notifications (in-app + email) for governance, meetings,
+	// and assignments.
+	governanceH.SetEventNotifier(notifySvc)
+	meetingsH.SetEventNotifier(notifySvc)
+	actionItemsH.SetEventNotifier(notifySvc)
 
 	// Metrics registry with DB pool saturation gauges sampled at scrape time.
 	reg := metrics.New()
@@ -179,6 +188,15 @@ func main() {
 
 			// Personal-data export: any authenticated user may export their own data.
 			r.Get("/auth/me/export", exportH.ExportMyData)
+
+			// Notifications are personal: any authenticated user manages their own
+			// (no role gate — a restricted member still receives dues notices).
+			r.Get("/notifications", notificationsH.List)
+			r.Get("/notifications/unread-count", notificationsH.UnreadCount)
+			r.Post("/notifications/read-all", notificationsH.MarkAllRead)
+			r.Post("/notifications/{id}/read", notificationsH.MarkRead)
+			r.Get("/notifications/preferences", notificationsH.GetPreferences)
+			r.Put("/notifications/preferences", notificationsH.UpdatePreferences)
 
 			// User management is admin+; minting/altering a superadmin is gated
 			// inside the handler. Deleting an account is a superadmin action.
@@ -351,9 +369,10 @@ func main() {
 		log.Fatalf("shutdown: %v", err)
 	}
 
-	// Drain any in-flight deletion notices, then stop the scheduler, all before
-	// the deferred pool.Close() so nothing runs against a closed pool.
+	// Drain any in-flight notices (deletion + event), then stop the scheduler,
+	// all before the deferred pool.Close() so nothing runs against a closed pool.
 	notifier.Close()
+	notifySvc.Close()
 	cancel()
 	select {
 	case <-schedDone:

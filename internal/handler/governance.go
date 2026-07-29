@@ -22,9 +22,21 @@ const ballotTokenTTL = 14 * 24 * time.Hour
 // GovernanceHandler handles quorum settings, motions, voting, proxies, and
 // emailed async ballots.
 type GovernanceHandler struct {
-	repo   governanceRepo
-	cfg    *config.Config
-	mailer mailer
+	repo     governanceRepo
+	cfg      *config.Config
+	mailer   mailer
+	notifier eventNotifier
+}
+
+// SetEventNotifier attaches the notification service used to alert members when
+// a motion opens for voting or is decided. Optional (no-op when unset).
+func (h *GovernanceHandler) SetEventNotifier(n eventNotifier) { h.notifier = n }
+
+// notify emits an event notification if a notifier is attached.
+func (h *GovernanceHandler) notify(notifType, title string, body, link *string) {
+	if h.notifier != nil {
+		h.notifier.NotifyMembers(notifType, title, body, link)
+	}
 }
 
 // NewGovernanceHandler constructs a GovernanceHandler.
@@ -316,6 +328,9 @@ func (h *GovernanceHandler) OpenMotion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
 	}
+	link := "#/meetings"
+	body := "Voting is now open. Cast your ballot in Quorum."
+	h.notify("motion.opened", "Motion open for voting: "+out.Title, &body, &link)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -366,6 +381,11 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
+	}
+	// Notify members only of an actual decision, not a table/withdraw.
+	if final == "carried" || final == "failed" {
+		link := "#/meetings"
+		h.notify("motion."+final, "Motion "+final+": "+out.Title, nil, &link)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
