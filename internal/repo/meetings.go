@@ -128,6 +128,18 @@ func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, sch
 	return r.Get(ctx, id)
 }
 
+// HasGovernanceHistory reports whether a meeting has recorded decisions or any
+// motion that reached a decision (carried/failed/tabled/withdrawn) — history a
+// hard delete would silently erase (both cascade away with the meeting).
+func (r *MeetingsRepo) HasGovernanceHistory(ctx context.Context, meetingID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM meeting_decisions WHERE meeting_id = $1::uuid)
+		    OR EXISTS(SELECT 1 FROM motions WHERE meeting_id = $1::uuid
+		              AND status IN ('carried', 'failed', 'tabled', 'withdrawn'))`, meetingID).Scan(&exists)
+	return exists, err
+}
+
 // Delete removes the meeting, returning pgx.ErrNoRows if no such row existed.
 func (r *MeetingsRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM meetings WHERE id = $1::uuid`, id)

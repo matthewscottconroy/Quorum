@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,16 +38,81 @@ type mailer interface {
 
 // AuthHandler handles authentication and user-management endpoints.
 type AuthHandler struct {
-	repo     authRepo
-	cfg      *config.Config
-	notifier deletionNotifier
-	mailer   mailer
-	audit    auditRepo
+	repo        authRepo
+	cfg         *config.Config
+	notifier    deletionNotifier
+	mailer      mailer
+	audit       auditRepo
+	mfaThrottle *failureThrottle
 }
+
+// mfaMaxFailures / mfaLockWindow bound how many failed two-factor attempts a
+// single account tolerates before a temporary lockout. The IP rate limiter
+// alone can't stop this: an attacker rotating IPs gets unlimited guesses at one
+// account's 6-digit TOTP, so the throttle is keyed by user id instead.
+const (
+	mfaMaxFailures = 5
+	mfaLockWindow  = 15 * time.Minute
+)
 
 // NewAuthHandler constructs an AuthHandler backed by the given repo and config.
 func NewAuthHandler(r authRepo, cfg *config.Config) *AuthHandler {
-	return &AuthHandler{repo: r, cfg: cfg}
+	return &AuthHandler{repo: r, cfg: cfg, mfaThrottle: newFailureThrottle(mfaMaxFailures, mfaLockWindow)}
+}
+
+// failureThrottle enforces a temporary per-key lockout after too many failed
+// attempts within a window. Unlike rateLimiter it counts only failures and is
+// cleared on success, so a legitimate user is never locked out by their own
+// successful logins. It prunes expired entries on access (no sweeper goroutine);
+// the key space is bounded by the number of distinct accounts that fail.
+type failureThrottle struct {
+	mu     sync.Mutex
+	fails  map[string][]time.Time
+	max    int
+	window time.Duration
+}
+
+func newFailureThrottle(max int, window time.Duration) *failureThrottle {
+	return &failureThrottle{fails: make(map[string][]time.Time), max: max, window: window}
+}
+
+// recentLocked returns and re-stores the not-yet-expired failures for key.
+// The caller must hold ft.mu.
+func (ft *failureThrottle) recentLocked(key string) []time.Time {
+	cutoff := time.Now().Add(-ft.window)
+	recent := ft.fails[key][:0]
+	for _, t := range ft.fails[key] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) == 0 {
+		delete(ft.fails, key)
+		return nil
+	}
+	ft.fails[key] = recent
+	return recent
+}
+
+// blocked reports whether key has reached the failure ceiling within the window.
+func (ft *failureThrottle) blocked(key string) bool {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return len(ft.recentLocked(key)) >= ft.max
+}
+
+// fail records one failed attempt for key.
+func (ft *failureThrottle) fail(key string) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.fails[key] = append(ft.recentLocked(key), time.Now())
+}
+
+// reset clears a key's failures after a successful authentication.
+func (ft *failureThrottle) reset(key string) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	delete(ft.fails, key)
 }
 
 // SetNotifier attaches an optional notifier used when a user account is deleted.
@@ -62,7 +128,7 @@ func (h *AuthHandler) SetAuditLogger(a auditRepo) { h.audit = a }
 // logAudit records an auth event (best-effort; never blocks the response).
 func (h *AuthHandler) logAudit(r *http.Request, userID, action string) {
 	if h.audit != nil && userID != "" {
-		h.audit.Log(r.Context(), userID, action, userID) //nolint:errcheck
+		h.audit.Log(r.Context(), userID, action, "auth", userID) //nolint:errcheck
 	}
 }
 
@@ -180,6 +246,12 @@ func (h *AuthHandler) LoginMFA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "two-factor is not enabled", "unauthorized")
 		return
 	}
+	// Blunt online brute-forcing of this account's codes: after too many recent
+	// failures, reject further attempts (even correct ones) until the window passes.
+	if h.mfaThrottle.blocked(claims.UserID) {
+		writeError(w, http.StatusTooManyRequests, "too many failed two-factor attempts; try again later", "rate_limited")
+		return
+	}
 
 	ok := false
 	switch {
@@ -195,9 +267,11 @@ func (h *AuthHandler) LoginMFA(w http.ResponseWriter, r *http.Request) {
 		ok = consumed
 	}
 	if !ok {
+		h.mfaThrottle.fail(claims.UserID)
 		writeError(w, http.StatusUnauthorized, "invalid two-factor code", "unauthorized")
 		return
 	}
+	h.mfaThrottle.reset(claims.UserID)
 
 	user, err := h.repo.GetUserByID(r.Context(), claims.UserID)
 	if err != nil {

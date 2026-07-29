@@ -463,3 +463,18 @@ func TestMeetingsCreate_PassesUserIDAsCreatedBy(t *testing.T) {
 
 // Silence unused import warning.
 var _ = http.StatusOK
+
+func TestMeetingsDelete_BlockedByGovernanceHistory(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
+			return &model.Meeting{ID: "mt1", Title: "Board"}, nil
+		},
+		HasGovernanceHistoryFn: func(_ context.Context, _ string) (bool, error) { return true, nil },
+	})
+	req := chiRequest("DELETE", "/meetings/mt1?confirm=Board", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Delete(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when the meeting has governance history, got %d: %s", rr.Code, rr.Body)
+	}
+}

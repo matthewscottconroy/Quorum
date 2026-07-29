@@ -76,6 +76,7 @@ type meetingsRepo interface {
 	Delete(ctx context.Context, id string) error
 	GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
 	AttendeeEmails(ctx context.Context, meetingID string) ([]string, error)
+	HasGovernanceHistory(ctx context.Context, meetingID string) (bool, error)
 	SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
 	CreateDecision(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
 	UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
@@ -126,7 +127,7 @@ type actionItemsRepo interface {
 
 // auditRepo is satisfied by *repo.AuditRepo.
 type auditRepo interface {
-	Log(ctx context.Context, userID, action, entityID string) error
+	Log(ctx context.Context, userID, action, entityType, entityID string) error
 }
 
 // analyticsRepo is satisfied by *repo.AnalyticsRepo.

@@ -434,3 +434,71 @@ func (m *captureMailer) waitForCount(n int) bool {
 	}
 	return m.count() >= n
 }
+
+// After mfaMaxFailures bad codes, the account is temporarily locked out — even a
+// subsequently correct code is rejected with 429 until the window elapses.
+func TestLoginMFA_LocksOutAfterRepeatedFailures(t *testing.T) {
+	secret, _ := auth.GenerateTOTPSecret()
+	repo := &mockAuthRepo{
+		GetTOTPFn:           func(_ context.Context, _ string) (string, bool, error) { return secret, true, nil },
+		GetUserByIDFn:       func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
+		StoreRefreshTokenFn: func(_ context.Context, _, _ string, _ time.Time) error { return nil },
+		UpdateLastLoginFn:   func(_ context.Context, _ string) error { return nil },
+	}
+	h := NewAuthHandler(repo, testConfig())
+	mfaTok, _ := auth.IssueMFAToken(testUserID, testSecret, 30*time.Minute)
+
+	badReq := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/auth/login/2fa", strings.NewReader(`{"mfa_token":"`+mfaTok+`","code":"000000"}`))
+		rr := httptest.NewRecorder()
+		h.LoginMFA(rr, req)
+		return rr
+	}
+	for i := 0; i < mfaMaxFailures; i++ {
+		if rr := badReq(); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i+1, rr.Code)
+		}
+	}
+	// The ceiling is reached: the next attempt is throttled, not merely rejected.
+	if rr := badReq(); rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after %d failures, got %d: %s", mfaMaxFailures, rr.Code, rr.Body)
+	}
+	// A correct code is still refused while locked out.
+	code, _ := totpNow(secret)
+	req := httptest.NewRequest("POST", "/auth/login/2fa", strings.NewReader(`{"mfa_token":"`+mfaTok+`","code":"`+code+`"}`))
+	rr := httptest.NewRecorder()
+	h.LoginMFA(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("a correct code during lockout must be refused with 429, got %d", rr.Code)
+	}
+}
+
+// A successful two-factor login clears the failure counter so earlier misfires
+// don't count toward a later lockout.
+func TestLoginMFA_SuccessResetsThrottle(t *testing.T) {
+	secret, _ := auth.GenerateTOTPSecret()
+	repo := &mockAuthRepo{
+		GetTOTPFn:           func(_ context.Context, _ string) (string, bool, error) { return secret, true, nil },
+		GetUserByIDFn:       func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
+		StoreRefreshTokenFn: func(_ context.Context, _, _ string, _ time.Time) error { return nil },
+		UpdateLastLoginFn:   func(_ context.Context, _ string) error { return nil },
+	}
+	h := NewAuthHandler(repo, testConfig())
+	mfaTok, _ := auth.IssueMFAToken(testUserID, testSecret, 30*time.Minute)
+
+	// A couple of failures, then a success.
+	for i := 0; i < mfaMaxFailures-1; i++ {
+		req := httptest.NewRequest("POST", "/auth/login/2fa", strings.NewReader(`{"mfa_token":"`+mfaTok+`","code":"000000"}`))
+		h.LoginMFA(httptest.NewRecorder(), req)
+	}
+	code, _ := totpNow(secret)
+	req := httptest.NewRequest("POST", "/auth/login/2fa", strings.NewReader(`{"mfa_token":"`+mfaTok+`","code":"`+code+`"}`))
+	rr := httptest.NewRecorder()
+	h.LoginMFA(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 on valid code, got %d: %s", rr.Code, rr.Body)
+	}
+	if h.mfaThrottle.blocked(testUserID) {
+		t.Fatal("throttle should be cleared after a successful login")
+	}
+}

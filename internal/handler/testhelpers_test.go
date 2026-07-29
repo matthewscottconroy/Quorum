@@ -268,18 +268,19 @@ func (m *mockDuesRepo) RecordWebhookPayment(ctx context.Context, eventID string,
 // ---- mockMeetingsRepo ----
 
 type mockMeetingsRepo struct {
-	ListFn           func(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error)
-	GetFn            func(ctx context.Context, id string) (*model.Meeting, error)
-	CreateFn         func(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error)
-	UpdateFn         func(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
-	DeleteFn         func(ctx context.Context, id string) error
-	GetAttendeesFn   func(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
-	AttendeeEmailsFn func(ctx context.Context, meetingID string) ([]string, error)
-	SetAttendeesFn   func(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
-	CreateDecisionFn func(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
-	UpdateDecisionFn func(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
-	DeleteDecisionFn func(ctx context.Context, id string) error
-	UpcomingFn       func(ctx context.Context, n int) ([]model.Meeting, error)
+	ListFn                 func(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error)
+	GetFn                  func(ctx context.Context, id string) (*model.Meeting, error)
+	CreateFn               func(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error)
+	UpdateFn               func(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
+	DeleteFn               func(ctx context.Context, id string) error
+	GetAttendeesFn         func(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
+	AttendeeEmailsFn       func(ctx context.Context, meetingID string) ([]string, error)
+	HasGovernanceHistoryFn func(ctx context.Context, meetingID string) (bool, error)
+	SetAttendeesFn         func(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
+	CreateDecisionFn       func(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
+	UpdateDecisionFn       func(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
+	DeleteDecisionFn       func(ctx context.Context, id string) error
+	UpcomingFn             func(ctx context.Context, n int) ([]model.Meeting, error)
 }
 
 func (m *mockMeetingsRepo) List(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error) {
@@ -305,6 +306,12 @@ func (m *mockMeetingsRepo) AttendeeEmails(ctx context.Context, meetingID string)
 		return m.AttendeeEmailsFn(ctx, meetingID)
 	}
 	return nil, nil
+}
+func (m *mockMeetingsRepo) HasGovernanceHistory(ctx context.Context, meetingID string) (bool, error) {
+	if m.HasGovernanceHistoryFn != nil {
+		return m.HasGovernanceHistoryFn(ctx, meetingID)
+	}
+	return false, nil // default: no history, so existing delete tests still pass
 }
 func (m *mockMeetingsRepo) SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error {
 	return m.SetAttendeesFn(ctx, meetingID, attendees)
@@ -410,12 +417,12 @@ func (m *mockResourcesRepo) Delete(ctx context.Context, id string) error {
 // ---- mockAuditRepo ----
 
 type mockAuditRepo struct {
-	LogFn func(ctx context.Context, userID, action, entityID string) error
+	LogFn func(ctx context.Context, userID, action, entityType, entityID string) error
 }
 
-func (m *mockAuditRepo) Log(ctx context.Context, userID, action, entityID string) error {
+func (m *mockAuditRepo) Log(ctx context.Context, userID, action, entityType, entityID string) error {
 	if m.LogFn != nil {
-		return m.LogFn(ctx, userID, action, entityID)
+		return m.LogFn(ctx, userID, action, entityType, entityID)
 	}
 	return nil
 }

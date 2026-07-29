@@ -158,6 +158,18 @@ func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if !confirmMatches(w, r, mt.Title) {
 		return
 	}
+	// A meeting that recorded decisions or decided motions carries governance
+	// history that a hard delete would erase (it cascades to motions, votes, and
+	// decisions). Refuse — the meeting can be cancelled instead.
+	if hist, err := h.repo.HasGovernanceHistory(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	} else if hist {
+		writeError(w, http.StatusConflict,
+			"this meeting has recorded decisions or votes and cannot be deleted; set its status to cancelled instead",
+			"conflict")
+		return
+	}
 	// Gather affected members' emails before deleting — the attendee rows
 	// cascade away with the meeting.
 	affected, _ := h.repo.AttendeeEmails(r.Context(), id)

@@ -389,10 +389,14 @@ func MaxRequestBody(next http.Handler) http.Handler {
 	})
 }
 
-// auditResponseWriter captures the HTTP status for the audit log.
+// auditResponseWriter captures the HTTP status for the audit log, and — when
+// captureBody is set — a bounded prefix of the response body so the audit
+// middleware can recover the id of a newly created (POST) resource.
 type auditResponseWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	captureBody bool
+	body        []byte
 }
 
 func (a *auditResponseWriter) WriteHeader(status int) {
@@ -400,11 +404,24 @@ func (a *auditResponseWriter) WriteHeader(status int) {
 	a.ResponseWriter.WriteHeader(status)
 }
 
+// auditBodyCap bounds how much of the response body we buffer to find a
+// created-row id — a created resource's id appears well within this.
+const auditBodyCap = 4096
+
+func (a *auditResponseWriter) Write(b []byte) (int, error) {
+	if a.captureBody && len(a.body) < auditBodyCap {
+		a.body = append(a.body, b[:min(len(b), auditBodyCap-len(a.body))]...)
+	}
+	return a.ResponseWriter.Write(b)
+}
+
 // AuditMiddleware logs successful (2xx) non-GET requests to the audit log.
 func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			aw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK}
+			// Buffer the body only for creates (POST), where the new row's id is
+			// in the response rather than the URL.
+			aw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK, captureBody: r.Method == http.MethodPost}
 			next.ServeHTTP(aw, r)
 			if r.Method == http.MethodGet {
 				return
@@ -419,10 +436,43 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 			action := r.Method + " " + r.URL.Path
 			// Record the primary resource id (the {id} route param) as the
 			// entity, so the audit log can answer "who changed which record".
+			// A create carries no id in its URL, so recover it from the response.
 			entityID := chi.URLParam(r, "id")
-			ar.Log(r.Context(), userID, action, entityID) //nolint:errcheck
+			if entityID == "" && r.Method == http.MethodPost {
+				entityID = auditCreatedID(aw.body)
+			}
+			ar.Log(r.Context(), userID, action, auditEntityType(r), entityID) //nolint:errcheck
 		})
 	}
+}
+
+// auditEntityType extracts the resource name from an API path for the audit
+// log, e.g. /api/v1/members/{id} -> "members", /api/v1/dues/invoices -> "dues".
+// It returns the segment following the "v1" version marker.
+func auditEntityType(r *http.Request) string {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	for i, p := range parts {
+		if p == "v1" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	if n := len(parts); n > 0 {
+		return parts[n-1]
+	}
+	return ""
+}
+
+// auditCreatedID pulls the top-level "id" field out of a JSON response body so
+// the audit log can attribute a POST create to the row it produced. It returns
+// "" when the body is not a JSON object or carries no string id.
+func auditCreatedID(body []byte) string {
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return ""
+	}
+	return obj.ID
 }
 
 // rateLimiter is a simple sliding-window rate limiter.
