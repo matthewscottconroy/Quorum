@@ -17,6 +17,7 @@ const LINKS = [
   { hash: '#/plans',      label: 'Plans',      icon: '📋', minRole: 'member' },
   { hash: '#/contacts',   label: 'Contacts',   icon: '📇', minRole: 'member' },
   { hash: '#/resources',  label: 'Resources',  icon: '🔗', minRole: 'member' },
+  { hash: '#/audit',      label: 'Audit log',  icon: '🧾', minRole: 'admin' },
   { hash: '#/settings',   label: 'Settings',   icon: '⚙',  minRole: 'admin' },
 ];
 

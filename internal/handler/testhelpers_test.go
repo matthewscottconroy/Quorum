@@ -48,6 +48,8 @@ type mockAuthRepo struct {
 	GetPasswordHashFn               func(ctx context.Context, id string) (string, error)
 	UpdatePasswordHashFn            func(ctx context.Context, id, hash string) error
 	RevokeAllRefreshTokensForUserFn func(ctx context.Context, userID string) error
+	ActiveSessionCountFn            func(ctx context.Context, userID string) (int, error)
+	RevokeOtherRefreshTokensFn      func(ctx context.Context, userID, keepHash string) (int64, error)
 	CreatePasswordResetTokenFn      func(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	ConsumePasswordResetTokenFn     func(ctx context.Context, hash string) (string, error)
 	GetTOTPFn                       func(ctx context.Context, userID string) (string, bool, error)
@@ -154,6 +156,18 @@ func (m *mockAuthRepo) GetPasswordHash(ctx context.Context, id string) (string, 
 }
 func (m *mockAuthRepo) UpdatePasswordHash(ctx context.Context, id, hash string) error {
 	return m.UpdatePasswordHashFn(ctx, id, hash)
+}
+func (m *mockAuthRepo) ActiveSessionCount(ctx context.Context, userID string) (int, error) {
+	if m.ActiveSessionCountFn != nil {
+		return m.ActiveSessionCountFn(ctx, userID)
+	}
+	return 0, nil
+}
+func (m *mockAuthRepo) RevokeOtherRefreshTokensForUser(ctx context.Context, userID, keepHash string) (int64, error) {
+	if m.RevokeOtherRefreshTokensFn != nil {
+		return m.RevokeOtherRefreshTokensFn(ctx, userID, keepHash)
+	}
+	return 0, nil
 }
 func (m *mockAuthRepo) RevokeAllRefreshTokensForUser(ctx context.Context, userID string) error {
 	if m.RevokeAllRefreshTokensForUserFn != nil {

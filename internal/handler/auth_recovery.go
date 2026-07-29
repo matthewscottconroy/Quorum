@@ -345,3 +345,35 @@ func (h *AuthHandler) AdminResetPassword(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// ---- Session management ----
+
+// Sessions reports how many live sessions (unrevoked, unexpired refresh tokens)
+// the caller has, so the UI can offer "sign out everywhere else" meaningfully.
+func (h *AuthHandler) Sessions(w http.ResponseWriter, r *http.Request) {
+	n, err := h.repo.ActiveSessionCount(r.Context(), userIDFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"active_sessions": n})
+}
+
+// RevokeOtherSessions signs the caller out of every device except the one
+// making this request — the standard "I left myself logged in somewhere"
+// control. The caller's own refresh token is identified by its cookie and
+// preserved; if there is no cookie (a pure bearer client) every session is
+// revoked, which is the safe direction.
+func (h *AuthHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	keepHash := ""
+	if c, err := r.Cookie("quorum_refresh"); err == nil && c.Value != "" {
+		keepHash = auth.HashRefreshToken(c.Value)
+	}
+	n, err := h.repo.RevokeOtherRefreshTokensForUser(r.Context(), userIDFromCtx(r), keepHash)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not revoke sessions", "internal_error")
+		return
+	}
+	h.logAudit(r, userIDFromCtx(r), "auth.sessions_revoked")
+	writeJSON(w, http.StatusOK, map[string]int64{"revoked": n})
+}

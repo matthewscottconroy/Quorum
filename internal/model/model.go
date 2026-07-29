@@ -495,3 +495,16 @@ func NotificationCategory(notifType string) string {
 		return "governance" // motion.*, ballot.*, and anything else
 	}
 }
+
+// AuditEntry is one recorded mutating action, with the actor's email resolved.
+// UserEmail/EntityType/EntityID are nullable: the actor may have been deleted
+// (the FK is ON DELETE SET NULL) and some actions target no specific row.
+type AuditEntry struct {
+	ID         string    `json:"id"`
+	UserID     *string   `json:"user_id,omitempty"`
+	UserEmail  *string   `json:"user_email,omitempty"`
+	Action     string    `json:"action"`
+	EntityType *string   `json:"entity_type,omitempty"`
+	EntityID   *string   `json:"entity_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}

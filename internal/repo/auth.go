@@ -314,3 +314,28 @@ func (r *AuthRepo) ConsumeRecoveryCode(ctx context.Context, userID, hash string)
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// ActiveSessionCount counts a user's live refresh tokens (not revoked, not
+// expired) — i.e. how many devices could still mint new access tokens.
+func (r *AuthRepo) ActiveSessionCount(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `
+		SELECT count(*) FROM refresh_tokens
+		WHERE user_id = $1::uuid AND revoked = FALSE AND expires_at > now()`, userID).Scan(&n)
+	return n, err
+}
+
+// RevokeOtherRefreshTokensForUser revokes every live session for the user
+// EXCEPT the one identified by keepHash (the caller's current refresh token), so
+// "sign out everywhere else" doesn't sign the caller out too. Passing an empty
+// keepHash revokes all of them. Returns how many were revoked.
+func (r *AuthRepo) RevokeOtherRefreshTokensForUser(ctx context.Context, userID, keepHash string) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked = TRUE
+		WHERE user_id = $1::uuid AND revoked = FALSE AND token_hash <> $2`,
+		userID, keepHash)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

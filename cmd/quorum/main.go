@@ -123,6 +123,7 @@ func main() {
 	analyticsH := handler.NewAnalyticsHandler(analyticsRepo)
 	fxH := handler.NewFXHandler(fxRepo)
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
+	auditH := handler.NewAuditHandler(auditRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -210,6 +211,10 @@ func main() {
 			r.Post("/auth/2fa/disable", authH.Disable2FA)
 			r.Post("/auth/2fa/recovery-codes", authH.RegenerateRecoveryCodes)
 
+			// Session management: see and revoke your own other devices.
+			r.Get("/auth/me/sessions", authH.Sessions)
+			r.Post("/auth/me/sessions/revoke-others", authH.RevokeOtherSessions)
+
 			// Personal-data export: any authenticated user may export their own data.
 			r.Get("/auth/me/export", exportH.ExportMyData)
 
@@ -224,6 +229,9 @@ func main() {
 
 			// User management is admin+; minting/altering a superadmin is gated
 			// inside the handler. Deleting an account is a superadmin action.
+			// Audit log viewer: admin-only, read-only (the log is append-only).
+			r.With(mw.RequireRole("admin")).Get("/audit", auditH.List)
+
 			r.With(mw.RequireRole("admin")).Get("/users", authH.ListUsers)
 			r.With(mw.RequireRole("admin")).Post("/users", authH.CreateUser)
 			r.With(mw.RequireRole("admin")).Patch("/users/{id}", authH.UpdateUser)

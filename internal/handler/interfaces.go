@@ -26,6 +26,8 @@ type authRepo interface {
 	GetPasswordHash(ctx context.Context, id string) (string, error)
 	UpdatePasswordHash(ctx context.Context, id, hash string) error
 	RevokeAllRefreshTokensForUser(ctx context.Context, userID string) error
+	ActiveSessionCount(ctx context.Context, userID string) (int, error)
+	RevokeOtherRefreshTokensForUser(ctx context.Context, userID, keepHash string) (int64, error)
 	CreatePasswordResetToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	ConsumePasswordResetToken(ctx context.Context, hash string) (string, error)
 	GetTOTP(ctx context.Context, userID string) (secret string, enabled bool, err error)

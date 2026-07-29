@@ -77,6 +77,12 @@ class PageSettings extends HTMLElement {
           `}
 
           <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
+          <h3 style="font-size:.9rem;margin-bottom:.5rem">Active sessions</h3>
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">
+            <span id="session-count">Checking…</span> If you've signed in somewhere you no longer trust, sign those devices out.</p>
+          <button class="btn-secondary" id="revoke-sessions-btn">Sign out other devices</button>
+
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
           <h3 style="font-size:.9rem;margin-bottom:.5rem">Export my data</h3>
           <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">Download your account, profile, dues and payments as a JSON file.</p>
           <button class="btn-secondary" id="export-me-btn">Download my data (JSON)</button>
@@ -173,6 +179,8 @@ class PageSettings extends HTMLElement {
     this.querySelector('#twofa-setup-btn')?.addEventListener('click', () => this.open2FASetup());
     this.querySelector('#twofa-disable-btn')?.addEventListener('click', () => this.open2FADisable());
     this.querySelector('#twofa-codes-btn')?.addEventListener('click', () => this.openRegenerateCodes());
+    this.loadSessionCount();
+    this.querySelector('#revoke-sessions-btn')?.addEventListener('click', e => this.revokeOtherSessions(e.target));
 
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
 
@@ -307,6 +315,33 @@ class PageSettings extends HTMLElement {
         toast('User created','success'); close(); this.render();
       } catch (err) { toast(err.error??'Failed','error'); }
     }));
+  }
+
+  /** Shows how many devices currently hold a live session. */
+  async loadSessionCount() {
+    const el = this.querySelector('#session-count');
+    if (!el) return;
+    try {
+      const { active_sessions: n } = await api('GET', '/auth/me/sessions');
+      el.textContent = n === 1
+        ? 'This is your only active session.'
+        : `You have ${n} active sessions.`;
+    } catch {
+      el.textContent = 'Could not check your active sessions.';
+    }
+  }
+
+  /** Revoke every session except this one. */
+  revokeOtherSessions(btn) {
+    guardButton(btn, async () => {
+      try {
+        const { revoked } = await api('POST', '/auth/me/sessions/revoke-others');
+        toast(revoked ? `Signed out ${revoked} other session${revoked === 1 ? '' : 's'}` : 'No other sessions to sign out', 'success');
+        this.loadSessionCount();
+      } catch (err) {
+        toast(err.error ?? 'Could not sign out other devices', 'error');
+      }
+    })();
   }
 
   /**
