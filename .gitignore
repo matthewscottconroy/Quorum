@@ -12,6 +12,7 @@
 coverage.*
 
 # Local data / scratch
+/backups/
 *.pgdump
 *.log
 

@@ -81,8 +81,16 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   already; verify).
 
 ### 3. Backups & data durability
-- Automated, tested PostgreSQL backups (pg_dump or WAL archiving) with a
-  documented restore procedure. **Untested backups are not backups.**
+- **Done (tooling):** `scripts/backup.sh` (+ `make backup` / `backup-verify` /
+  `restore`) takes custom-format `pg_dump` backups with timestamped filenames and
+  a keep-N retention policy, works both against the local Podman container and a
+  production `QUORUM_DATABASE_URL`, and — critically — `verify` restores a dump
+  into a throwaway database and checks it, so "untested backups are not backups"
+  is enforceable in CI/cron. Full runbook: **[BACKUP.md](BACKUP.md)**.
+- Still deployment-side: schedule `backup create` (cron/systemd timer, examples
+  in BACKUP.md), **ship the dumps off-box**, and periodically run `backup verify`.
+  For a tighter RPO than nightly dumps, use a managed Postgres with WAL archiving
+  / PITR and keep these logical dumps as the portable, test-restored safety net.
 - Decide a retention policy for the audit log and soft-deleted members.
 
 ### 4. Two-factor & account-recovery hardening
@@ -194,10 +202,11 @@ a rough shape so they can be picked up as their own projects.
    work (needs a metrics backend and alerting rules to be useful) rather than a
    code change in isolation.
 
-4. **Backups / disaster recovery.** §3 above. Automated `pg_dump` or WAL
-   archiving, a **tested** restore runbook, retention policy for the audit log
-   and soft-deleted rows. Deferred because it is operational tooling around the
-   deployment, not application code.
+4. **Backups / disaster recovery.** ✅ **Done** — `scripts/backup.sh` (custom-
+   format `pg_dump`, keep-N retention, scratch-DB restore verification, podman +
+   url modes) with a full runbook in [BACKUP.md](BACKUP.md); see §3. Scheduling
+   the job and shipping dumps off-box remain deployment-side. Audit-log /
+   soft-delete retention policy is still a decision to make.
 
 5. **Automatic notifications system.** Today deletions notify affected members
    and the dues scheduler emails reminders (`reminder_stage`, see DESIGN.md

@@ -1,4 +1,4 @@
-.PHONY: build run dev test test-web lint \
+.PHONY: build run dev test test-web lint backup backup-list restore backup-verify \
         local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
@@ -25,6 +25,22 @@ test-web:
 
 lint:
 	golangci-lint run
+
+# ── Backups / disaster recovery ───────────────────────────────────────────────
+
+backup:
+	scripts/backup.sh create
+
+backup-list:
+	scripts/backup.sh list
+
+# Restore a dump into the live DB (destructive): make restore FILE=backups/quorum-....pgdump
+restore:
+	scripts/backup.sh restore "$(FILE)"
+
+# Prove the latest (or FILE=...) backup is restorable, into a throwaway DB.
+backup-verify:
+	scripts/backup.sh verify "$(FILE)"
 
 # ── Local stack via plain Podman (no compose provider needed) ─────────────────
 # Runs Postgres + the app in one Podman pod (shared netns → app reaches the DB
@@ -104,6 +120,10 @@ help:
 	@echo "  dev             Run with .env loaded (no Docker)"
 	@echo "  test            Run go test -race ./..."
 	@echo "  test-web        Run frontend unit tests (node --test)"
+	@echo "  backup          Dump the database to backups/ (prunes old ones)"
+	@echo "  backup-list     List existing backups"
+	@echo "  backup-verify   Prove the latest backup restores into a scratch DB"
+	@echo "  restore         Restore a dump into the live DB (FILE=... , destructive)"
 	@echo "  lint            Run golangci-lint"
 	@echo ""
 	@echo "  local           Start the local stack with plain Podman (no compose needed)"
