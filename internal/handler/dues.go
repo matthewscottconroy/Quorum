@@ -45,10 +45,7 @@ func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if invoices == nil {
-		invoices = []model.DuesInvoice{}
-	}
-	writeJSON(w, 200, model.Page[model.DuesInvoice]{Data: invoices, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, invoices, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a invoice.
@@ -269,8 +266,5 @@ func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if txs == nil {
-		txs = []model.Transaction{}
-	}
-	writeJSON(w, 200, model.Page[model.Transaction]{Data: txs, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, txs, total, f.Limit, f.Offset)
 }

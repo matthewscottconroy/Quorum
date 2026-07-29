@@ -39,10 +39,7 @@ func (h *ResourcesHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if resources == nil {
-		resources = []model.Resource{}
-	}
-	writeJSON(w, 200, model.Page[model.Resource]{Data: resources, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, resources, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a resource.
@@ -69,16 +66,7 @@ func (h *ResourcesHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get handles fetching a single resource by id.
 func (h *ResourcesHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	res, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeError(w, 404, "resource not found", "not_found")
-		return
-	}
-	writeJSON(w, 200, res)
+	genericGet(w, r, h.repo.Get, "resource not found")
 }
 
 // Update applies a partial update: only fields present in the request body
@@ -96,12 +84,7 @@ func (h *ResourcesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	allowed := map[string]bool{
 		"title": true, "description": true, "url": true, "category": true, "tags": true,
 	}
-	fields := map[string]any{}
-	for k, v := range body {
-		if allowed[k] {
-			fields[k] = v
-		}
-	}
+	fields := filterAllowedFields(body, allowed)
 	if len(fields) == 0 {
 		writeError(w, 400, "no valid fields provided", "bad_request")
 		return
@@ -131,24 +114,12 @@ func (h *ResourcesHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles deleting a resource.
 func (h *ResourcesHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	res, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeRepoError(w, err, "resource not found", "query error")
-		return
-	}
-	if !confirmMatches(w, r, res.Title) {
-		return
-	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeRepoError(w, err, "resource not found", "delete error")
-		return
-	}
-	if h.notifier != nil {
-		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "resource", res.Title, nil)
-	}
-	w.WriteHeader(204)
+	crudDelete(w, r, deleteSpec[model.Resource]{
+		entity:      "resource",
+		notFoundMsg: "resource not found",
+		get:         h.repo.Get,
+		name:        func(res *model.Resource) string { return res.Title },
+		del:         h.repo.Delete,
+		notifier:    h.notifier,
+	})
 }

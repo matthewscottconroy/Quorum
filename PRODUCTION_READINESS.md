@@ -171,49 +171,44 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 
 ---
 
-## Deferred architectural work (larger efforts)
+## Deferred architectural work (larger efforts) — now delivered
 
-These are known, scoped, and deliberately **not** attempted in the recent
-hardening passes because each is a multi-day effort touching schema, API, and UI
-— too large to land safely alongside bounded fixes. Listed with why-deferred and
-a rough shape so they can be picked up as their own projects.
+These five were previously deferred as multi-day efforts touching schema, API,
+and UI. All have now landed; each is summarized with where it lives and what
+remains deployment-side.
 
-1. **Multi-currency reporting / FX conversion.** *The one with real correctness
-   impact.* Invoices, payments, and budget lines each carry their own currency,
-   but analytics and budget totals sum across rows without converting (see the
-   `mixed_currencies` warning banner — a stopgap, not a fix). Real support needs:
-   a rate source (stored `fx_rates` table, effective-dated, manual entry at
-   minimum), a chosen reporting currency per org, and conversion at the
-   aggregation boundary in the analytics/budget repos. Until then: **keep an org
-   on a single currency for accurate rollups.**
+1. **Multi-currency reporting / FX conversion.** ✅ **Done.** Migration 0015 adds
+   an org `reporting_currency` and an effective-dated `fx_rates` table;
+   `model.Converter` does exact (big.Rat) conversion across currency exponents;
+   analytics and budget aggregation group by currency and convert at the
+   boundary, reporting any `unconvertible_currencies`. Admin UI under Currencies.
+   With no rates configured the behavior degrades to the old single-currency
+   assumption (and flags it), so it is safe by default.
 
-2. **CRUD-handler generics refactor.** The eight resource handlers (members,
-   contacts, resources, action-items, plans, …) repeat the same list/get/create/
-   update/delete + filter/paginate shape. A generic handler (Go 1.23 generics +
-   a small per-resource descriptor) would cut a few hundred lines and make
-   cross-cutting changes (like the audit/confirm gates) land in one place.
-   Deferred because it is pure refactor with wide blast radius and no user-facing
-   change — best done behind the existing handler test suite in one focused pass.
+2. **CRUD-handler generics refactor.** ✅ **Done.** `internal/handler/crud.go`
+   carries the shared List envelope (`writePage`), `genericGet`,
+   `filterAllowedFields`, and a typed `crudDelete`/`deleteSpec` for the
+   confirm→delete→notify flow. The contacts/resources/plans/action-items/
+   meetings handlers now delegate the mechanical parts and keep only their
+   bespoke validation — ~185 lines of duplication removed. Chosen over a single
+   closure-driven mega-handler, which would have traded duplication for
+   indirection and buried each resource's validation.
 
-3. **Observability: metrics + structured logging + error aggregation.** §5
-   above. Prometheus metrics (request rate/latency/error, DB pool saturation),
-   Sentry-style panic aggregation, and switching the chi logger to structured
-   JSON (`slog`) with a request-id field. Deferred because it is deployment-infra
-   work (needs a metrics backend and alerting rules to be useful) rather than a
-   code change in isolation.
+3. **Observability: metrics + structured logging + error aggregation.** ✅
+   **Done.** See §5 — `slog` JSON logs with request IDs, a dependency-free
+   Prometheus exposition at `/metrics` (token-gated), and a panic-counting
+   recoverer. Wiring a scrape + alerts is the remaining deployment-side step.
 
-4. **Backups / disaster recovery.** ✅ **Done** — `scripts/backup.sh` (custom-
-   format `pg_dump`, keep-N retention, scratch-DB restore verification, podman +
-   url modes) with a full runbook in [BACKUP.md](BACKUP.md); see §3. Scheduling
-   the job and shipping dumps off-box remain deployment-side. Audit-log /
-   soft-delete retention policy is still a decision to make.
+4. **Backups / disaster recovery.** ✅ **Done.** See §3 and
+   [BACKUP.md](BACKUP.md). Scheduling the job and shipping dumps off-box remain
+   deployment-side.
 
-5. **Automatic notifications system.** Today deletions notify affected members
-   and the dues scheduler emails reminders (`reminder_stage`, see DESIGN.md
-   §13). A general in-app + email notification system (motion opened, ballot
-   requested, meeting scheduled, quorum reached) would need a `notifications`
-   table, per-user preferences, a delivery worker, and UI. Deferred because it is
-   a feature area of its own, not a hardening item.
+5. **Automatic notifications system.** ✅ **Done.** Migration 0016 adds
+   `notifications` + `notification_preferences`; a bounded-worker
+   `NotificationService` records in-app notices and sends opt-out email off the
+   request path; events wired for motion opened/decided, meeting scheduled, and
+   action-item assigned; frontend bell + Notifications page. Extending it to more
+   events is now a one-line `NotifyMembers`/`NotifyMember` call per event.
 
 ---
 

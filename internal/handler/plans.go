@@ -42,10 +42,7 @@ func (h *PlansHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if plans == nil {
-		plans = []model.Plan{}
-	}
-	writeJSON(w, 200, model.Page[model.Plan]{Data: plans, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, plans, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a plan.
@@ -103,16 +100,7 @@ func (h *PlansHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get handles fetching a single plan by id.
 func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	pl, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeError(w, 404, "plan not found", "not_found")
-		return
-	}
-	writeJSON(w, 200, pl)
+	genericGet(w, r, h.repo.Get, "plan not found")
 }
 
 // Update handles updating a plan.
@@ -127,12 +115,7 @@ func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]bool{"title": true, "description": true, "status": true, "owner_id": true, "target_date": true}
-	fields := map[string]any{}
-	for k, v := range body {
-		if allowed[k] {
-			fields[k] = v
-		}
-	}
+	fields := filterAllowedFields(body, allowed)
 	if len(fields) == 0 {
 		writeError(w, 400, "no valid fields provided", "bad_request")
 		return
@@ -172,30 +155,15 @@ func (h *PlansHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles deleting a plan.
 func (h *PlansHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	pl, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeRepoError(w, err, "plan not found", "query error")
-		return
-	}
-	if !confirmMatches(w, r, pl.Title) {
-		return
-	}
-	var affected []string
-	if email, _ := h.repo.OwnerEmail(r.Context(), id); email != "" {
-		affected = []string{email}
-	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeRepoError(w, err, "plan not found", "delete error")
-		return
-	}
-	if h.notifier != nil {
-		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "plan", pl.Title, affected)
-	}
-	w.WriteHeader(204)
+	crudDelete(w, r, deleteSpec[model.Plan]{
+		entity:      "plan",
+		notFoundMsg: "plan not found",
+		get:         h.repo.Get,
+		name:        func(pl *model.Plan) string { return pl.Title },
+		del:         h.repo.Delete,
+		notifier:    h.notifier,
+		affected:    singleEmail(h.repo.OwnerEmail),
+	})
 }
 
 // CreateDecision records a decision.

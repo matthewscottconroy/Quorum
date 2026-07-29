@@ -39,10 +39,7 @@ func (h *ContactsHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if contacts == nil {
-		contacts = []model.Contact{}
-	}
-	writeJSON(w, 200, model.Page[model.Contact]{Data: contacts, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, contacts, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a contact.
@@ -69,16 +66,7 @@ func (h *ContactsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get handles fetching a single contact by id.
 func (h *ContactsHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	c, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeError(w, 404, "contact not found", "not_found")
-		return
-	}
-	writeJSON(w, 200, c)
+	genericGet(w, r, h.repo.Get, "contact not found")
 }
 
 // Update applies a partial update: only fields present in the request body
@@ -97,12 +85,7 @@ func (h *ContactsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		"name": true, "organization": true, "email": true, "phone": true,
 		"address": true, "category": true, "tags": true, "notes": true,
 	}
-	fields := map[string]any{}
-	for k, v := range body {
-		if allowed[k] {
-			fields[k] = v
-		}
-	}
+	fields := filterAllowedFields(body, allowed)
 	if len(fields) == 0 {
 		writeError(w, 400, "no valid fields provided", "bad_request")
 		return
@@ -132,24 +115,12 @@ func (h *ContactsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles deleting a contact.
 func (h *ContactsHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	c, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeRepoError(w, err, "contact not found", "query error")
-		return
-	}
-	if !confirmMatches(w, r, c.Name) {
-		return
-	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeRepoError(w, err, "contact not found", "delete error")
-		return
-	}
-	if h.notifier != nil {
-		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "contact", c.Name, nil)
-	}
-	w.WriteHeader(204)
+	crudDelete(w, r, deleteSpec[model.Contact]{
+		entity:      "contact",
+		notFoundMsg: "contact not found",
+		get:         h.repo.Get,
+		name:        func(c *model.Contact) string { return c.Name },
+		del:         h.repo.Delete,
+		notifier:    h.notifier,
+	})
 }

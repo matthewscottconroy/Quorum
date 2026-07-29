@@ -62,10 +62,7 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if items == nil {
-		items = []model.ActionItem{}
-	}
-	writeJSON(w, 200, model.Page[model.ActionItem]{Data: items, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, items, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a action item.
@@ -195,28 +192,13 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles deleting a action item.
 func (h *ActionItemsHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	item, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeRepoError(w, err, "action item not found", "query error")
-		return
-	}
-	if !confirmMatches(w, r, item.Title) {
-		return
-	}
-	var affected []string
-	if email, _ := h.repo.AssigneeEmail(r.Context(), id); email != "" {
-		affected = []string{email}
-	}
-	if err := h.repo.Delete(r.Context(), id); err != nil {
-		writeRepoError(w, err, "action item not found", "delete error")
-		return
-	}
-	if h.notifier != nil {
-		h.notifier.NotifyDeletion(r.Context(), userIDFromCtx(r), "action item", item.Title, affected)
-	}
-	w.WriteHeader(204)
+	crudDelete(w, r, deleteSpec[model.ActionItem]{
+		entity:      "action item",
+		notFoundMsg: "action item not found",
+		get:         h.repo.Get,
+		name:        func(item *model.ActionItem) string { return item.Title },
+		del:         h.repo.Delete,
+		notifier:    h.notifier,
+		affected:    singleEmail(h.repo.AssigneeEmail),
+	})
 }

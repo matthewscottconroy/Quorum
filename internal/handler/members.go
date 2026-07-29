@@ -41,10 +41,7 @@ func (h *MembersHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if members == nil {
-		members = []model.Member{}
-	}
-	writeJSON(w, 200, model.Page[model.Member]{Data: members, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, members, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a member.
@@ -223,10 +220,7 @@ func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if invoices == nil {
-		invoices = []model.DuesInvoice{}
-	}
-	writeJSON(w, 200, model.Page[model.DuesInvoice]{Data: invoices, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, invoices, total, f.Limit, f.Offset)
 }
 
 // GetActionItems returns a member's assigned action items (ownership-scoped).
@@ -251,8 +245,5 @@ func (h *MembersHandler) GetActionItems(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if items == nil {
-		items = []model.ActionItem{}
-	}
-	writeJSON(w, 200, model.Page[model.ActionItem]{Data: items, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, items, total, f.Limit, f.Offset)
 }

@@ -46,10 +46,7 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	if meetings == nil {
-		meetings = []model.Meeting{}
-	}
-	writeJSON(w, 200, model.Page[model.Meeting]{Data: meetings, Total: total, Limit: f.Limit, Offset: f.Offset})
+	writePage(w, meetings, total, f.Limit, f.Offset)
 }
 
 // Create handles creating a meeting.
@@ -97,16 +94,7 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get handles fetching a single meeting by id.
 func (h *MeetingsHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id, ok := requireUUID(w, r, "id")
-	if !ok {
-		return
-	}
-	mt, err := h.repo.Get(r.Context(), id)
-	if err != nil {
-		writeError(w, 404, "meeting not found", "not_found")
-		return
-	}
-	writeJSON(w, 200, mt)
+	genericGet(w, r, h.repo.Get, "meeting not found")
 }
 
 // Update handles updating a meeting.
