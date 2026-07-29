@@ -197,7 +197,7 @@ func TestIntegration_ConsumeBallotAndVote_Atomic(t *testing.T) {
 func TestIntegration_Budget_SeedIdempotentAndClone(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	bud := repo.NewBudgetRepo(pool)
+	bud := repo.NewBudgetRepo(pool, repo.NewFXRepo(pool))
 	dues := repo.NewDuesRepo(pool)
 	mr := repo.NewMembersRepo(pool)
 	ar := repo.NewAuthRepo(pool)

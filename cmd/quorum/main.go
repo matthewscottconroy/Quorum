@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	quorum "quorum"
 	"quorum/internal/config"
@@ -31,6 +32,12 @@ func main() {
 	// -healthcheck lets the scratch container (which ships no shell or curl)
 	// health-check itself: `quorum -healthcheck` GETs /healthz and exits 0/1.
 	healthcheck := flag.Bool("healthcheck", false, "probe the local /healthz endpoint and exit")
+	// -migrate-down rolls the schema back to a target version and exits, for the
+	// documented "roll back a bad migration" runbook path. -1 means "not asked".
+	migrateDown := flag.Int("migrate-down", -1, "roll the schema back to this version, then exit (0 unwinds everything)")
+	// -unlock-2fa clears TOTP + recovery codes for one account and exits: the
+	// break-glass path for a sole admin who lost their authenticator.
+	unlock2FA := flag.String("unlock-2fa", "", "disable two-factor for this email address, then exit (break-glass)")
 	flag.Parse()
 	if *healthcheck {
 		os.Exit(runHealthcheck())
@@ -54,6 +61,22 @@ func main() {
 		log.Fatalf("db connect: %v", err)
 	}
 	defer pool.Close()
+
+	// Operator one-shots run against the connected pool and exit before any
+	// server or background worker starts.
+	if *migrateDown >= 0 {
+		if err := db.MigrateDown(ctx, pool, *migrateDown); err != nil {
+			log.Fatalf("migrate-down: %v", err)
+		}
+		log.Printf("schema rolled back to version %d", *migrateDown)
+		return
+	}
+	if *unlock2FA != "" {
+		if err := runUnlock2FA(ctx, pool, *unlock2FA); err != nil {
+			log.Fatalf("unlock-2fa: %v", err)
+		}
+		return
+	}
 
 	if err := db.Migrate(ctx, pool); err != nil {
 		log.Fatalf("db migrate: %v", err)
@@ -387,6 +410,31 @@ func main() {
 // resolves to a directory) returns 404 so no auto-generated listing is exposed.
 // A short cache lifetime lets same-session revisits skip re-downloading
 // unchanged JS/CSS.
+// runUnlock2FA is the break-glass path for an account locked out of two-factor:
+// it clears the TOTP secret, the enabled flag, and all recovery codes, so the
+// user can sign in with their password alone and re-enroll. It also revokes that
+// user's refresh tokens, since anyone holding one would otherwise keep a session
+// that predates the change.
+//
+// It requires shell access to the deployment (and therefore the database), which
+// is the intended bar: this bypasses a second factor.
+func runUnlock2FA(ctx context.Context, pool *pgxpool.Pool, email string) error {
+	authRepo := repo.NewAuthRepo(pool)
+	user, _, err := authRepo.GetUserByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
+	if err != nil {
+		return fmt.Errorf("no user with email %q: %w", email, err)
+	}
+	if err := authRepo.DisableTOTP(ctx, user.ID); err != nil {
+		return fmt.Errorf("disable totp: %w", err)
+	}
+	if err := authRepo.RevokeAllRefreshTokensForUser(ctx, user.ID); err != nil {
+		return fmt.Errorf("revoke sessions: %w", err)
+	}
+	log.Printf("two-factor disabled and sessions revoked for %s (%s) — they can now sign in with their password and re-enroll",
+		user.Email, user.Role)
+	return nil
+}
+
 // logLevel maps a config log-level string to an slog.Level (default info).
 func logLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {

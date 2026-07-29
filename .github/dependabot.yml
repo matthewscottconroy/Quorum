@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Go module dependencies. The footprint is deliberately small (chi, pgx, jwt,
+  # x/crypto), so weekly grouped PRs stay reviewable rather than noisy.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+
+  # Keep the CI actions themselves patched — a stale third-party action is as
+  # much a supply-chain risk as a stale library.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"

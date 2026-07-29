@@ -35,6 +35,10 @@ jobs:
           if [ -n "$unformatted" ]; then echo "gofmt needed on:"; echo "$unformatted"; exit 1; fi
       - name: go vet
         run: go vet ./...
+      # Tag-gated files are invisible to a plain vet, so they can rot silently
+      # against signature changes. Vet them explicitly.
+      - name: go vet (integration-tagged)
+        run: go vet -tags integration ./...
       - name: go build
         run: go build ./...
       - name: go test -race
@@ -42,7 +46,35 @@ jobs:
       - name: integration tests
         env:
           QUORUM_TEST_DATABASE_URL: postgres://quorum:test@localhost:5432/quorum?sslmode=disable
-        run: go test -tags integration -count=1 ./internal/repo/...
+        run: go test -tags integration -count=1 ./internal/...
+
+  migrations:
+    name: Migrations up & down
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: quorum
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: quorum
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U quorum"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      # Runs the full ladder up, back down to zero, and up again against a real
+      # Postgres — so every .up.sql must have a .down.sql that truly reverses it,
+      # and "roll back a bad migration" stays a supported operation.
+      - name: migrations are reversible
+        env:
+          QUORUM_TEST_DATABASE_URL: postgres://quorum:test@localhost:5432/quorum?sslmode=disable
+        run: go test -tags integration -count=1 -v ./internal/repo/ -run 'Migration|MigrateDown'
 
   lint:
     name: golangci-lint & govulncheck

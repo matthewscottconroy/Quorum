@@ -1,4 +1,4 @@
-.PHONY: build run dev test test-web lint backup backup-list restore backup-verify \
+.PHONY: build run dev test test-web test-integration lint backup backup-list restore backup-verify \
         local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
@@ -22,6 +22,11 @@ test:
 
 test-web:
 	node --test web/*.test.js
+
+# Integration tests against a real Postgres. Set QUORUM_TEST_DATABASE_URL, e.g.
+#   QUORUM_TEST_DATABASE_URL=postgres://quorum:test@localhost:55432/quorum?sslmode=disable make test-integration
+test-integration:
+	go test -tags integration -count=1 ./internal/...
 
 lint:
 	golangci-lint run
@@ -120,6 +125,7 @@ help:
 	@echo "  dev             Run with .env loaded (no Docker)"
 	@echo "  test            Run go test -race ./..."
 	@echo "  test-web        Run frontend unit tests (node --test)"
+	@echo "  test-integration Run integration tests (needs QUORUM_TEST_DATABASE_URL)"
 	@echo "  backup          Dump the database to backups/ (prunes old ones)"
 	@echo "  backup-list     List existing backups"
 	@echo "  backup-verify   Prove the latest backup restores into a scratch DB"

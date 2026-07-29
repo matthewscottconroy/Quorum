@@ -135,3 +135,89 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	return nil
 }
+
+// MigrateDown rolls the schema back to targetVersion by applying each
+// .down.sql from the current version downward, newest first, stopping once
+// schema_migrations holds only versions <= targetVersion. Pass 0 to unwind
+// everything. Each step runs in its own transaction with the migration row
+// deleted atomically, under the same advisory lock as Migrate.
+//
+// This is an operator tool (see `quorum -migrate-down`) and the basis of the
+// CI check that every migration is reversible — it is never called at startup.
+func MigrateDown(ctx context.Context, pool *pgxpool.Pool, targetVersion int) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(8675309)"); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	defer conn.Exec(ctx, "SELECT pg_advisory_unlock(8675309)") //nolint:errcheck
+
+	// Applied versions above the target, newest first — the order they unwind in.
+	rows, err := conn.Query(ctx,
+		"SELECT version FROM schema_migrations WHERE version > $1 ORDER BY version DESC", targetVersion)
+	if err != nil {
+		return err
+	}
+	var versions []int
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			rows.Close()
+			return err
+		}
+		versions = append(versions, v)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+
+	// Index the embedded .down.sql files by version.
+	files, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return err
+	}
+	downs := map[int]string{}
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".down.sql") {
+			continue
+		}
+		var v int
+		if _, err := fmt.Sscanf(f.Name(), "%04d", &v); err != nil || v <= 0 {
+			return fmt.Errorf("migration %s: filename must start with a positive 4-digit version", f.Name())
+		}
+		downs[v] = f.Name()
+	}
+
+	for _, v := range versions {
+		name, ok := downs[v]
+		if !ok {
+			return fmt.Errorf("no down-migration for version %04d: cannot roll back past it", v)
+		}
+		sql, err := fs.ReadFile(migrationsFS, "migrations/"+name)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin rollback %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck
+			return fmt.Errorf("apply rollback %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version = $1", v); err != nil {
+			tx.Rollback(ctx) //nolint:errcheck
+			return fmt.Errorf("unrecord migration %s: %w", name, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit rollback %s: %w", name, err)
+		}
+		fmt.Printf("rolled back migration %s\n", name)
+	}
+	return nil
+}
