@@ -208,6 +208,7 @@ func main() {
 			r.Post("/auth/2fa/setup", authH.Setup2FA)
 			r.Post("/auth/2fa/enable", authH.Enable2FA)
 			r.Post("/auth/2fa/disable", authH.Disable2FA)
+			r.Post("/auth/2fa/recovery-codes", authH.RegenerateRecoveryCodes)
 
 			// Personal-data export: any authenticated user may export their own data.
 			r.Get("/auth/me/export", exportH.ExportMyData)

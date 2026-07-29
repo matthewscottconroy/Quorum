@@ -26,11 +26,27 @@ const recoveryCodeCount = 10
 // the authenticator app. Enrollment is not complete until Enable2FA confirms a
 // code. Re-calling regenerates the secret, which is safe because 2FA is not yet
 // active.
+//
+// Enrolling requires the account password, matching Disable2FA: someone who
+// hijacks a session must not be able to bind their own authenticator to the
+// account (which would lock the real owner out behind an attacker's second
+// factor).
 func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r)
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
 	user, err := h.repo.GetUserByID(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found", "not_found")
+		return
+	}
+	if !h.passwordMatches(r, userID, body.Password) {
+		writeError(w, http.StatusUnauthorized, "password incorrect", "unauthorized")
 		return
 	}
 	if _, enabled, _ := h.repo.GetTOTP(r.Context(), userID); enabled {
@@ -100,6 +116,20 @@ func (h *AuthHandler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// passwordMatches re-verifies the caller's account password. Used to gate
+// changes to a user's second factor, so possession of a session alone is never
+// enough to add, remove, or re-issue the factor that protects it.
+func (h *AuthHandler) passwordMatches(r *http.Request, userID, password string) bool {
+	if password == "" {
+		return false
+	}
+	hash, err := h.repo.GetPasswordHash(r.Context(), userID)
+	if err != nil {
+		return false
+	}
+	return auth.CheckPassword(hash, password)
+}
+
 // Disable2FA turns off TOTP for the caller. It re-verifies the account password
 // (a stolen session alone must not be able to strip a second factor) and clears
 // the stored secret and recovery codes.
@@ -112,12 +142,7 @@ func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
 		return
 	}
-	hash, err := h.repo.GetPasswordHash(r.Context(), userID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "user error", "internal_error")
-		return
-	}
-	if !auth.CheckPassword(hash, body.Password) {
+	if !h.passwordMatches(r, userID, body.Password) {
 		writeError(w, http.StatusUnauthorized, "password incorrect", "unauthorized")
 		return
 	}
@@ -125,7 +150,49 @@ func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not disable two-factor", "internal_error")
 		return
 	}
+	h.logAudit(r, userID, "auth.2fa_disabled")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// RegenerateRecoveryCodes issues a fresh set of one-time recovery codes,
+// invalidating every previously-issued code. Requires the account password and
+// that 2FA is actually enabled. Used when codes are lost, or after some have
+// been spent. The new codes are returned exactly once.
+func (h *AuthHandler) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r)
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "bad_request")
+		return
+	}
+	if !h.passwordMatches(r, userID, body.Password) {
+		writeError(w, http.StatusUnauthorized, "password incorrect", "unauthorized")
+		return
+	}
+	_, enabled, err := h.repo.GetTOTP(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup failed", "internal_error")
+		return
+	}
+	if !enabled {
+		writeError(w, http.StatusBadRequest, "two-factor is not enabled", "bad_request")
+		return
+	}
+	plainCodes, hashes, err := auth.GenerateRecoveryCodes(recoveryCodeCount)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate recovery codes", "internal_error")
+		return
+	}
+	// ReplaceRecoveryCodes deletes the old set, so any code from a previous
+	// batch stops working the moment this succeeds.
+	if err := h.repo.ReplaceRecoveryCodes(r.Context(), userID, hashes); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store recovery codes", "internal_error")
+		return
+	}
+	h.logAudit(r, userID, "auth.recovery_codes_regenerated")
+	writeJSON(w, http.StatusOK, map[string]any{"recovery_codes": plainCodes})
 }
 
 // ---- Password recovery ----

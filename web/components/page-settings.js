@@ -67,7 +67,10 @@ class PageSettings extends HTMLElement {
           <h3 style="font-size:.9rem;margin-bottom:.5rem">Two-factor authentication</h3>
           ${me?.totp_enabled ? `
             <p style="font-size:.85rem;color:var(--color-success,#137333);margin-bottom:.75rem">✓ Two-factor is <strong>on</strong>. You'll be asked for a code at sign-in.</p>
-            <button class="btn-ghost" id="twofa-disable-btn" style="color:var(--color-danger)">Turn off two-factor</button>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+              <button class="btn-secondary" id="twofa-codes-btn">Regenerate recovery codes</button>
+              <button class="btn-ghost" id="twofa-disable-btn" style="color:var(--color-danger)">Turn off two-factor</button>
+            </div>
           ` : `
             <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">Add a second step at sign-in using an authenticator app (Google Authenticator, 1Password, Authy…).</p>
             <button class="btn-primary" id="twofa-setup-btn">Set up two-factor</button>
@@ -169,6 +172,7 @@ class PageSettings extends HTMLElement {
 
     this.querySelector('#twofa-setup-btn')?.addEventListener('click', () => this.open2FASetup());
     this.querySelector('#twofa-disable-btn')?.addEventListener('click', () => this.open2FADisable());
+    this.querySelector('#twofa-codes-btn')?.addEventListener('click', () => this.openRegenerateCodes());
 
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
 
@@ -305,11 +309,56 @@ class PageSettings extends HTMLElement {
     }));
   }
 
-  /** Enroll in TOTP: show the secret + otpauth URI, then confirm with a code. */
+  /**
+   * Asks for the account password in a small modal. Resolves to the password,
+   * or null if the user cancelled. Used to gate changes to the second factor —
+   * a hijacked session alone must not be able to add, remove, or re-issue it.
+   */
+  promptPassword({ title, message, confirmLabel = 'Continue' }) {
+    return new Promise(resolve => {
+      let settled = false;
+      const done = v => { if (!settled) { settled = true; resolve(v); } };
+      const { dialog, close } = openModal({
+        title,
+        maxWidth: '400px',
+        body: `
+          <div class="modal-body">
+            <p style="font-size:.88rem;margin-bottom:1rem">${esc(message)}</p>
+            <div class="form-group"><label for="f-pw-confirm">Password</label>
+              <input id="f-pw-confirm" type="password" autocomplete="current-password"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="cancel-btn">Cancel</button>
+            <button class="btn-primary" id="ok-btn">${esc(confirmLabel)}</button>
+          </div>
+        `,
+      });
+      // Any close path (button, Escape, backdrop) resolves null, so an awaiting
+      // caller is never left hanging.
+      dialog.addEventListener('close', () => done(null));
+      dialog.querySelector('#cancel-btn').addEventListener('click', close);
+      dialog.querySelector('#f-pw-confirm').focus();
+      const submit = () => {
+        const pw = dialog.querySelector('#f-pw-confirm').value;
+        if (!pw) { toast('Password is required', 'error'); return; }
+        done(pw);
+        close();
+      };
+      dialog.querySelector('#ok-btn').addEventListener('click', submit);
+      dialog.querySelector('#f-pw-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    });
+  }
+
+  /** Enroll in TOTP: confirm the password, show the secret + otpauth URI, then confirm with a code. */
   async open2FASetup() {
+    const password = await this.promptPassword({
+      title: 'Confirm your password',
+      message: 'Enrolling a new authenticator requires your account password.',
+    });
+    if (!password) return;
     let setup;
     try {
-      setup = await api('POST', '/auth/2fa/setup');
+      setup = await api('POST', '/auth/2fa/setup', { password });
     } catch (err) { toast(err.error ?? 'Could not start setup','error'); return; }
 
     const { dialog, close } = openModal({
@@ -358,6 +407,37 @@ class PageSettings extends HTMLElement {
       cancel.className = 'btn-primary';
       toast('Two-factor enabled','success');
     }));
+  }
+
+  /**
+   * Issue a fresh set of recovery codes, invalidating the previous ones. For
+   * when codes are lost or have been spent.
+   */
+  async openRegenerateCodes() {
+    const password = await this.promptPassword({
+      title: 'Regenerate recovery codes',
+      message: 'Your existing recovery codes will stop working immediately. Confirm your password to continue.',
+      confirmLabel: 'Regenerate',
+    });
+    if (!password) return;
+    let res;
+    try {
+      res = await api('POST', '/auth/2fa/recovery-codes', { password });
+    } catch (err) { toast(err.error ?? 'Could not regenerate codes', 'error'); return; }
+
+    const { dialog, close } = openModal({
+      title: 'Your new recovery codes',
+      maxWidth: '440px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;margin:0 0 .75rem">Save these somewhere safe — each works <strong>once</strong> if you lose your authenticator. Your previous codes no longer work, and these are shown only now.</p>
+          <pre style="background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;font-size:.85rem;white-space:pre-wrap">${esc((res.recovery_codes ?? []).join('\n'))}</pre>
+        </div>
+        <div class="modal-footer"><button class="btn-primary" id="done-btn">Done</button></div>
+      `,
+    });
+    dialog.querySelector('#done-btn').addEventListener('click', close);
+    toast('Recovery codes regenerated', 'success');
   }
 
   /** Turn off TOTP after re-confirming the account password. */

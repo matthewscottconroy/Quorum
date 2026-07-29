@@ -144,9 +144,11 @@ func TestLoginMFA_RecoveryCode(t *testing.T) {
 func TestSetupAndEnable2FA(t *testing.T) {
 	var stored string
 	enabled := false
+	pwHash, _ := auth.HashPassword("goodpassword1")
 	repo := &mockAuthRepo{
-		GetUserByIDFn: func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
-		GetTOTPFn:     func(_ context.Context, _ string) (string, bool, error) { return stored, enabled, nil },
+		GetUserByIDFn:     func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
+		GetTOTPFn:         func(_ context.Context, _ string) (string, bool, error) { return stored, enabled, nil },
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
 		SetTOTPSecretFn: func(_ context.Context, _, secret string) error {
 			stored = secret
 			return nil
@@ -156,9 +158,10 @@ func TestSetupAndEnable2FA(t *testing.T) {
 	}
 	h := NewAuthHandler(repo, testConfig())
 
-	// Setup returns a secret + provisioning URI.
+	// Setup requires the account password and returns a secret + provisioning URI.
 	rr := httptest.NewRecorder()
-	h.Setup2FA(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/setup", nil), testUserID, "member"))
+	h.Setup2FA(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/setup",
+		strings.NewReader(`{"password":"goodpassword1"}`)), testUserID, "member"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("setup status %d: %s", rr.Code, rr.Body)
 	}
@@ -500,5 +503,90 @@ func TestLoginMFA_SuccessResetsThrottle(t *testing.T) {
 	}
 	if h.mfaThrottle.blocked(testUserID) {
 		t.Fatal("throttle should be cleared after a successful login")
+	}
+}
+
+// A hijacked session must not be able to bind a new authenticator: enrollment
+// requires the account password.
+func TestSetup2FA_RequiresPassword(t *testing.T) {
+	pwHash, _ := auth.HashPassword("goodpassword1")
+	repo := &mockAuthRepo{
+		GetUserByIDFn:     func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
+		SetTOTPSecretFn: func(_ context.Context, _, _ string) error {
+			t.Error("secret must not be stored when the password is wrong")
+			return nil
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	for _, body := range []string{`{"password":"wrongpassword"}`, `{}`, `{"password":""}`} {
+		rr := httptest.NewRecorder()
+		h.Setup2FA(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/setup", strings.NewReader(body)), testUserID, "member"))
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("body %s: expected 401, got %d: %s", body, rr.Code, rr.Body)
+		}
+	}
+}
+
+func TestRegenerateRecoveryCodes(t *testing.T) {
+	pwHash, _ := auth.HashPassword("goodpassword1")
+	var storedHashes []string
+	repo := &mockAuthRepo{
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
+		GetTOTPFn:         func(_ context.Context, _ string) (string, bool, error) { return "SECRET", true, nil },
+		ReplaceRecoveryCodesFn: func(_ context.Context, _ string, hashes []string) error {
+			storedHashes = hashes
+			return nil
+		},
+	}
+	h := NewAuthHandler(repo, testConfig())
+	rr := httptest.NewRecorder()
+	h.RegenerateRecoveryCodes(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/recovery-codes",
+		strings.NewReader(`{"password":"goodpassword1"}`)), testUserID, "member"))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var resp struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if len(resp.RecoveryCodes) != recoveryCodeCount {
+		t.Errorf("got %d codes, want %d", len(resp.RecoveryCodes), recoveryCodeCount)
+	}
+	// The old set must be replaced (not appended to), so previous codes die.
+	if len(storedHashes) != recoveryCodeCount {
+		t.Errorf("stored %d hashes, want %d", len(storedHashes), recoveryCodeCount)
+	}
+	// Codes are returned in plaintext once but stored hashed.
+	for _, c := range resp.RecoveryCodes {
+		for _, hsh := range storedHashes {
+			if c == hsh {
+				t.Fatal("recovery code stored in plaintext")
+			}
+		}
+	}
+}
+
+func TestRegenerateRecoveryCodes_Rejects(t *testing.T) {
+	pwHash, _ := auth.HashPassword("goodpassword1")
+	// Wrong password → 401.
+	h := NewAuthHandler(&mockAuthRepo{
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
+		GetTOTPFn:         func(_ context.Context, _ string) (string, bool, error) { return "S", true, nil },
+	}, testConfig())
+	rr := httptest.NewRecorder()
+	h.RegenerateRecoveryCodes(rr, withCtxUser(httptest.NewRequest("POST", "/x", strings.NewReader(`{"password":"nope"}`)), testUserID, "member"))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("wrong password: expected 401, got %d", rr.Code)
+	}
+	// 2FA not enabled → 400 (there are no codes to regenerate).
+	h2 := NewAuthHandler(&mockAuthRepo{
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
+		GetTOTPFn:         func(_ context.Context, _ string) (string, bool, error) { return "", false, nil },
+	}, testConfig())
+	rr2 := httptest.NewRecorder()
+	h2.RegenerateRecoveryCodes(rr2, withCtxUser(httptest.NewRequest("POST", "/x", strings.NewReader(`{"password":"goodpassword1"}`)), testUserID, "member"))
+	if rr2.Code != http.StatusBadRequest {
+		t.Errorf("2FA disabled: expected 400, got %d", rr2.Code)
 	}
 }
