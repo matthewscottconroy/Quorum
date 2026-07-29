@@ -75,3 +75,5 @@ jobs:
           for f in web/app.js web/utils.js web/components/*.js; do
             node --check "$f" || exit 1
           done
+      - name: web unit tests
+        run: node --test web/*.test.js

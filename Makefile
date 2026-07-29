@@ -1,4 +1,4 @@
-.PHONY: build run dev test lint \
+.PHONY: build run dev test test-web lint \
         local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
@@ -19,6 +19,9 @@ dev:
 
 test:
 	go test -race -count=1 ./...
+
+test-web:
+	node --test web/*.test.js
 
 lint:
 	golangci-lint run
@@ -100,6 +103,7 @@ help:
 	@echo "  run             Build and run the binary"
 	@echo "  dev             Run with .env loaded (no Docker)"
 	@echo "  test            Run go test -race ./..."
+	@echo "  test-web        Run frontend unit tests (node --test)"
 	@echo "  lint            Run golangci-lint"
 	@echo ""
 	@echo "  local           Start the local stack with plain Podman (no compose needed)"
