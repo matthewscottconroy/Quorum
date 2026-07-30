@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -19,7 +21,8 @@ type auditReader interface {
 // the log is append-only, and nothing in the API can edit or delete an entry
 // (retention pruning happens in the nightly job, not over HTTP).
 type AuditHandler struct {
-	repo auditReader
+	repo     auditReader
+	verifier chainVerifier
 }
 
 // NewAuditHandler constructs an AuditHandler.
@@ -71,4 +74,77 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writePage(w, entries, total, f.Limit, f.Offset)
+}
+
+// chainVerifier is the integrity side of the audit repo.
+type chainVerifier interface {
+	VerifyChain(ctx context.Context) (*repo.ChainStatus, error)
+	ExportRows(ctx context.Context, fn func(e model.AuditEntry) error) error
+}
+
+// SetVerifier attaches the chain-verification capability (admin endpoints).
+func (h *AuditHandler) SetVerifier(v chainVerifier) { h.verifier = v }
+
+// Verify recomputes the audit log's hash chain and reports its status: entry
+// count, head hash, and — if the chain is broken — the first bad sequence
+// number. Admin+. A third party can record the head hash from this endpoint and
+// later prove no retained history was rewritten.
+func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
+	if h.verifier == nil {
+		writeError(w, http.StatusNotFound, "not available", "not_found")
+		return
+	}
+	st, err := h.verifier.VerifyChain(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "verification error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// ExportCSV streams the full retained audit log with chain hashes as CSV, for
+// handing to an accountant or lawyer. Verification instructions live in
+// COMPLIANCE.md; the hashes let the recipient independently confirm the export
+// matches the chain and that the chain is intact.
+func (h *AuditHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
+	if h.verifier == nil {
+		writeError(w, http.StatusNotFound, "not available", "not_found")
+		return
+	}
+	// Verify first, and stamp the result into the file: an export from a broken
+	// chain must say so on its face.
+	st, err := h.verifier.VerifyChain(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "verification error", "internal_error")
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="quorum-audit-log.csv"`)
+	cw := csv.NewWriter(w)
+	status := "INTACT"
+	if !st.OK {
+		status = fmt.Sprintf("BROKEN_AT_SEQ_%d", st.BrokenSeq)
+	}
+	_ = cw.Write([]string{"# chain_status", status, "entries", strconv.FormatInt(st.Entries, 10), "head_seq", strconv.FormatInt(st.HeadSeq, 10), "head_hash", st.HeadHash})
+	_ = cw.Write([]string{"seq", "id", "user_id", "user_email", "action", "entity_type", "entity_id", "created_at_utc", "prev_hash", "entry_hash"})
+	deref := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	err = h.verifier.ExportRows(r.Context(), func(e model.AuditEntry) error {
+		return cw.Write([]string{
+			strconv.FormatInt(e.Seq, 10), e.ID, deref(e.UserID), deref(e.UserEmail), e.Action,
+			deref(e.EntityType), deref(e.EntityID),
+			e.CreatedAt.UTC().Format("2006-01-02 15:04:05.000000"),
+			e.PrevHash, e.EntryHash,
+		})
+	})
+	if err != nil {
+		// Headers are already sent; the truncated file will fail hash checks,
+		// which is the correct failure mode for an evidence export.
+		return
+	}
+	cw.Flush()
 }

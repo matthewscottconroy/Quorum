@@ -1,4 +1,4 @@
-import { api } from '../app.js';
+import { api, apiDownload } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDateTime } from '../utils.js';
 
@@ -12,11 +12,43 @@ class PageAudit extends HTMLElement {
   connectedCallback() {
     this.render();
     this.load();
+    this.verifyChain();
+  }
+
+  /**
+   * Every audit row is hash-chained to its predecessor; the server recomputes
+   * the whole chain here. An intact badge means no retained history has been
+   * edited, removed, or inserted — even directly in the database.
+   */
+  async verifyChain() {
+    const badge = this.querySelector('#chain-badge');
+    try {
+      const st = await api('GET', '/audit/verify');
+      if (st.ok) {
+        badge.textContent = `⛓ chain intact · ${st.entries} entries`;
+        badge.style.background = 'color-mix(in srgb, var(--color-success,#137333) 12%, transparent)';
+        badge.style.color = 'var(--color-success,#137333)';
+        badge.title = `head hash ${st.head_hash}`;
+      } else {
+        badge.textContent = `⚠ CHAIN BROKEN at #${st.broken_seq}`;
+        badge.style.background = 'var(--color-danger,#dc2626)';
+        badge.style.color = '#fff';
+        badge.title = 'The audit log has been tampered with. Preserve backups and investigate immediately.';
+      }
+    } catch {
+      badge.textContent = 'chain check failed';
+    }
   }
 
   render() {
     this.innerHTML = `
-      <div class="page-header"><h1>Audit log</h1></div>
+      <div class="page-header">
+        <h1>Audit log</h1>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <span id="chain-badge" style="font-size:.78rem;padding:.25rem .6rem;border-radius:999px;background:var(--color-bg);color:var(--color-text-muted)">checking chain…</span>
+          <button class="btn-secondary" id="export-btn">Export evidence (CSV)</button>
+        </div>
+      </div>
       <div class="search-bar" style="flex-wrap:wrap;gap:.5rem">
         <input id="f-action" placeholder="Action contains… (e.g. DELETE, auth.)" style="max-width:260px">
         <input id="f-entity" placeholder="Resource (e.g. members)" style="max-width:170px">
@@ -39,6 +71,9 @@ class PageAudit extends HTMLElement {
     this.querySelector('#f-entity').addEventListener('input', () => debounce(() => { this._offset = 0; this.load(); }));
     this.querySelector('#f-since').addEventListener('change', () => { this._offset = 0; this.load(); });
     this.querySelector('#f-until').addEventListener('change', () => { this._offset = 0; this.load(); });
+    this.querySelector('#export-btn').addEventListener('click', () => {
+      apiDownload('/audit/export.csv', 'quorum-audit-log.csv').catch(() => toast('Export failed', 'error'));
+    });
     this.querySelector('#clear-btn').addEventListener('click', () => {
       ['#f-action', '#f-entity', '#f-since', '#f-until'].forEach(s => { this.querySelector(s).value = ''; });
       this._offset = 0;

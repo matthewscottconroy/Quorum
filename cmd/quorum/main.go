@@ -38,6 +38,9 @@ func main() {
 	// -unlock-2fa clears TOTP + recovery codes for one account and exits: the
 	// break-glass path for a sole admin who lost their authenticator.
 	unlock2FA := flag.String("unlock-2fa", "", "disable two-factor for this email address, then exit (break-glass)")
+	// -verify-audit recomputes the audit log's hash chain and exits 0 (intact)
+	// or 1 (broken) — for cron, CI, and pre-engagement checks by auditors.
+	verifyAudit := flag.Bool("verify-audit", false, "verify the audit log hash chain, then exit")
 	flag.Parse()
 	if *healthcheck {
 		os.Exit(runHealthcheck())
@@ -73,6 +76,19 @@ func main() {
 	}
 	if err := db.Migrate(ctx, pool); err != nil {
 		log.Fatalf("db migrate: %v", err)
+	}
+
+	if *verifyAudit {
+		st, err := repo.NewAuditRepo(pool).VerifyChain(ctx)
+		if err != nil {
+			log.Fatalf("verify-audit: %v", err)
+		}
+		if !st.OK {
+			log.Printf("AUDIT CHAIN BROKEN at seq %d (%d entries, head seq %d)", st.BrokenSeq, st.Entries, st.HeadSeq)
+			os.Exit(1)
+		}
+		log.Printf("audit chain intact: %d entries, head seq %d, head hash %s", st.Entries, st.HeadSeq, st.HeadHash)
+		return
 	}
 
 	// unlock-2fa runs after Migrate so it works on a fresh/upgraded schema.
@@ -126,6 +142,7 @@ func main() {
 	fxH := handler.NewFXHandler(fxRepo)
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	auditH := handler.NewAuditHandler(auditRepo)
+	auditH.SetVerifier(auditRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
 	if cfg.AllowUnsignedWebhooks {
@@ -233,6 +250,8 @@ func main() {
 			// inside the handler. Deleting an account is a superadmin action.
 			// Audit log viewer: admin-only, read-only (the log is append-only).
 			r.With(mw.RequireRole("admin")).Get("/audit", auditH.List)
+			r.With(mw.RequireRole("admin")).Get("/audit/verify", auditH.Verify)
+			r.With(mw.RequireRole("admin")).Get("/audit/export.csv", auditH.ExportCSV)
 
 			r.With(mw.RequireRole("admin")).Get("/users", authH.ListUsers)
 			r.With(mw.RequireRole("admin")).Post("/users", authH.CreateUser)
@@ -315,7 +334,8 @@ func main() {
 			r.With(mw.RequireRole("officer")).Put("/meetings/{id}/attendees", meetingsH.SetAttendees)
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/decisions", meetingsH.CreateDecision)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}/decisions/{did}", meetingsH.UpdateDecision)
-			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}/decisions/{did}", meetingsH.DeleteDecision)
+			// Recorded decisions are the minutes; removing one is a superadmin act.
+			r.With(mw.RequireRole("superadmin")).Delete("/meetings/{id}/decisions/{did}", meetingsH.DeleteDecision)
 
 			// Governance & voting. Reads are member+ (so members can watch the
 			// live quorum meter and cast their own ballots); managing motions,
@@ -355,7 +375,7 @@ func main() {
 			r.With(mw.RequireRole("superadmin")).Delete("/plans/{id}", plansH.Delete)
 			r.With(mw.RequireRole("officer")).Post("/plans/{id}/decisions", plansH.CreateDecision)
 			r.With(mw.RequireRole("officer")).Patch("/plans/{id}/decisions/{did}", plansH.UpdateDecision)
-			r.With(mw.RequireRole("officer")).Delete("/plans/{id}/decisions/{did}", plansH.DeleteDecision)
+			r.With(mw.RequireRole("superadmin")).Delete("/plans/{id}/decisions/{did}", plansH.DeleteDecision)
 
 			r.With(mw.RequireRole("member")).Get("/contacts", contactsH.List)
 			r.With(mw.RequireRole("officer")).Post("/contacts", contactsH.Create)

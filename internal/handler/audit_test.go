@@ -75,3 +75,32 @@ func TestAuditMiddleware_SkipsFailures(t *testing.T) {
 		t.Error("a 400 response must not be audited")
 	}
 }
+
+// A 401/403 on a mutating request by a KNOWN user is an insider-threat signal
+// and must be recorded as a DENIED action.
+func TestAuditMiddleware_RecordsDeniedMutations(t *testing.T) {
+	var gotAction string
+	ar := &mockAuditRepo{LogFn: func(_ context.Context, _, action, _, _ string) error {
+		gotAction = action
+		return nil
+	}}
+	forbidden := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	req := httptest.NewRequest("DELETE", "/api/v1/members/abc", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxUserID, "u-1"))
+	AuditMiddleware(ar)(forbidden).ServeHTTP(httptest.NewRecorder(), req)
+	if gotAction != "DENIED(403) DELETE /api/v1/members/abc" {
+		t.Errorf("denied action not recorded, got %q", gotAction)
+	}
+}
+
+// A denied request with NO authenticated user must not be recorded: outsiders
+// could otherwise spray the audit log.
+func TestAuditMiddleware_SkipsAnonymousDenials(t *testing.T) {
+	logged := false
+	ar := &mockAuditRepo{LogFn: func(_ context.Context, _, _, _, _ string) error { logged = true; return nil }}
+	denied := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	AuditMiddleware(ar)(denied).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/v1/members", nil))
+	if logged {
+		t.Error("anonymous denial must not be audited")
+	}
+}

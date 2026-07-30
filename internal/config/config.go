@@ -152,8 +152,11 @@ func Load() (*Config, error) {
 	cfg.AuditRetentionDays = 365
 	if v := getEnv("QUORUM_AUDIT_RETENTION_DAYS", ""); v != "" {
 		cfg.AuditRetentionDays, err = strconv.Atoi(v)
-		if err != nil || cfg.AuditRetentionDays <= 0 {
-			return nil, fmt.Errorf("invalid QUORUM_AUDIT_RETENTION_DAYS: must be a positive number of days")
+		// The database enforces a 90-day evidence floor on audit deletions
+		// (migration 0017); a shorter retention would make the nightly prune
+		// fail every night, so refuse it here with a clear message.
+		if err != nil || cfg.AuditRetentionDays < 90 {
+			return nil, fmt.Errorf("invalid QUORUM_AUDIT_RETENTION_DAYS: must be at least 90 (the evidence retention floor)")
 		}
 	}
 

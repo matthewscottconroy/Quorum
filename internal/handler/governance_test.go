@@ -416,3 +416,40 @@ func TestSendBallots_NoMailer(t *testing.T) {
 		t.Fatalf("expected 503 without a mailer, got %d", rr.Code)
 	}
 }
+
+// A decided motion is governance history; deleting it must be refused so the
+// record (and its cascaded votes) cannot be falsified after the fact.
+func TestDeleteMotion_RefusesDecidedMotion(t *testing.T) {
+	deleted := false
+	h := govHandler(&mockGovernanceRepo{
+		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
+			return &model.Motion{ID: "mo1", Title: "Budget 2027", Status: "carried"}, nil
+		},
+		DeleteMotionFn: func(_ context.Context, _ string) error { deleted = true; return nil },
+	})
+	req := chiRequest("DELETE", "/motions/mo1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.DeleteMotion(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 deleting a carried motion, got %d: %s", rr.Code, rr.Body)
+	}
+	if deleted {
+		t.Fatal("a decided motion must never reach the repo delete")
+	}
+}
+
+// Draft motions are not yet part of the record and may still be deleted.
+func TestDeleteMotion_AllowsDraft(t *testing.T) {
+	h := govHandler(&mockGovernanceRepo{
+		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
+			return &model.Motion{ID: "mo1", Status: "draft"}, nil
+		},
+		DeleteMotionFn: func(_ context.Context, _ string) error { return nil },
+	})
+	req := chiRequest("DELETE", "/motions/mo1", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.DeleteMotion(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 deleting a draft, got %d", rr.Code)
+	}
+}

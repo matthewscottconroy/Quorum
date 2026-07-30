@@ -501,10 +501,13 @@ func NotificationCategory(notifType string) string {
 // (the FK is ON DELETE SET NULL) and some actions target no specific row.
 type AuditEntry struct {
 	ID         string    `json:"id"`
+	Seq        int64     `json:"seq,omitempty"`
 	UserID     *string   `json:"user_id,omitempty"`
 	UserEmail  *string   `json:"user_email,omitempty"`
 	Action     string    `json:"action"`
 	EntityType *string   `json:"entity_type,omitempty"`
 	EntityID   *string   `json:"entity_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+	PrevHash   string    `json:"prev_hash,omitempty"`
+	EntryHash  string    `json:"entry_hash,omitempty"`
 }

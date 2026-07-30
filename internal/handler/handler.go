@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -455,11 +456,19 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 			if r.Method == http.MethodGet {
 				return
 			}
-			if aw.status < 200 || aw.status >= 300 {
-				return
-			}
 			userID, _ := r.Context().Value(ctxUserID).(string)
 			if userID == "" {
+				return
+			}
+			// Denied mutating attempts by a KNOWN user are an insider-threat
+			// signal (probing endpoints above one's role, replaying stale
+			// sessions) and are recorded as such. Other failures (400s, 404s,
+			// 409s) are ordinary operation and would only add noise.
+			if aw.status == http.StatusUnauthorized || aw.status == http.StatusForbidden {
+				ar.Log(r.Context(), userID, fmt.Sprintf("DENIED(%d) %s %s", aw.status, r.Method, r.URL.Path), auditEntityType(r), chi.URLParam(r, "id")) //nolint:errcheck
+				return
+			}
+			if aw.status < 200 || aw.status >= 300 {
 				return
 			}
 			action := r.Method + " " + r.URL.Path

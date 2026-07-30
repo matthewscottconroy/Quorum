@@ -205,6 +205,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.CheckPassword(hash, body.Password) {
+		// A failed login against a real account is an insider-threat signal
+		// (credential guessing, a colleague trying a teammate's account); the
+		// unknown-email path above is deliberately NOT logged, since it would
+		// let an outsider spray garbage into the audit log.
+		h.logAudit(r, user.ID, "auth.login_failed")
 		writeError(w, http.StatusUnauthorized, "invalid credentials", "unauthorized")
 		return
 	}
@@ -279,6 +284,7 @@ func (h *AuthHandler) LoginMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		h.mfaThrottle.fail(claims.UserID)
+		h.logAudit(r, claims.UserID, "auth.2fa_failed")
 		writeError(w, http.StatusUnauthorized, "invalid two-factor code", "unauthorized")
 		return
 	}
@@ -637,7 +643,8 @@ func (h *AuthHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if isFKViolation(err) {
 			writeError(w, http.StatusConflict,
-				"user still owns records (meetings, plans, contacts, or resources); reassign or delete those first",
+				"this account has recorded history (audit entries, payments, or owned records) that must keep its author; "+
+					"retire the account instead — demote it to restricted and reset its credentials",
 				"conflict")
 			return
 		}

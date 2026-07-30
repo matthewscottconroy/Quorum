@@ -396,6 +396,19 @@ func (h *GovernanceHandler) DeleteMotion(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	// A decided motion is governance history: deleting it (votes cascade away
+	// with it) would falsify the record the same way editing it would, and
+	// UpdateMotion already refuses that. Drafts and still-open motions can go.
+	m, err := h.repo.GetMotion(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "motion not found", "query error")
+		return
+	}
+	if terminalMotionStatus(m.Status) {
+		writeError(w, http.StatusConflict,
+			"a decided motion is part of the governance record and cannot be deleted", "conflict")
+		return
+	}
 	if err := h.repo.DeleteMotion(r.Context(), id); err != nil {
 		writeRepoError(w, err, "motion not found", "delete error")
 		return
