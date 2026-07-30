@@ -352,6 +352,13 @@ golangci-lint run
 # Check for known CVEs in dependencies
 govulncheck ./...
 
+# Integration tests against a real Postgres (also: make test-integration)
+QUORUM_TEST_DATABASE_URL=postgres://quorum:test@localhost:5432/quorum?sslmode=disable \
+  go test -tags integration ./internal/...
+
+# Frontend unit tests, no build step (also: make test-web)
+node --test web/*.test.js
+
 # Generate a random JWT secret
 make secret
 
@@ -376,19 +383,49 @@ New handlers should follow the existing pattern:
 
 ### Adding a migration
 
-Create a numbered file in `internal/db/migrations/`:
+Create a numbered **pair** in `internal/db/migrations/` — the `.down.sql` is not
+optional:
 
 ```
-internal/db/migrations/0002_add_my_table.up.sql
+internal/db/migrations/0017_add_my_table.up.sql
+internal/db/migrations/0017_add_my_table.down.sql
 ```
 
-The migration runner applies files in numeric order and skips already-applied ones. Restart the server to apply new migrations.
+The runner applies `.up.sql` files in numeric order at startup, skipping
+already-applied ones, under an advisory lock. Restart the server to apply new
+migrations.
+
+CI runs the whole ladder **up, back down to zero, and up again** against a real
+Postgres and fails if any table survives the rollback — so a `.down.sql` that
+doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
+
+```sh
+./quorum -migrate-down 16     # roll back to version 16
+```
 
 ### Project structure conventions
 
 - Repository types (`*repo.XRepo`) implement package-private interfaces defined in `internal/handler/interfaces.go`, enabling handler unit tests without a database.
 - Handler tests use `mockXRepo` structs (function-field mocks) defined in `testhelpers_test.go`.
 - All nullable PostgreSQL columns map to pointer types (`*string`, `*time.Time`, etc.) in Go model structs.
+
+---
+
+## Operations
+
+| Document | Covers |
+|---|---|
+| **[RUNBOOK.md](RUNBOOK.md)** | Rotating `QUORUM_JWT_SECRET`, recovering a locked-out admin, rolling back a migration, data requests, tracing a request by id, health/metrics, the nightly job, multi-replica caveats |
+| **[BACKUP.md](BACKUP.md)** | Backup/restore/verify tooling, scheduling, retention, full recovery from scratch, RPO/RTO |
+| **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** | What's done, what's left before a real launch, and the pre-deploy checklist |
+| **[SECURITY.md](SECURITY.md)** | Security model and reporting |
+
+Two operator one-shots are built into the binary:
+
+```sh
+./quorum -unlock-2fa user@example.org   # break-glass: clear a user's 2FA, revoke their sessions
+./quorum -migrate-down 16               # roll the schema back to version 16
+```
 
 ---
 

@@ -4,7 +4,7 @@ This document tracks the remaining work to get Quorum from "works end-to-end in
 a smoke test" to "confidently running in production." It is a living checklist,
 not a release gate — triage by your own risk tolerance and deployment scale.
 
-Last reviewed: **2026-07-29**.
+Last reviewed: **2026-07-30**.
 
 ---
 
@@ -94,20 +94,21 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 - Decide a retention policy for the audit log and soft-deleted members.
 
 ### 4. Two-factor & account-recovery hardening
-- **Break-glass for a locked-out sole admin.** If the only superadmin loses both
-  their authenticator and recovery codes, there is currently no recovery except
-  direct DB access. Document a runbook (SQL to clear `totp_enabled` for a user)
-  or add a CLI/`make` target.
+- **Done:** break-glass for a locked-out sole admin — `quorum -unlock-2fa
+  <email>` clears TOTP + recovery codes and revokes that user's sessions, so they
+  can sign in with their password and re-enroll. It needs shell access to the
+  deployment (the intended bar for bypassing a second factor) and is not exposed
+  over HTTP. See [RUNBOOK.md](RUNBOOK.md#recover-a-locked-out-admin).
 - **Done:** `POST /auth/login/2fa` is now throttled **per-account** (5 failed
   attempts / 15 min → temporary lockout) on top of the per-IP login limiter, so
   an attacker rotating IPs can no longer get unlimited guesses at one account's
   6-digit code. The throttle counts only failures and clears on a successful
   login. It is **in-process** (like the rate limiter — see §6): a multi-replica
   deployment should move this to a shared store or enforce it at the ingress.
-- Consider requiring password re-entry (or a fresh login) before **enabling**
-  2FA, not just disabling it. Today enrollment relies on the existing session.
-- Recovery codes are shown once and stored hashed — confirm the UI copy tells
-  users to save them, and consider a "regenerate recovery codes" action.
+- **Done:** enrolling in 2FA now requires the account password, matching disable
+  — a hijacked session can no longer bind an attacker's authenticator.
+- **Done:** "Regenerate recovery codes" (password-gated) in Settings; the new set
+  replaces the old, so previously-issued codes stop working immediately.
 
 ### 5. Observability
 - **Done:** structured JSON request logging via `slog` — one object per request
@@ -147,27 +148,37 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 ### 8. Security review & testing depth
 - **Third-party review / pen-test** of the auth surface before handling real
   member PII and payments.
-- Add integration tests (the `//go:build integration` harness exists) covering
-  the new reset and 2FA repo methods against real Postgres in CI.
-- Add a CI job that runs migrations up **and down** against a scratch Postgres
-  on every PR (both directions were validated manually here).
-- Dependency scanning (`govulncheck`, Dependabot) in CI.
+- **Done:** CI runs a dedicated migrations job that takes the schema up, back
+  down to zero, and up again on a real Postgres, asserting no table survives the
+  rollback — so every `.down.sql` is verified, not assumed. Integration tests run
+  across `./internal/...`, and `go vet -tags integration` keeps tag-gated files
+  from rotting (it had already caught one stale signature).
+- **Done:** `govulncheck` and `golangci-lint` run in CI; Dependabot covers gomod
+  and github-actions weekly.
+- Still open: **third-party review / pen-test** of the auth surface (above).
 - Consider CSRF defenses if you ever move auth off the `Authorization` header:
   today the API is bearer-token driven (not cookie-authenticated for state
   changes), so classic CSRF does not apply, but the refresh cookie is
   `SameSite=Strict` — keep it that way.
 
 ### 9. Data-protection / compliance (if handling EU/CA members)
-- The JSON personal-data export supports data-portability requests. Also define:
-  - A **data-deletion** path (right to erasure) beyond the existing member
-    soft-delete + superadmin hard-delete.
-  - A privacy policy and a data-retention schedule.
-  - Encryption at rest for the database volume.
+- **Done:** the JSON personal-data export covers portability, and
+  `POST /members/{id}/erase` (superadmin, confirm-gated) covers erasure — it
+  anonymizes the member in place so invoices, payments, attendance, and votes
+  stay consistent with no link to a natural person. See
+  [RUNBOOK.md](RUNBOOK.md#fulfil-a-data-request).
+- **Done:** the retention schedule is configurable —
+  `QUORUM_AUDIT_RETENTION_DAYS` (default 365) drives the nightly audit prune;
+  processed webhook events are kept 90 days; expired tokens are pruned nightly.
+- Still open (deployment-side): a written **privacy policy**, and **encryption at
+  rest** for the database volume.
 
 ### 10. Operational runbooks
-- Document: how to rotate `QUORUM_JWT_SECRET` (invalidates all live access
-  tokens — expected), how to reset a locked-out admin, how to restore from
-  backup, and how to roll back a migration.
+- **Done:** [RUNBOOK.md](RUNBOOK.md) covers rotating `QUORUM_JWT_SECRET`,
+  recovering a locked-out admin (all three cases), rolling back a migration,
+  restoring from backup, fulfilling data requests, tracing a request by id,
+  health/metrics checks, the nightly job, and what does not aggregate across
+  replicas. Backup/DR detail lives in [BACKUP.md](BACKUP.md).
 
 ---
 
@@ -217,9 +228,9 @@ remains deployment-side.
 - Email verification on account creation.
 - Configurable password policy (length is enforced at 10; consider a breached-
   password check via HaveIBeenPwned k-anonymity API).
-- Session management UI ("sign out all other devices" — the backend already
-  supports revoking all refresh tokens).
-- Audit-log viewer in the admin UI.
+- **Done:** session management — Settings shows your active session count and
+  "Sign out other devices" revokes every session but the current one.
+- **Done:** audit-log viewer in the admin UI (filterable, paginated).
 - Bulk import (CSV) to complement the CSV export.
 - Internationalization / currency display polish (money is already stored in
   minor units and formatted per-currency).
@@ -234,9 +245,9 @@ remains deployment-side.
 - [ ] Real `QUORUM_JWT_SECRET`, `QUORUM_BASE_URL` (https), SMTP configured
 - [ ] `QUORUM_SMTP_REQUIRE_TLS=true`, webhook secrets set, unsigned webhooks off
 - [ ] TLS terminated in front; HTTP server timeouts added
-- [ ] Automated + test-restored DB backups
+- [ ] Automated + test-restored DB backups — *tooling ready ([BACKUP.md](BACKUP.md)); schedule it and ship dumps off-box*
 - [ ] Liveness/readiness probes wired
-- [ ] Metrics + error alerting in place
-- [ ] Break-glass admin-recovery runbook written
-- [ ] Migrations run up/down in CI; `govulncheck` clean
+- [ ] Metrics + error alerting in place — *`/metrics` ready; wire the scrape + alert rules*
+- [x] Break-glass admin-recovery runbook written ([RUNBOOK.md](RUNBOOK.md))
+- [x] Migrations run up/down in CI; `govulncheck` clean
 - [ ] First bootstrap superadmin created, then bootstrap endpoint confirmed closed

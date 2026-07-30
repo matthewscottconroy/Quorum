@@ -164,7 +164,7 @@ func TestIntegration_EmptyPageCountFallback(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	dues := repo.NewDuesRepo(pool)
-	period := "count-" + t.Name()
+	period := uniq("count-" + t.Name())
 
 	// Three invoices for the same period across three distinct members (the
 	// unique (member_id, period_label) index forbids duplicating one member).

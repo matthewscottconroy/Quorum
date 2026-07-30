@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,8 +29,15 @@ import (
 
 var uniqCounter int64
 
+// runToken makes generated identifiers unique per test *run*, not just per test.
+// Without it the counter restarts at 1 every run and a second run against the
+// same (non-pristine) database collides on users.email — so the suite only
+// passed on a fresh database, which is true in CI but not when a developer runs
+// `make test-integration` twice.
+var runToken = fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()%1e6)
+
 func uniq(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, atomic.AddInt64(&uniqCounter, 1))
+	return fmt.Sprintf("%s-%s-%d", prefix, runToken, atomic.AddInt64(&uniqCounter, 1))
 }
 
 func newMember(t *testing.T, mr *repo.MembersRepo, tier, status string) string {
@@ -230,18 +238,29 @@ func TestIntegration_Budget_SeedIdempotentAndClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	// Only ONE dues line (idempotent), income 3×5000 annualized = 15000, net = 5000.
-	duesLines := 0
+	// Seeding is org-wide (one dues line per tier that has active members and an
+	// active schedule), so assert on THIS test's tier rather than on the global
+	// line count — other tiers left by earlier runs are legitimately present.
+	wantLabel := "Dues — " + tier
+	ourDuesLines, ourDuesIncome := 0, int64(0)
 	for _, l := range full.Lines {
-		if l.Category != nil && *l.Category == "Dues" {
-			duesLines++
+		if l.Category != nil && *l.Category == "Dues" && l.Label == wantLabel {
+			ourDuesLines++
+			ourDuesIncome += l.AmountMinor
 		}
 	}
-	if duesLines != 1 {
-		t.Errorf("expected 1 dues line after double seed, got %d", duesLines)
+	// Idempotent: seeding twice must not double this tier's line.
+	if ourDuesLines != 1 {
+		t.Errorf("expected 1 dues line for %s after double seed, got %d", tier, ourDuesLines)
 	}
-	if full.Totals.IncomeMinor != 15000 || full.Totals.NetMinor != 5000 {
-		t.Errorf("totals: income=%d net=%d, want 15000/5000", full.Totals.IncomeMinor, full.Totals.NetMinor)
+	// 3 active members × 5000 annual = 15000.
+	if ourDuesIncome != 15000 {
+		t.Errorf("dues income for %s = %d, want 15000", tier, ourDuesIncome)
+	}
+	// Net is income minus the 10000 expense added above, whatever other tiers
+	// contributed to income.
+	if full.Totals.NetMinor != full.Totals.IncomeMinor-10000 {
+		t.Errorf("net=%d should be income(%d) - 10000", full.Totals.NetMinor, full.Totals.IncomeMinor)
 	}
 
 	// Clone copies lines and totals.
@@ -249,8 +268,9 @@ func TestIntegration_Budget_SeedIdempotentAndClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clone: %v", err)
 	}
-	if clone.Totals.IncomeMinor != 15000 || clone.Totals.NetMinor != 5000 {
-		t.Errorf("clone totals: income=%d net=%d, want 15000/5000", clone.Totals.IncomeMinor, clone.Totals.NetMinor)
+	if clone.Totals.IncomeMinor != full.Totals.IncomeMinor || clone.Totals.NetMinor != full.Totals.NetMinor {
+		t.Errorf("clone totals: income=%d net=%d, want %d/%d",
+			clone.Totals.IncomeMinor, clone.Totals.NetMinor, full.Totals.IncomeMinor, full.Totals.NetMinor)
 	}
 	if len(clone.Lines) != len(full.Lines) {
 		t.Errorf("clone copied %d lines, want %d", len(clone.Lines), len(full.Lines))
