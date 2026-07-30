@@ -130,7 +130,7 @@ type actionItemsRepo interface {
 
 // auditRepo is satisfied by *repo.AuditRepo.
 type auditRepo interface {
-	Log(ctx context.Context, userID, action, entityType, entityID string) error
+	Log(ctx context.Context, userID, action, entityType, entityID string, detail map[string]any) error
 }
 
 // fxRepo is satisfied by *repo.FXRepo.

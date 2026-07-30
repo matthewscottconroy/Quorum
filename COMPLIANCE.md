@@ -34,6 +34,12 @@ timestamp (the database clock — entries cannot be backdated). Additionally:
   two-factor attempts, 2FA enrollment/disable/recovery-code regeneration,
   session revocations, password resets, and use of the break-glass CLI
   (`auth.2fa_unlocked_breakglass`);
+- **change content for sensitive mutations** (the `detail` column, inside the
+  chain): edits to recorded meeting/plan decisions and motions record the
+  values that were set; invoice status transitions record the new status; role
+  and member-link changes record old → new; quorum-settings changes record the
+  new rules. Detail never contains personal profile data, so it coexists with
+  erasure;
 - **denied attempts**: a 401/403 on a mutating request by an authenticated
   user is recorded as `DENIED(<status>) <method> <path>` — the primary
   insider-threat signal (an account probing above its privileges).
@@ -49,9 +55,16 @@ Each audit row carries a monotonically increasing `seq`, `prev_hash`, and
 ```
 entry_hash = SHA-256( seq || '|' || user_id || '|' || action || '|' ||
                       entity_type || '|' || entity_id || '|' ||
+                      detail(jsonb::text, '' when null) || '|' ||
                       created_at(UTC, microseconds, 'YYYY-MM-DD HH24:MI:SS.US') || '|' ||
                       prev_hash )
 ```
+
+This is formula **v2** (migration 0018), which brought the `detail` column —
+what a sensitive change actually set — under the chain. The migration
+recomputed the retained chain, so a head hash recorded before it will not
+match afterwards; the migration file itself is the auditable record of that
+event, and engagements re-anchor on the post-migration head.
 
 (nullable fields render as empty strings; `prev_hash` of the first retained row
 is empty). The digest is computed by a database trigger on **every** insert —
@@ -65,6 +78,9 @@ the two can never drift.
    `GET /api/v1/audit/verify` → `{ok, entries, head_seq, head_hash}`.
 2. **At the command line** (operator): `quorum -verify-audit` — exits 0 if
    intact, 1 with the first broken sequence number if not. Suitable for cron.
+   The server also re-verifies every 6 hours and exposes the result as the
+   `quorum_audit_chain_intact` metric (alert rule shipped in
+   `ops/prometheus-alerts.yml`).
 3. **Independently, from an export** (you): take *Export evidence (CSV)* (or
    `GET /api/v1/audit/export.csv`). The first line stamps the chain status and
    head hash at export time. For each row, recompute the formula above with any
@@ -129,10 +145,11 @@ the immutable log do not conflict. The erasure itself is an audited action.
 
 ## Known limits — read these
 
-- The audit log records **that** a change happened and **to which record**, not
-  a field-level before/after diff. For financial rows this is mitigated by
-  immutability (there is no "after"); for mutable records (contacts, plans,
-  meeting notes) the log proves actor/time/target only.
+- For sensitive records (decisions, motions, invoice status, roles, quorum
+  settings) the log now records the changed values in chain-protected detail.
+  For other mutable records (contacts, plans, meeting notes) it proves
+  actor/time/target only — by design, since their bodies may contain personal
+  data that must not outlive erasure.
 - In-app timestamps come from the database clock. Run the database on NTP; for
   disputes where absolute time is critical, corroborate with off-box backups.
 - A verification performed on the live system trusts the live database to run

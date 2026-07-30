@@ -22,7 +22,7 @@ func TestIntegration_AuditChain(t *testing.T) {
 
 	// Append three entries and verify the chain holds.
 	for _, action := range []string{uniq("chain.a"), uniq("chain.b"), uniq("chain.c")} {
-		if err := ar.Log(ctx, uid, action, "test", uid); err != nil {
+		if err := ar.Log(ctx, uid, action, "test", uid, map[string]any{"n": 1}); err != nil {
 			t.Fatalf("log: %v", err)
 		}
 	}
@@ -72,7 +72,7 @@ func TestIntegration_AuditChain(t *testing.T) {
 		t.Fatalf("disable for repair: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		UPDATE audit_log SET entry_hash = audit_entry_digest(seq, user_id, action, entity_type, entity_id, created_at, prev_hash)
+		UPDATE audit_log SET entry_hash = audit_entry_digest(seq, user_id, action, entity_type, entity_id, detail, created_at, prev_hash)
 		WHERE seq = $1`, st.HeadSeq); err != nil {
 		t.Fatalf("repair: %v", err)
 	}

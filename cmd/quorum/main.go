@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -177,6 +178,39 @@ func main() {
 		func() float64 { return float64(pool.Stat().TotalConns()) })
 	reg.RegisterGauge("quorum_db_pool_max_conns", "Maximum pool size.",
 		func() float64 { return float64(pool.Stat().MaxConns()) })
+
+	// Audit-chain health as a metric: 1 intact, 0 BROKEN (alert on == 0),
+	// -1 not yet checked. Verification walks the whole chain, so it runs on a
+	// slow timer rather than at scrape time.
+	var chainIntact atomic.Int64
+	chainIntact.Store(-1)
+	reg.RegisterGauge("quorum_audit_chain_intact", "1 when the audit log hash chain verifies; 0 when it is broken (tampering).",
+		func() float64 { return float64(chainIntact.Load()) })
+	go func() {
+		check := func() {
+			st, err := auditRepo.VerifyChain(ctx)
+			switch {
+			case err != nil:
+				slog.Error("audit chain verification failed to run", "err", err)
+			case !st.OK:
+				chainIntact.Store(0)
+				slog.Error("AUDIT CHAIN BROKEN — possible tampering", "broken_seq", st.BrokenSeq, "entries", st.Entries)
+			default:
+				chainIntact.Store(1)
+			}
+		}
+		check()
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				check()
+			}
+		}
+	}()
 
 	r := chi.NewRouter()
 	// Note: chi's RealIP middleware is deliberately NOT used — it trusts
@@ -421,7 +455,9 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Slightly above the server WriteTimeout (30s), so a slow-but-legitimate
+	// in-flight request can finish rather than being cut off mid-response.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		// Keep going: exiting here would skip draining the notifier queues and
@@ -470,7 +506,7 @@ func runUnlock2FA(ctx context.Context, pool *pgxpool.Pool, email string) error {
 	// The single most sensitive bypass in the system must leave a durable trail:
 	// record it in the audit log (user_id = the affected account; there is no
 	// HTTP actor for a CLI one-shot).
-	if err := repo.NewAuditRepo(pool).Log(ctx, user.ID, "auth.2fa_unlocked_breakglass", "auth", user.ID); err != nil {
+	if err := repo.NewAuditRepo(pool).Log(ctx, user.ID, "auth.2fa_unlocked_breakglass", "auth", user.ID, nil); err != nil {
 		return fmt.Errorf("audit break-glass: %w", err)
 	}
 	log.Printf("two-factor disabled and sessions revoked for %s (%s) — they can now sign in with their password and re-enroll",

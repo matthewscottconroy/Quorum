@@ -156,6 +156,18 @@ func MigrateDown(ctx context.Context, pool *pgxpool.Pool, targetVersion int) err
 	}
 	defer conn.Exec(ctx, "SELECT pg_advisory_unlock(8675309)") //nolint:errcheck
 
+	// A database that has never been migrated has nothing to roll back; treat
+	// it as a no-op rather than erroring on the missing bookkeeping table.
+	var hasTable bool
+	if err := conn.QueryRow(ctx,
+		"SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&hasTable); err != nil {
+		return err
+	}
+	if !hasTable {
+		fmt.Println("no schema_migrations table: nothing to roll back")
+		return nil
+	}
+
 	// Applied versions above the target, newest first — the order they unwind in.
 	rows, err := conn.Query(ctx,
 		"SELECT version FROM schema_migrations WHERE version > $1 ORDER BY version DESC", targetVersion)

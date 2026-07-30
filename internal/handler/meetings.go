@@ -276,6 +276,22 @@ func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request)
 		writeRepoError(w, err, "decision not found", "update error")
 		return
 	}
+	// Decisions are the minutes: record WHAT was changed in the chain-protected
+	// audit detail, so a correction can never silently become a rewrite.
+	changed := map[string]any{}
+	for k, v := range map[string]*string{"summary": body.Summary, "detail": body.Detail, "outcome": body.Outcome} {
+		if v != nil {
+			changed[k] = *v
+		}
+	}
+	for k, v := range map[string]*int{"vote_for": body.VoteFor, "vote_against": body.VoteAgainst, "vote_abstain": body.VoteAbstain} {
+		if v != nil {
+			changed[k] = *v
+		}
+	}
+	if len(changed) > 0 {
+		setAuditDetail(r, map[string]any{"set": changed})
+	}
 	writeJSON(w, 200, d)
 }
 

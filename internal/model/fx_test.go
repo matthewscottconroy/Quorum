@@ -107,3 +107,17 @@ func TestConverter_SumAllConvertible(t *testing.T) {
 		t.Fatalf("unconvertible = %v, want empty", unconv)
 	}
 }
+
+// An absurd rate whose result exceeds int64 must fail as unconvertible, not
+// silently wrap into a plausible-looking number.
+func TestConverter_OverflowIsUnconvertible(t *testing.T) {
+	c := NewConverter("USD", map[string]*big.Rat{"XXX": rat("92233720368547758070")})
+	if _, ok := c.Convert(1000000000, "XXX"); ok {
+		t.Fatal("overflowing conversion must report ok=false")
+	}
+	// And through Sum it lands in the unconvertible list.
+	total, unconv := c.Sum(map[string]int64{"XXX": 1000000000})
+	if total != 0 || len(unconv) != 1 || unconv[0] != "XXX" {
+		t.Fatalf("Sum should exclude the overflow: total=%d unconv=%v", total, unconv)
+	}
+}

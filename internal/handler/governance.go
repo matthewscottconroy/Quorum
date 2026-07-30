@@ -102,6 +102,12 @@ func (h *GovernanceHandler) UpdateSettings(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
 	}
+	// Quorum rules decide what passes: keep the new values in the chain.
+	setAuditDetail(r, map[string]any{"set": map[string]any{
+		"quorum_mode": body.QuorumMode, "quorum_value": body.QuorumValue,
+		"proxies_count_toward_quorum": body.ProxiesCountTowardQuorum,
+		"default_threshold":           body.DefaultThreshold,
+	}})
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -265,6 +271,20 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		}
 		writeRepoError(w, err, "motion not found", "update error")
 		return
+	}
+	// Motion text/threshold edits shape what gets voted on: record what was
+	// changed in the chain-protected audit detail.
+	changed := map[string]any{}
+	for k, v := range map[string]*string{
+		"title": body.Title, "detail": body.Detail, "mover_id": body.MoverID,
+		"seconder_id": body.SeconderID, "threshold": body.Threshold,
+	} {
+		if v != nil {
+			changed[k] = *v
+		}
+	}
+	if len(changed) > 0 {
+		setAuditDetail(r, map[string]any{"set": changed})
 	}
 	writeJSON(w, http.StatusOK, m)
 }

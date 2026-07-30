@@ -77,7 +77,14 @@ groups:
         annotations:
           summary: "p99 request latency above 2s"
 
-      # The audit chain has no metric (verification is a query, not a counter);
-      # schedule `quorum -verify-audit` via cron/systemd (see ops/systemd/) and
-      # alert on the service failing, or wire its exit code into your check
-      # system. A broken chain is a drop-everything incident: see COMPLIANCE.md.
+      - alert: QuorumAuditChainBroken
+        expr: quorum_audit_chain_intact == 0
+        labels: {severity: critical}
+        annotations:
+          summary: "AUDIT LOG TAMPERING DETECTED — the hash chain is broken"
+          description: >
+            Drop everything: preserve database backups immediately (they hold
+            the untampered history), then follow the incident procedure in
+            COMPLIANCE.md and RUNBOOK.md. The app re-verifies every 6 hours;
+            `quorum -verify-audit` reports the first broken sequence number.
+            (-1 means not yet checked since startup; only 0 indicates tampering.)

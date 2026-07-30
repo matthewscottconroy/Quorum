@@ -114,7 +114,37 @@ const (
 	ctxRole      contextKey = "role"
 	ctxMemberID  contextKey = "member_id"
 	ctxRequestID contextKey = "request_id"
+	// ctxAuditDetail carries a per-request holder that handlers fill with
+	// "what changed" context for the audit entry (see setAuditDetail).
+	ctxAuditDetail contextKey = "audit_detail"
 )
+
+// auditDetailHolder is injected by AuditMiddleware before the handler runs, so
+// the handler can attach change details that the middleware then records in the
+// same audit entry as the action itself.
+type auditDetailHolder struct {
+	mu sync.Mutex
+	m  map[string]any
+}
+
+// setAuditDetail merges key/value pairs into the current request's audit
+// detail. No-op outside AuditMiddleware (e.g. unauthenticated routes). Values
+// become chain-protected JSONB: never put personal profile data here — the
+// audit log outlives erasure.
+func setAuditDetail(r *http.Request, kv map[string]any) {
+	h, _ := r.Context().Value(ctxAuditDetail).(*auditDetailHolder)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.m == nil {
+		h.m = map[string]any{}
+	}
+	for k, v := range kv {
+		h.m[k] = v
+	}
+}
 
 // roleRank orders the privilege ladder. restricted sees only its own record;
 // member and up have full read access; superadmin adds destructive deletes.
@@ -310,6 +340,8 @@ func writeRepoError(w http.ResponseWriter, err error, notFoundMsg, fallbackMsg s
 		writeError(w, http.StatusBadRequest, "a field value is invalid or exceeds the maximum length", "bad_request")
 	case isFKViolation(err):
 		writeError(w, http.StatusBadRequest, "a referenced record does not exist", "bad_request")
+	case isUniqueViolation(err):
+		writeError(w, http.StatusConflict, "a record with these values already exists", "conflict")
 	default:
 		writeError(w, http.StatusInternalServerError, fallbackMsg, "internal_error")
 	}
@@ -452,6 +484,8 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 			// Buffer the body only for creates (POST), where the new row's id is
 			// in the response rather than the URL.
 			aw := &auditResponseWriter{ResponseWriter: w, status: http.StatusOK, captureBody: r.Method == http.MethodPost}
+			holder := &auditDetailHolder{}
+			r = r.WithContext(context.WithValue(r.Context(), ctxAuditDetail, holder))
 			next.ServeHTTP(aw, r)
 			if r.Method == http.MethodGet {
 				return
@@ -465,7 +499,7 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 			// sessions) and are recorded as such. Other failures (400s, 404s,
 			// 409s) are ordinary operation and would only add noise.
 			if aw.status == http.StatusUnauthorized || aw.status == http.StatusForbidden {
-				ar.Log(r.Context(), userID, fmt.Sprintf("DENIED(%d) %s %s", aw.status, r.Method, r.URL.Path), auditEntityType(r), chi.URLParam(r, "id")) //nolint:errcheck
+				ar.Log(r.Context(), userID, fmt.Sprintf("DENIED(%d) %s %s", aw.status, r.Method, r.URL.Path), auditEntityType(r), chi.URLParam(r, "id"), nil) //nolint:errcheck
 				return
 			}
 			if aw.status < 200 || aw.status >= 300 {
@@ -479,7 +513,10 @@ func AuditMiddleware(ar auditRepo) func(http.Handler) http.Handler {
 			if entityID == "" && r.Method == http.MethodPost {
 				entityID = auditCreatedID(aw.body)
 			}
-			ar.Log(r.Context(), userID, action, auditEntityType(r), entityID) //nolint:errcheck
+			holder.mu.Lock()
+			detail := holder.m
+			holder.mu.Unlock()
+			ar.Log(r.Context(), userID, action, auditEntityType(r), entityID, detail) //nolint:errcheck
 		})
 	}
 }

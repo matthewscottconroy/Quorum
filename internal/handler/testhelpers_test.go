@@ -438,12 +438,12 @@ func (m *mockResourcesRepo) Delete(ctx context.Context, id string) error {
 // ---- mockAuditRepo ----
 
 type mockAuditRepo struct {
-	LogFn func(ctx context.Context, userID, action, entityType, entityID string) error
+	LogFn func(ctx context.Context, userID, action, entityType, entityID string, detail map[string]any) error
 }
 
-func (m *mockAuditRepo) Log(ctx context.Context, userID, action, entityType, entityID string) error {
+func (m *mockAuditRepo) Log(ctx context.Context, userID, action, entityType, entityID string, detail map[string]any) error {
 	if m.LogFn != nil {
-		return m.LogFn(ctx, userID, action, entityType, entityID)
+		return m.LogFn(ctx, userID, action, entityType, entityID, detail)
 	}
 	return nil
 }

@@ -139,7 +139,7 @@ func (h *AuthHandler) SetAuditLogger(a auditRepo) { h.audit = a }
 // logAudit records an auth event (best-effort; never blocks the response).
 func (h *AuthHandler) logAudit(r *http.Request, userID, action string) {
 	if h.audit != nil && userID != "" {
-		h.audit.Log(r.Context(), userID, action, "auth", userID) //nolint:errcheck
+		h.audit.Log(r.Context(), userID, action, "auth", userID, nil) //nolint:errcheck
 	}
 }
 
@@ -596,9 +596,25 @@ func (h *AuthHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeRepoError(w, err, "user not found", "update error")
 			return
 		}
+		// A privilege change is the canonical insider event: record old -> new
+		// in the chain-protected audit detail.
+		if target.Role != role {
+			setAuditDetail(r, map[string]any{"role_old": target.Role, "role_new": role})
+		}
 	}
 
 	if hasMember {
+		oldMember := ""
+		if target.MemberID != nil {
+			oldMember = *target.MemberID
+		}
+		newMember := ""
+		if memberID != nil {
+			newMember = *memberID
+		}
+		if oldMember != newMember {
+			setAuditDetail(r, map[string]any{"member_link_old": oldMember, "member_link_new": newMember})
+		}
 		if err := h.repo.SetUserMember(r.Context(), id, memberID); err != nil {
 			if isFKViolation(err) {
 				writeError(w, http.StatusBadRequest, "member_id does not reference an existing member", "bad_request")

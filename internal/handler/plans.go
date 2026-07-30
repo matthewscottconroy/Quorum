@@ -211,6 +211,15 @@ func (h *PlansHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
 		writeRepoError(w, err, "decision not found", "update error")
 		return
 	}
+	changed := map[string]any{}
+	for k, v := range map[string]*string{"summary": body.Summary, "rationale": body.Rationale} {
+		if v != nil {
+			changed[k] = *v
+		}
+	}
+	if len(changed) > 0 {
+		setAuditDetail(r, map[string]any{"set": changed})
+	}
 	writeJSON(w, 200, d)
 }
 

@@ -126,7 +126,7 @@ func (h *AuditHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		status = fmt.Sprintf("BROKEN_AT_SEQ_%d", st.BrokenSeq)
 	}
 	_ = cw.Write([]string{"# chain_status", status, "entries", strconv.FormatInt(st.Entries, 10), "head_seq", strconv.FormatInt(st.HeadSeq, 10), "head_hash", st.HeadHash})
-	_ = cw.Write([]string{"seq", "id", "user_id", "user_email", "action", "entity_type", "entity_id", "created_at_utc", "prev_hash", "entry_hash"})
+	_ = cw.Write([]string{"seq", "id", "user_id", "user_email", "action", "entity_type", "entity_id", "detail", "created_at_utc", "prev_hash", "entry_hash"})
 	deref := func(s *string) string {
 		if s == nil {
 			return ""
@@ -136,7 +136,7 @@ func (h *AuditHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	err = h.verifier.ExportRows(r.Context(), func(e model.AuditEntry) error {
 		return cw.Write([]string{
 			strconv.FormatInt(e.Seq, 10), e.ID, deref(e.UserID), deref(e.UserEmail), e.Action,
-			deref(e.EntityType), deref(e.EntityID),
+			deref(e.EntityType), deref(e.EntityID), e.Detail,
 			e.CreatedAt.UTC().Format("2006-01-02 15:04:05.000000"),
 			e.PrevHash, e.EntryHash,
 		})

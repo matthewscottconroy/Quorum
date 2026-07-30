@@ -162,6 +162,9 @@ func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeRepoError(w, err, "invoice not found", "update error")
 		return
 	}
+	// Invoice identity is frozen in the database; the status transition is the
+	// financially meaningful change, so put it in the chain-protected detail.
+	setAuditDetail(r, map[string]any{"status_new": *body.Status})
 	inv, err := h.repo.GetInvoice(r.Context(), id)
 	if err != nil {
 		writeError(w, 500, "fetch error", "internal_error")

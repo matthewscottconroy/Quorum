@@ -19,11 +19,11 @@ def main(path):
     stamp, data = rows[0], rows[2:]
     prev = ""
     for r in data:
-        seq, _id, uid, _email, action, etype, eid, ts, prev_hash, entry_hash = r
+        seq, _id, uid, _email, action, etype, eid, detail, ts, prev_hash, entry_hash = r
         if prev and prev_hash != prev:
             sys.exit(f"LINK BROKEN at seq {seq}: prev_hash does not match the "
                      f"previous row's entry_hash — rows were removed or reordered")
-        payload = f"{seq}|{uid}|{action}|{etype}|{eid}|{ts}|{prev_hash}"
+        payload = f"{seq}|{uid}|{action}|{etype}|{eid}|{detail}|{ts}|{prev_hash}"
         if hashlib.sha256(payload.encode()).hexdigest() != entry_hash:
             sys.exit(f"HASH MISMATCH at seq {seq}: this row's content does not "
                      f"match its recorded hash — the row was altered")

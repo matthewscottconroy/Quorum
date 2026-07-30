@@ -41,7 +41,15 @@ type Converter struct {
 // reporting currency itself converts (everything else is unconvertible).
 func NewConverter(reporting string, rates map[string]*big.Rat) *Converter {
 	norm := make(map[string]*big.Rat, len(rates))
-	for k, v := range rates {
+	// Sorted iteration so a pathological input with case-colliding keys
+	// ("usd" and "USD") resolves deterministically instead of by map order.
+	keys := make([]string, 0, len(rates))
+	for k := range rates {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := rates[k]
 		if v == nil {
 			continue
 		}
@@ -75,7 +83,7 @@ func (c *Converter) Convert(minor int64, from string) (int64, bool) {
 	v.Mul(v, rate)
 	v.Mul(v, new(big.Rat).SetInt64(pow10(CurrencyExponent(c.reporting))))
 	v.Quo(v, new(big.Rat).SetInt64(pow10(CurrencyExponent(from))))
-	return ratToNearestInt(v), true
+	return ratToNearestInt(v)
 }
 
 // Sum converts a set of per-currency subtotals (currency -> minor units in that
@@ -100,8 +108,10 @@ func (c *Converter) Sum(byCurrency map[string]int64) (total int64, unconvertible
 }
 
 // ratToNearestInt rounds an exact rational to the nearest integer, halves away
-// from zero (standard commercial rounding).
-func ratToNearestInt(x *big.Rat) int64 {
+// from zero (standard commercial rounding). ok is false when the result does
+// not fit in int64 — a nonsensical rate must fail loudly (as unconvertible),
+// not wrap around into a plausible-looking number.
+func ratToNearestInt(x *big.Rat) (int64, bool) {
 	num := new(big.Int).Abs(x.Num())
 	den := x.Denom()
 	q := new(big.Int)
@@ -114,5 +124,8 @@ func ratToNearestInt(x *big.Rat) int64 {
 	if x.Sign() < 0 {
 		q.Neg(q)
 	}
-	return q.Int64()
+	if !q.IsInt64() {
+		return 0, false
+	}
+	return q.Int64(), true
 }

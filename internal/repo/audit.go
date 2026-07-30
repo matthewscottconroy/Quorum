@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -23,9 +24,12 @@ func NewAuditRepo(db *pgxpool.Pool) *AuditRepo {
 
 // Log records a mutating action by a user against a typed entity. entityType
 // is the resource kind (e.g. "members"); entityID is the affected row's id, or
-// "" when the request targets no specific row. A blank entityID is stored as
-// SQL NULL so the column carries only real ids.
-func (r *AuditRepo) Log(ctx context.Context, userID, action, entityType, entityID string) error {
+// "" when the request targets no specific row (blank values are stored as SQL
+// NULL). detail optionally records WHAT changed (e.g. {"set": {...}} or
+// {"role_old": ..., "role_new": ...}); it is part of the hash chain, so it
+// cannot later be rewritten undetected. Callers must never put personal
+// profile data in detail — the log outlives erasure.
+func (r *AuditRepo) Log(ctx context.Context, userID, action, entityType, entityID string, detail map[string]any) error {
 	var eid, etype *string
 	if entityID != "" {
 		eid = &entityID
@@ -33,9 +37,17 @@ func (r *AuditRepo) Log(ctx context.Context, userID, action, entityType, entityI
 	if entityType != "" {
 		etype = &entityType
 	}
+	var detailArg any
+	if len(detail) > 0 {
+		b, err := json.Marshal(detail)
+		if err != nil {
+			return fmt.Errorf("audit detail: %w", err)
+		}
+		detailArg = b
+	}
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO audit_log (user_id, action, entity_type, entity_id) VALUES ($1::uuid, $2, $3, $4)`,
-		userID, action, etype, eid)
+		`INSERT INTO audit_log (user_id, action, entity_type, entity_id, detail) VALUES ($1::uuid, $2, $3, $4, $5)`,
+		userID, action, etype, eid, detailArg)
 	return err
 }
 
@@ -148,7 +160,7 @@ func (r *AuditRepo) VerifyChain(ctx context.Context) (*ChainStatus, error) {
 		WITH chain AS (
 			SELECT seq, entry_hash, prev_hash,
 			       lag(entry_hash) OVER (ORDER BY seq) AS expected_prev,
-			       audit_entry_digest(seq, user_id, action, entity_type, entity_id, created_at, prev_hash) AS recomputed
+			       audit_entry_digest(seq, user_id, action, entity_type, entity_id, detail, created_at, prev_hash) AS recomputed
 			FROM audit_log
 		)
 		SELECT min(seq) FROM chain
@@ -169,7 +181,8 @@ func (r *AuditRepo) VerifyChain(ctx context.Context) (*ChainStatus, error) {
 func (r *AuditRepo) ExportRows(ctx context.Context, fn func(e model.AuditEntry) error) error {
 	rows, err := r.db.Query(ctx, `
 		SELECT a.seq, a.id::text, a.user_id::text, u.email, a.action,
-		       a.entity_type, a.entity_id, a.created_at, coalesce(a.prev_hash, ''), a.entry_hash
+		       a.entity_type, a.entity_id, coalesce(a.detail::text, ''), a.created_at,
+		       coalesce(a.prev_hash, ''), a.entry_hash
 		FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
 		ORDER BY a.seq`)
 	if err != nil {
@@ -179,7 +192,7 @@ func (r *AuditRepo) ExportRows(ctx context.Context, fn func(e model.AuditEntry) 
 	for rows.Next() {
 		var e model.AuditEntry
 		if err := rows.Scan(&e.Seq, &e.ID, &e.UserID, &e.UserEmail, &e.Action,
-			&e.EntityType, &e.EntityID, &e.CreatedAt, &e.PrevHash, &e.EntryHash); err != nil {
+			&e.EntityType, &e.EntityID, &e.Detail, &e.CreatedAt, &e.PrevHash, &e.EntryHash); err != nil {
 			return err
 		}
 		if err := fn(e); err != nil {

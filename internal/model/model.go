@@ -507,6 +507,7 @@ type AuditEntry struct {
 	Action     string    `json:"action"`
 	EntityType *string   `json:"entity_type,omitempty"`
 	EntityID   *string   `json:"entity_id,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	PrevHash   string    `json:"prev_hash,omitempty"`
 	EntryHash  string    `json:"entry_hash,omitempty"`
