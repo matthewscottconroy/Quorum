@@ -75,7 +75,7 @@ type meetingsRepo interface {
 	List(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error)
 	Get(ctx context.Context, id string) (*model.Meeting, error)
 	Create(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error)
-	Update(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
+	Update(ctx context.Context, id string, title *string, scheduledAt, endsAt *time.Time, clearEndsAt bool, location, agenda, notes, status *string) (*model.Meeting, error)
 	Delete(ctx context.Context, id string) error
 	GetAttendees(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
 	AttendeeEmails(ctx context.Context, meetingID string) ([]string, error)

@@ -122,3 +122,52 @@ func TestMeetingsList_FromToFilter(t *testing.T) {
 		t.Errorf("bad from should 400, got %d", rr2.Code)
 	}
 }
+
+// A meeting with an explicit end exports DTEND; without one, the 1-hour
+// DURATION fallback applies.
+func TestMeetingICS_EndTime(t *testing.T) {
+	end := time.Date(2026, 9, 1, 19, 30, 0, 0, time.UTC)
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
+			return &model.Meeting{ID: "m1", Title: "Ranged", Status: "scheduled",
+				ScheduledAt: time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC), EndsAt: &end}, nil
+		},
+	})
+	req := chiRequest("GET", "/meetings/x/ics", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.MeetingICS(rr, req)
+	body := rr.Body.String()
+	if !strings.Contains(body, "DTEND:20260901T193000Z\r\n") {
+		t.Errorf("missing DTEND:\n%s", body)
+	}
+	if strings.Contains(body, "DURATION:") {
+		t.Error("DTEND and DURATION must not both be present")
+	}
+}
+
+// Create validates the end follows the start; update can clear it with null.
+func TestMeetings_EndTimeValidationAndClear(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		CreateFn: func(_ context.Context, mt *model.Meeting, _ string) (*model.Meeting, error) { return mt, nil },
+		UpdateFn: func(_ context.Context, _ string, _ *string, _, endsAt *time.Time, clearEndsAt bool, _, _, _, _ *string) (*model.Meeting, error) {
+			if !clearEndsAt || endsAt != nil {
+				t.Errorf("null ends_at should clear: endsAt=%v clear=%v", endsAt, clearEndsAt)
+			}
+			return &model.Meeting{ID: "m1"}, nil
+		},
+	})
+	// end before start -> 400
+	rr := httptest.NewRecorder()
+	h.Create(rr, withCtxUser(httptest.NewRequest("POST", "/meetings", strings.NewReader(
+		`{"title":"X","scheduled_at":"2026-09-01T18:00:00Z","ends_at":"2026-09-01T17:00:00Z"}`)), "u", "officer"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("inverted range should 400, got %d", rr.Code)
+	}
+	// explicit null clears
+	req := chiRequest("PATCH", "/meetings/m1", `{"ends_at":null}`, map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr2 := httptest.NewRecorder()
+	h.Update(rr2, withCtxUser(req, "u", "officer"))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("clear via null should 200, got %d: %s", rr2.Code, rr2.Body)
+	}
+}

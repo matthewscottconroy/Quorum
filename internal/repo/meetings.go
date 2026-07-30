@@ -59,7 +59,7 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	args = append(args, limit, f.Offset)
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
-		       m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,
+		       m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
 		       m.status, m.created_by::text, m.created_at, m.updated_at
 		FROM meetings m
 		%s
@@ -74,7 +74,7 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	var total int
 	for rows.Next() {
 		var mt model.Meeting
-		if err := rows.Scan(&total, &mt.ID, &mt.Title, &mt.ScheduledAt, &mt.Location,
+		if err := rows.Scan(&total, &mt.ID, &mt.Title, &mt.ScheduledAt, &mt.EndsAt, &mt.Location,
 			&mt.Agenda, &mt.Notes, &mt.Status, &mt.CreatedBy, &mt.CreatedAt, &mt.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
@@ -96,7 +96,7 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 // Get returns the meeting with the given id, or pgx.ErrNoRows if none exists.
 func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, error) {
 	row := r.db.QueryRow(ctx, `
-		SELECT m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,
+		SELECT m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
 		       m.status, m.created_by::text, m.created_at, m.updated_at
 		FROM meetings m WHERE m.id = $1::uuid`, id)
 	mt, err := scanMeeting(row)
@@ -118,10 +118,10 @@ func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, erro
 // Create inserts a new meeting and returns the stored row.
 func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error) {
 	row := r.db.QueryRow(ctx, `
-		INSERT INTO meetings (title, scheduled_at, location, agenda, notes, status, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)
-		RETURNING id::text, title, scheduled_at, location, agenda, notes, status, created_by::text, created_at, updated_at`,
-		mt.Title, mt.ScheduledAt, mt.Location, mt.Agenda, mt.Notes, mt.Status, createdBy)
+		INSERT INTO meetings (title, scheduled_at, ends_at, location, agenda, notes, status, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid)
+		RETURNING id::text, title, scheduled_at, ends_at, location, agenda, notes, status, created_by::text, created_at, updated_at`,
+		mt.Title, mt.ScheduledAt, mt.EndsAt, mt.Location, mt.Agenda, mt.Notes, mt.Status, createdBy)
 	created, err := scanMeeting(row)
 	if err != nil {
 		return nil, err
@@ -129,19 +129,23 @@ func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy 
 	return &created, nil
 }
 
-// Update applies the given field changes to the meeting and returns the updated row.
-func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error) {
+// Update applies the given field changes to the meeting and returns the
+// updated row. endsAt is tri-state: clearEndsAt removes the end time, a non-nil
+// endsAt sets it, and nil/false leaves it unchanged (coalesce semantics like
+// every other field).
+func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt, endsAt *time.Time, clearEndsAt bool, location, agenda, notes, status *string) (*model.Meeting, error) {
 	_, err := r.db.Exec(ctx, `
 		UPDATE meetings SET
 			title        = coalesce($1, title),
 			scheduled_at = coalesce($2, scheduled_at),
-			location     = coalesce($3, location),
-			agenda       = coalesce($4, agenda),
-			notes        = coalesce($5, notes),
-			status       = coalesce($6, status),
+			ends_at      = CASE WHEN $3 THEN NULL ELSE coalesce($4, ends_at) END,
+			location     = coalesce($5, location),
+			agenda       = coalesce($6, agenda),
+			notes        = coalesce($7, notes),
+			status       = coalesce($8, status),
 			updated_at   = now()
-		WHERE id = $7::uuid`,
-		title, scheduledAt, location, agenda, notes, status, id)
+		WHERE id = $9::uuid`,
+		title, scheduledAt, clearEndsAt, endsAt, location, agenda, notes, status, id)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +316,7 @@ func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
 // Upcoming returns up to n meetings scheduled from now onward.
 func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,
+		SELECT m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
 		       m.status, m.created_by::text, m.created_at, m.updated_at
 		FROM meetings m
 		WHERE m.scheduled_at >= now() AND m.status = 'scheduled'
@@ -335,7 +339,7 @@ func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, er
 
 func scanMeeting(row scannable) (model.Meeting, error) {
 	var mt model.Meeting
-	err := row.Scan(&mt.ID, &mt.Title, &mt.ScheduledAt, &mt.Location, &mt.Agenda,
+	err := row.Scan(&mt.ID, &mt.Title, &mt.ScheduledAt, &mt.EndsAt, &mt.Location, &mt.Agenda,
 		&mt.Notes, &mt.Status, &mt.CreatedBy, &mt.CreatedAt, &mt.UpdatedAt)
 	return mt, err
 }

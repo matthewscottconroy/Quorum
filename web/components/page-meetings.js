@@ -67,7 +67,7 @@ class PageMeetings extends HTMLElement {
           <div class="card meeting-card" data-id="${esc(m.id)}" style="padding:1rem 1.25rem;cursor:pointer;display:flex;align-items:center;gap:1rem" tabindex="0" role="button">
             <div style="flex:1">
               <div style="font-weight:700;font-size:1rem">${esc(m.title)}</div>
-              <div style="font-size:.85rem;color:var(--color-text-muted)">${fmtDateTime(m.scheduled_at)}${m.location ? ' · ' + esc(m.location) : ''}</div>
+              <div style="font-size:.85rem;color:var(--color-text-muted)">${fmtDateTime(m.scheduled_at)}${m.ends_at ? ' – ' + esc(new Date(m.ends_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})) : ''}${m.location ? ' · ' + esc(m.location) : ''}</div>
             </div>
             <span class="badge badge-${esc(m.status)}">${esc(m.status)}</span>
             ${isSuperadmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" style="color:var(--color-danger)">Del</button>` : ''}
@@ -112,9 +112,10 @@ class PageMeetings extends HTMLElement {
         <div class="modal-body">
           <div class="form-group"><label for="f-title">Title *</label><input id="f-title"></div>
           <div class="form-row">
-            <div class="form-group"><label for="f-dt">Date &amp; time *</label><input id="f-dt" type="datetime-local"></div>
-            <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link"></div>
+            <div class="form-group"><label for="f-dt">Starts *</label><input id="f-dt" type="datetime-local"></div>
+            <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local"></div>
           </div>
+          <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link"></div>
           <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="4"></textarea></div>
         </div>
         <div class="modal-footer">
@@ -131,9 +132,12 @@ class PageMeetings extends HTMLElement {
       const dt    = dialog.querySelector('#f-dt').value;
       if (!title || !dt) { toast('Title and date are required','error'); return; }
       try {
+        const end = dialog.querySelector('#f-end').value;
+        if (end && new Date(end) <= new Date(dt)) { toast('End must be after the start','error'); return; }
         const m = await api('POST', '/meetings', {
           title,
           scheduled_at: new Date(dt).toISOString(),
+          ends_at: end ? new Date(end).toISOString() : null,
           location: dialog.querySelector('#f-loc').value.trim() || null,
           agenda:   dialog.querySelector('#f-agenda').value.trim() || null,
         });
@@ -158,7 +162,8 @@ class PageMeetings extends HTMLElement {
           <div>
             <div class="form-group"><label for="f-title">Title</label><input id="f-title" value="${esc(mt.title)}"></div>
             <div class="form-row">
-              <div class="form-group"><label for="f-dt">Date &amp; time</label><input id="f-dt" type="datetime-local" value="${esc(toLocalInputValue(mt.scheduled_at))}"></div>
+              <div class="form-group"><label for="f-dt">Starts</label><input id="f-dt" type="datetime-local" value="${esc(toLocalInputValue(mt.scheduled_at))}"></div>
+              <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local" value="${mt.ends_at ? esc(toLocalInputValue(mt.ends_at)) : ''}"></div>
               <div class="form-group">
                 <label for="f-status">Status</label>
                 <select id="f-status">
@@ -262,10 +267,14 @@ class PageMeetings extends HTMLElement {
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn?.addEventListener('click', guardButton(saveBtn, async () => {
       const dt = dialog.querySelector('#f-dt').value;
+      const end = dialog.querySelector('#f-end').value;
+      if (dt && end && new Date(end) <= new Date(dt)) { toast('End must be after the start','error'); return; }
       try {
         await api('PATCH', `/meetings/${id}`, {
           title:        dialog.querySelector('#f-title').value.trim()||null,
           scheduled_at: dt ? new Date(dt).toISOString() : null,
+          // Always present: an emptied field clears the end time (null = clear).
+          ends_at:      end ? new Date(end).toISOString() : null,
           location:     dialog.querySelector('#f-loc').value.trim()||null,
           agenda:       dialog.querySelector('#f-agenda').value.trim()||null,
           notes:        dialog.querySelector('#f-notes').value.trim()||null,

@@ -165,6 +165,7 @@ class PageCalendar extends HTMLElement {
             <div style="display:flex;gap:.75rem;align-items:flex-start;padding:.6rem 0;border-bottom:1px solid var(--color-border,#eee)">
               <div style="min-width:70px;font-variant-numeric:tabular-nums;font-weight:600">
                 ${esc(new Date(m.scheduled_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}
+                ${m.ends_at ? `<div style="font-weight:400;font-size:.75rem;color:var(--color-text-muted)">– ${esc(new Date(m.ends_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</div>` : ''}
               </div>
               <div style="flex:1">
                 <div style="font-weight:600">${esc(m.title)}</div>
@@ -197,16 +198,19 @@ class PageCalendar extends HTMLElement {
   /** Quick-create prefilled with the chosen date/time (officer+). */
   openSchedule(when) {
     const pad = n => String(n).padStart(2, '0');
-    const localValue = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}T${pad(when.getHours())}:${pad(when.getMinutes())}`;
+    const toLocal = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const localValue = toLocal(when);
+    const endValue = toLocal(new Date(when.getTime() + 60 * 60 * 1000)); // default 1h block
     const { dialog, close } = openModal({
       title: 'Schedule meeting',
       body: `
         <div class="modal-body">
           <div class="form-group"><label for="f-title">Title *</label><input id="f-title"></div>
           <div class="form-row">
-            <div class="form-group"><label for="f-dt">Date &amp; time *</label><input id="f-dt" type="datetime-local" value="${localValue}"></div>
-            <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link"></div>
+            <div class="form-group"><label for="f-dt">Starts *</label><input id="f-dt" type="datetime-local" value="${localValue}"></div>
+            <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local" value="${endValue}"></div>
           </div>
+          <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link"></div>
           <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="3"></textarea></div>
         </div>
         <div class="modal-footer">
@@ -222,9 +226,12 @@ class PageCalendar extends HTMLElement {
       const dt = dialog.querySelector('#f-dt').value;
       if (!title || !dt) { toast('Title and date are required', 'error'); return; }
       try {
+        const end = dialog.querySelector('#f-end').value;
+        if (end && new Date(end) <= new Date(dt)) { toast('End must be after the start', 'error'); return; }
         await api('POST', '/meetings', {
           title,
           scheduled_at: new Date(dt).toISOString(),
+          ends_at: end ? new Date(end).toISOString() : null,
           location: dialog.querySelector('#f-loc').value.trim() || null,
           agenda: dialog.querySelector('#f-agenda').value.trim() || null,
         });

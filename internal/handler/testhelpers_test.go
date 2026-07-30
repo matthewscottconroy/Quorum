@@ -292,7 +292,7 @@ type mockMeetingsRepo struct {
 	ListFn                 func(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error)
 	GetFn                  func(ctx context.Context, id string) (*model.Meeting, error)
 	CreateFn               func(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error)
-	UpdateFn               func(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error)
+	UpdateFn               func(ctx context.Context, id string, title *string, scheduledAt, endsAt *time.Time, clearEndsAt bool, location, agenda, notes, status *string) (*model.Meeting, error)
 	DeleteFn               func(ctx context.Context, id string) error
 	GetAttendeesFn         func(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
 	AttendeeEmailsFn       func(ctx context.Context, meetingID string) ([]string, error)
@@ -313,8 +313,8 @@ func (m *mockMeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, 
 func (m *mockMeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error) {
 	return m.CreateFn(ctx, mt, createdBy)
 }
-func (m *mockMeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt *time.Time, location, agenda, notes, status *string) (*model.Meeting, error) {
-	return m.UpdateFn(ctx, id, title, scheduledAt, location, agenda, notes, status)
+func (m *mockMeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt, endsAt *time.Time, clearEndsAt bool, location, agenda, notes, status *string) (*model.Meeting, error) {
+	return m.UpdateFn(ctx, id, title, scheduledAt, endsAt, clearEndsAt, location, agenda, notes, status)
 }
 func (m *mockMeetingsRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)

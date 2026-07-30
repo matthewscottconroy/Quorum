@@ -17,8 +17,8 @@ import (
 //                              one-shot import of the org's schedule;
 //   GET /meetings/{id}/ics   — a single event ("Add to calendar" button).
 //
-// Meetings store a start but no duration, so events carry DURATION:PT1H as a
-// sane calendar-block default; the SUMMARY is authoritative, not the end time.
+// A meeting with an end time exports DTEND; one without falls back to
+// DURATION:PT1H as a sane calendar-block default.
 
 // icsEscape escapes text per RFC 5545 §3.3.11 (backslash, semicolon, comma,
 // newline).
@@ -70,7 +70,11 @@ func writeICS(w http.ResponseWriter, meetings []model.Meeting, filename string) 
 		icsFold(&b, "UID:"+m.ID+"@quorum")
 		icsFold(&b, "DTSTAMP:"+now)
 		icsFold(&b, "DTSTART:"+icsTime(m.ScheduledAt))
-		icsFold(&b, "DURATION:PT1H")
+		if m.EndsAt != nil {
+			icsFold(&b, "DTEND:"+icsTime(*m.EndsAt))
+		} else {
+			icsFold(&b, "DURATION:PT1H")
+		}
 		icsFold(&b, "SUMMARY:"+icsEscape(m.Title))
 		if m.Location != nil && *m.Location != "" {
 			icsFold(&b, "LOCATION:"+icsEscape(*m.Location))

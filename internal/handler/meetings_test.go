@@ -150,7 +150,7 @@ func TestMeetingsGet_NotFound(t *testing.T) {
 
 func TestMeetingsUpdate_Success(t *testing.T) {
 	h := NewMeetingsHandler(&mockMeetingsRepo{
-		UpdateFn: func(_ context.Context, id string, _ *string, _ *time.Time, _, _, _, _ *string) (*model.Meeting, error) {
+		UpdateFn: func(_ context.Context, id string, _ *string, _, _ *time.Time, _ bool, _, _, _, _ *string) (*model.Meeting, error) {
 			return testMeeting(id, "Updated"), nil
 		},
 	})
@@ -187,7 +187,7 @@ func TestMeetingsUpdate_InvalidStatus(t *testing.T) {
 
 func TestMeetingsUpdate_NotFound(t *testing.T) {
 	h := NewMeetingsHandler(&mockMeetingsRepo{
-		UpdateFn: func(_ context.Context, _ string, _ *string, _ *time.Time, _, _, _, _ *string) (*model.Meeting, error) {
+		UpdateFn: func(_ context.Context, _ string, _ *string, _, _ *time.Time, _ bool, _, _, _, _ *string) (*model.Meeting, error) {
 			return nil, pgx.ErrNoRows
 		},
 	})
@@ -202,7 +202,7 @@ func TestMeetingsUpdate_NotFound(t *testing.T) {
 
 func TestMeetingsUpdate_RepoError(t *testing.T) {
 	h := NewMeetingsHandler(&mockMeetingsRepo{
-		UpdateFn: func(_ context.Context, _ string, _ *string, _ *time.Time, _, _, _, _ *string) (*model.Meeting, error) {
+		UpdateFn: func(_ context.Context, _ string, _ *string, _, _ *time.Time, _ bool, _, _, _, _ *string) (*model.Meeting, error) {
 			return nil, errors.New("db error")
 		},
 	})

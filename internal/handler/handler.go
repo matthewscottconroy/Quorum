@@ -322,6 +322,13 @@ func isCheckViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23514"
 }
 
+// isConstraint reports whether err is a violation of the named constraint, so
+// a handler can turn a specific database rule into a specific message.
+func isConstraint(err error, name string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.ConstraintName == name
+}
+
 // isUniqueViolation reports whether err is a PostgreSQL unique-constraint
 // violation (SQLSTATE 23505) — e.g. inserting a duplicate key.
 func isUniqueViolation(err error) bool {

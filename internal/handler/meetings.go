@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -73,6 +74,7 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string  `json:"title"`
 		ScheduledAt string  `json:"scheduled_at"`
+		EndsAt      *string `json:"ends_at"`
 		Location    *string `json:"location"`
 		Agenda      *string `json:"agenda"`
 		Notes       *string `json:"notes"`
@@ -90,10 +92,24 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "scheduled_at must be RFC3339", "bad_request")
 		return
 	}
+	var endsAt *time.Time
+	if body.EndsAt != nil && *body.EndsAt != "" {
+		t, err := time.Parse(time.RFC3339, *body.EndsAt)
+		if err != nil {
+			writeError(w, 400, "ends_at must be RFC3339", "bad_request")
+			return
+		}
+		if !t.After(scheduledAt) {
+			writeError(w, 400, "ends_at must be after scheduled_at", "bad_request")
+			return
+		}
+		endsAt = &t
+	}
 
 	mt, err := h.repo.Create(r.Context(), &model.Meeting{
 		Title:       body.Title,
 		ScheduledAt: scheduledAt,
+		EndsAt:      endsAt,
 		Location:    body.Location,
 		Agenda:      body.Agenda,
 		Notes:       body.Notes,
@@ -125,10 +141,12 @@ func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       *string `json:"title"`
 		ScheduledAt *string `json:"scheduled_at"`
-		Location    *string `json:"location"`
-		Agenda      *string `json:"agenda"`
-		Notes       *string `json:"notes"`
-		Status      *string `json:"status"`
+		// Tri-state: absent = unchanged, null = clear, string = set.
+		EndsAt   json.RawMessage `json:"ends_at"`
+		Location *string         `json:"location"`
+		Agenda   *string         `json:"agenda"`
+		Notes    *string         `json:"notes"`
+		Status   *string         `json:"status"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -144,6 +162,31 @@ func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		scheduledAt = &t
 	}
+	var endsAt *time.Time
+	clearEndsAt := false
+	if len(body.EndsAt) > 0 {
+		if string(body.EndsAt) == "null" {
+			clearEndsAt = true
+		} else {
+			var raw string
+			if err := json.Unmarshal(body.EndsAt, &raw); err != nil {
+				writeError(w, 400, "ends_at must be an RFC3339 string or null", "bad_request")
+				return
+			}
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				writeError(w, 400, "ends_at must be RFC3339", "bad_request")
+				return
+			}
+			// Cross-validate here when the request carries both times; when only
+			// one side changes, the database CHECK is the final arbiter below.
+			if scheduledAt != nil && !t.After(*scheduledAt) {
+				writeError(w, 400, "ends_at must be after scheduled_at", "bad_request")
+				return
+			}
+			endsAt = &t
+		}
+	}
 	if body.Status != nil {
 		s := *body.Status
 		if s != "scheduled" && s != "completed" && s != "cancelled" {
@@ -153,8 +196,12 @@ func (h *MeetingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mt, err := h.repo.Update(r.Context(), id,
-		body.Title, scheduledAt, body.Location, body.Agenda, body.Notes, body.Status)
+		body.Title, scheduledAt, endsAt, clearEndsAt, body.Location, body.Agenda, body.Notes, body.Status)
 	if err != nil {
+		if isConstraint(err, "meetings_ends_after_start") {
+			writeError(w, 400, "ends_at must be after scheduled_at", "bad_request")
+			return
+		}
 		writeRepoError(w, err, "meeting not found", "update error")
 		return
 	}

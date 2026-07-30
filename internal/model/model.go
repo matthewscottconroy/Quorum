@@ -93,6 +93,7 @@ type Meeting struct {
 	ID          string            `json:"id"`
 	Title       string            `json:"title"`
 	ScheduledAt time.Time         `json:"scheduled_at"`
+	EndsAt      *time.Time        `json:"ends_at,omitempty"`
 	Location    *string           `json:"location,omitempty"`
 	Agenda      *string           `json:"agenda,omitempty"`
 	Notes       *string           `json:"notes,omitempty"`
