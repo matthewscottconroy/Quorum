@@ -233,6 +233,7 @@ const routes = {
   '#/notifications':   '<page-notifications>',
   '#/audit':           '<page-audit>',
   '#/meetings':        '<page-meetings>',
+  '#/calendar':        '<page-calendar>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
   '#/resources':       '<page-resources>',
@@ -284,6 +285,7 @@ import './components/page-fx.js';
 import './components/page-notifications.js';
 import './components/page-audit.js';
 import './components/page-meetings.js';
+import './components/page-calendar.js';
 import './components/page-plans.js';
 import './components/page-contacts.js';
 import './components/page-resources.js';

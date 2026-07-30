@@ -2,6 +2,8 @@ package repo
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,28 +25,46 @@ func NewMeetingsRepo(db *pgxpool.Pool) *MeetingsRepo {
 // MeetingFilter holds the optional query parameters for listing meetings.
 type MeetingFilter struct {
 	Upcoming bool
-	Limit    int
-	Offset   int
+	// From/To bound scheduled_at (inclusive start, exclusive end) — the
+	// calendar fetches one visible month at a time with these.
+	From   *time.Time
+	To     *time.Time
+	Limit  int
+	Offset int
 }
 
 // List returns a page of meetings matching the filter, plus the total count.
 func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeting, int, error) {
-	where := ""
+	var conds []string
+	var args []any
 	if f.Upcoming {
-		where = "WHERE m.scheduled_at >= now() - interval '1 hour'"
+		conds = append(conds, "m.scheduled_at >= now() - interval '1 hour'")
+	}
+	if f.From != nil {
+		args = append(args, *f.From)
+		conds = append(conds, fmt.Sprintf("m.scheduled_at >= $%d", len(args)))
+	}
+	if f.To != nil {
+		args = append(args, *f.To)
+		conds = append(conds, fmt.Sprintf("m.scheduled_at < $%d", len(args)))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	limit := f.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := r.db.Query(ctx, `
+	args = append(args, limit, f.Offset)
+	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
 		       m.id::text, m.title, m.scheduled_at, m.location, m.agenda, m.notes,
 		       m.status, m.created_by::text, m.created_at, m.updated_at
 		FROM meetings m
-		`+where+`
+		%s
 		ORDER BY m.scheduled_at DESC
-		LIMIT $1 OFFSET $2`, limit, f.Offset)
+		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}

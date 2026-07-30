@@ -35,6 +35,25 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		Upcoming: q.Get("upcoming") == "true",
 		Limit:    100,
 	}
+	// from/to (YYYY-MM-DD) bound scheduled_at for the calendar view: from is
+	// inclusive, to is exclusive-end-of-day (i.e. includes the whole `to` day).
+	if v := q.Get("from"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			writeError(w, 400, "from must be YYYY-MM-DD", "bad_request")
+			return
+		}
+		f.From = &t
+	}
+	if v := q.Get("to"); v != "" {
+		t, err := time.Parse("2006-01-02", v)
+		if err != nil {
+			writeError(w, 400, "to must be YYYY-MM-DD", "bad_request")
+			return
+		}
+		end := t.Add(24 * time.Hour)
+		f.To = &end
+	}
 	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
 		f.Limit = v
 	}

@@ -357,12 +357,15 @@ func main() {
 			// CSV data exports. Member roster is visible to members and up; the
 			// financial exports (dues, transactions) require officer and up.
 			r.With(mw.RequireRole("member")).Get("/export/members.csv", exportH.ExportMembersCSV)
+			// iCalendar import of the meeting schedule (member+, like the list).
+			r.With(mw.RequireRole("member")).Get("/export/meetings.ics", meetingsH.ExportICS)
 			r.With(mw.RequireRole("officer")).Get("/export/dues.csv", exportH.ExportDuesCSV)
 			r.With(mw.RequireRole("officer")).Get("/export/transactions.csv", exportH.ExportTransactionsCSV)
 
 			r.With(mw.RequireRole("member")).Get("/meetings", meetingsH.List)
 			r.With(mw.RequireRole("officer")).Post("/meetings", meetingsH.Create)
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}", meetingsH.Get)
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/ics", meetingsH.MeetingICS)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}", meetingsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/meetings/{id}", meetingsH.Delete)
 			r.With(mw.RequireRole("officer")).Put("/meetings/{id}/attendees", meetingsH.SetAttendees)
