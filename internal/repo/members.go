@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,11 @@ import (
 
 	"quorum/internal/model"
 )
+
+// ErrErasureLinkedAdmin is returned by Erase when the member's linked user
+// account is an admin or superadmin: retiring such an account as a side effect
+// could lock the organization out, so it must be demoted or unlinked first.
+var ErrErasureLinkedAdmin = errors.New("member's linked account is an admin; demote or unlink it before erasing")
 
 // MembersRepo provides PostgreSQL data access for members.
 type MembersRepo struct {
@@ -242,8 +248,18 @@ func scanMember(row scannable) (model.Member, error) {
 // records intact. Anonymizing severs the link to a natural person while leaving
 // the ledger and the meeting minutes consistent.
 //
-// It also unlinks and revokes any login: the account's member_id is cleared and
-// its refresh tokens are revoked, so the erased person retains no access.
+// It also fully retires any linked login: the account's email (PII) is replaced
+// with a placeholder, its password hash is set to an unusable sentinel (bcrypt
+// can never verify against it, so login is impossible), 2FA material and
+// recovery codes are cleared, sessions are revoked, the role drops to
+// restricted, and the account is unlinked. The account row is anonymized rather
+// than deleted because created_by foreign keys (meetings, plans, …) RESTRICT
+// deletion. Unused ballot tokens are removed so an emailed ballot link cannot
+// outlive the erasure.
+//
+// Erasing a member whose linked account is an admin or superadmin is refused
+// (ErrErasureLinkedAdmin): retiring such an account as a side effect of a member
+// operation could lock the org out — demote or unlink it first, deliberately.
 // Returns pgx.ErrNoRows if no such member exists.
 func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 	tx, err := r.db.Begin(ctx)
@@ -251,6 +267,18 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Refuse before touching anything if the linked account holds admin power.
+	var adminLinked bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM users
+		              WHERE member_id = $1::uuid AND role IN ('admin', 'superadmin'))`, id).
+		Scan(&adminLinked); err != nil {
+		return err
+	}
+	if adminLinked {
+		return ErrErasureLinkedAdmin
+	}
 
 	// A stable, non-identifying placeholder keeps display_name's NOT NULL
 	// constraint satisfied and keeps rows distinguishable in listings.
@@ -272,13 +300,35 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 		return pgx.ErrNoRows
 	}
 
-	// Revoke any sessions belonging to the linked account, then unlink it.
+	// Retire the linked account(s) while still linked: revoke sessions, clear
+	// 2FA + recovery codes, replace the email, and disable the password. The
+	// '!erased' sentinel is not a valid bcrypt hash, so CheckPassword can never
+	// succeed against it.
 	if _, err := tx.Exec(ctx, `
 		UPDATE refresh_tokens SET revoked = TRUE
 		WHERE revoked = FALSE AND user_id IN (SELECT id FROM users WHERE member_id = $1::uuid)`, id); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE users SET member_id = NULL WHERE member_id = $1::uuid`, id); err != nil {
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM mfa_recovery_codes
+		WHERE user_id IN (SELECT id FROM users WHERE member_id = $1::uuid)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET
+			email         = 'erased-' || left(id::text, 8) || '@erased.invalid',
+			password_hash = '!erased',
+			totp_secret   = NULL,
+			totp_enabled  = FALSE,
+			role          = 'restricted',
+			member_id     = NULL
+		WHERE member_id = $1::uuid`, id); err != nil {
+		return err
+	}
+
+	// An unused emailed ballot link must not let an erased member keep voting.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM ballot_tokens WHERE member_id = $1::uuid AND used = FALSE`, id); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

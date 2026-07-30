@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
@@ -14,18 +15,25 @@ import (
 	"quorum/internal/metrics"
 )
 
-// RequestID assigns each request a short id (honoring an inbound X-Request-Id
-// from a trusted proxy), stores it in the context for logs, and echoes it back
-// in the response header so a client can quote it in a bug report.
-func RequestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get("X-Request-Id")
-		if id == "" || len(id) > 64 {
-			id = newRequestID()
-		}
-		w.Header().Set("X-Request-Id", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxRequestID, id)))
-	})
+// RequestID assigns each request a short id, stores it in the context for
+// logs, and echoes it back in the response header so a client can quote it in
+// a bug report. An inbound X-Request-Id is honored only when trustProxy is set
+// (i.e. a trusted reverse proxy controls the header) — otherwise any client
+// could stamp its requests with another user's id and pollute log correlation.
+func RequestID(trustProxy bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := ""
+			if trustProxy {
+				id = r.Header.Get("X-Request-Id")
+			}
+			if id == "" || len(id) > 64 {
+				id = newRequestID()
+			}
+			w.Header().Set("X-Request-Id", id)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxRequestID, id)))
+		})
+	}
 }
 
 func newRequestID() string {
@@ -101,10 +109,15 @@ func MetricsEndpoint(reg *metrics.Registry, token string) http.HandlerFunc {
 	}
 }
 
-// metricsAuthorized accepts the token via Authorization: Bearer or ?token=.
+// metricsAuthorized accepts the token via Authorization: Bearer only. A query
+// parameter would leak the secret into proxy/CDN access logs and browser
+// history, and the comparison is constant-time so the static secret can't be
+// recovered byte-by-byte through a timing side channel.
 func metricsAuthorized(r *http.Request, token string) bool {
-	if h := r.Header.Get("Authorization"); h == "Bearer "+token {
-		return true
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || h[:len(prefix)] != prefix {
+		return false
 	}
-	return r.URL.Query().Get("token") == token
+	return subtle.ConstantTimeCompare([]byte(h[len(prefix):]), []byte(token)) == 1
 }

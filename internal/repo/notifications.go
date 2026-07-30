@@ -172,7 +172,7 @@ func (r *NotifyRepo) EmailOptedIn(ctx context.Context, userIDs []string, categor
 		return userIDs, nil
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT u FROM unnest($1::uuid[]) AS u
+		SELECT u::text FROM unnest($1::uuid[]) AS u
 		LEFT JOIN notification_preferences p ON p.user_id = u
 		WHERE coalesce(p.`+col+`, true)`, userIDs)
 	if err != nil {

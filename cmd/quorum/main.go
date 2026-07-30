@@ -71,15 +71,16 @@ func main() {
 		log.Printf("schema rolled back to version %d", *migrateDown)
 		return
 	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		log.Fatalf("db migrate: %v", err)
+	}
+
+	// unlock-2fa runs after Migrate so it works on a fresh/upgraded schema.
 	if *unlock2FA != "" {
 		if err := runUnlock2FA(ctx, pool, *unlock2FA); err != nil {
 			log.Fatalf("unlock-2fa: %v", err)
 		}
 		return
-	}
-
-	if err := db.Migrate(ctx, pool); err != nil {
-		log.Fatalf("db migrate: %v", err)
 	}
 
 	// Repos
@@ -165,10 +166,10 @@ func main() {
 	// X-Forwarded-For from any client, which would let attackers rotate the
 	// header to bypass the login rate limiter. Rate limiting keys on the raw
 	// socket address instead.
-	r.Use(handler.RequestID)      // assign/propagate X-Request-Id for log correlation
-	r.Use(handler.Metrics(reg))   // request count / latency / in-flight
-	r.Use(handler.RequestLogger)  // structured slog line per request (redacts tokens)
-	r.Use(handler.Recoverer(reg)) // recover panics, count them, log with stack
+	r.Use(handler.RequestID(cfg.TrustProxyHeaders)) // request ids for log correlation
+	r.Use(handler.Metrics(reg))                     // request count / latency / in-flight
+	r.Use(handler.RequestLogger)                    // structured slog line per request (redacts tokens)
+	r.Use(handler.Recoverer(reg))                   // recover panics, count them, log with stack
 	r.Use(handler.SecurityHeaders)
 	r.Use(handler.MaxRequestBody)
 
@@ -403,7 +404,9 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown: %v", err)
+		// Keep going: exiting here would skip draining the notifier queues and
+		// the scheduler, losing queued notices for the sake of a slow request.
+		log.Printf("shutdown: %v (continuing cleanup)", err)
 	}
 
 	// Drain any in-flight notices (deletion + event), then stop the scheduler,
@@ -443,6 +446,12 @@ func runUnlock2FA(ctx context.Context, pool *pgxpool.Pool, email string) error {
 	}
 	if err := authRepo.RevokeAllRefreshTokensForUser(ctx, user.ID); err != nil {
 		return fmt.Errorf("revoke sessions: %w", err)
+	}
+	// The single most sensitive bypass in the system must leave a durable trail:
+	// record it in the audit log (user_id = the affected account; there is no
+	// HTTP actor for a CLI one-shot).
+	if err := repo.NewAuditRepo(pool).Log(ctx, user.ID, "auth.2fa_unlocked_breakglass", "auth", user.ID); err != nil {
+		return fmt.Errorf("audit break-glass: %w", err)
 	}
 	log.Printf("two-factor disabled and sessions revoked for %s (%s) — they can now sign in with their password and re-enroll",
 		user.Email, user.Role)

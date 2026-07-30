@@ -94,7 +94,7 @@ class NotificationBell extends HTMLElement {
         try { await api('POST', `/notifications/${id}/read`); } catch {}
         this.refreshCount();
         this.close();
-        if (link) navigate(link);
+        if (link && link.startsWith('#/')) navigate(link);
       });
     });
   }

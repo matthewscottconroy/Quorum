@@ -42,7 +42,12 @@ type Converter struct {
 func NewConverter(reporting string, rates map[string]*big.Rat) *Converter {
 	norm := make(map[string]*big.Rat, len(rates))
 	for k, v := range rates {
-		norm[strings.ToUpper(strings.TrimSpace(k))] = v
+		if v == nil {
+			continue
+		}
+		// Copy: sharing the caller's *big.Rat would let later mutation of the
+		// caller's map silently change conversion results.
+		norm[strings.ToUpper(strings.TrimSpace(k))] = new(big.Rat).Set(v)
 	}
 	return &Converter{reporting: strings.ToUpper(strings.TrimSpace(reporting)), rates: norm}
 }

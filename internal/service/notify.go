@@ -30,10 +30,12 @@ type deletionJob struct {
 // via a bounded worker pool, so a burst of deletes can neither spawn unbounded
 // goroutines nor block the request path.
 type Notifier struct {
-	email *EmailService
-	dir   userDirectory
-	jobs  chan deletionJob
-	wg    sync.WaitGroup
+	email  *EmailService
+	dir    userDirectory
+	jobs   chan deletionJob
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
 // NewNotifier constructs a Notifier with a bounded worker pool for deletion notices.
@@ -60,7 +62,14 @@ func (n *Notifier) worker() {
 // Close stops accepting notices and waits for in-flight ones to finish. Call
 // during graceful shutdown, before closing the database pool.
 func (n *Notifier) Close() {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return
+	}
+	n.closed = true
 	close(n.jobs)
+	n.mu.Unlock()
 	n.wg.Wait()
 }
 
@@ -71,6 +80,12 @@ func (n *Notifier) Close() {
 // delete. If the queue is saturated the notice is dropped (and logged) rather
 // than growing memory without bound.
 func (n *Notifier) NotifyDeletion(_ context.Context, actorUserID, entityType, entityName string, affectedEmails []string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		log.Printf("notify: closed, dropping deletion notice for %s %q", entityType, entityName)
+		return
+	}
 	select {
 	case n.jobs <- deletionJob{actorUserID, entityType, entityName, affectedEmails}:
 	default:

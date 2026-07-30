@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -267,6 +268,10 @@ func (h *MembersHandler) Erase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.Erase(r.Context(), id); err != nil {
+		if errors.Is(err, repo.ErrErasureLinkedAdmin) {
+			writeError(w, http.StatusConflict, err.Error(), "conflict")
+			return
+		}
 		writeRepoError(w, err, "member not found", "erase error")
 		return
 	}

@@ -166,18 +166,28 @@ cmd_verify() {
   local scratch="quorum_verify_$$"
 
   echo "==> Verifying ${file} by restoring into scratch DB '${scratch}'"
-  local admin_url createdb_ok=0
+  local admin_url
   if [[ "$MODE" == "url" ]]; then
-    # Derive an admin connection to the server's default 'postgres' database.
     admin_url="$(backup_url)"
-    createdb "$scratch" -d "$admin_url" 2>/dev/null && createdb_ok=1 || \
-      psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $scratch" "$admin_url" && createdb_ok=1
+    local scratch_url
+    scratch_url="$(dirname_url_replace "$scratch")"
+    # SAFETY GATE: the whole point of verify is to never touch the live
+    # database. If the URL rewrite failed to substitute the database name (for
+    # example, the URL carries no /dbname path component), scratch_url would
+    # still point at the LIVE database and the --clean restore below would
+    # destroy it while reporting success. Refuse instead.
+    if [[ "$scratch_url" == "$admin_url" || "$scratch_url" != *"$scratch"* ]]; then
+      echo "verify: could not derive a scratch-DB URL from QUORUM_DATABASE_URL (no /dbname path?)." >&2
+      echo "        refusing to run: the restore would target the LIVE database." >&2
+      exit 1
+    fi
+    psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $scratch" "$admin_url" >/dev/null
     pg_restore --clean --if-exists --no-owner --no-privileges \
-      -d "$(dirname_url_replace "$scratch")" "$file" >/dev/null 2>&1 || true
+      -d "$scratch_url" "$file" >/dev/null 2>&1 || true
     local n
-    n="$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" "$(dirname_url_replace "$scratch")")"
+    n="$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" "$scratch_url")"
     local ver
-    ver="$(psql -tAc "SELECT max(version) FROM schema_migrations" "$(dirname_url_replace "$scratch")")"
+    ver="$(psql -tAc "SELECT max(version) FROM schema_migrations" "$scratch_url")"
     echo "    scratch DB has ${n} public tables; schema version ${ver}"
     psql -c "DROP DATABASE $scratch" "$admin_url" >/dev/null
     [[ "${n:-0}" -gt 0 ]] || { echo "    VERIFY FAILED: no tables restored" >&2; exit 1; }

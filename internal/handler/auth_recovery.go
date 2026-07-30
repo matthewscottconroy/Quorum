@@ -119,15 +119,23 @@ func (h *AuthHandler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 // passwordMatches re-verifies the caller's account password. Used to gate
 // changes to a user's second factor, so possession of a session alone is never
 // enough to add, remove, or re-issue the factor that protects it.
+// It is throttled per account (h.pwThrottle): after repeated failures further
+// attempts are refused for a window, so a hijacked session cannot brute-force
+// the password that guards the second factor.
 func (h *AuthHandler) passwordMatches(r *http.Request, userID, password string) bool {
-	if password == "" {
+	if password == "" || h.pwThrottle.blocked(userID) {
 		return false
 	}
 	hash, err := h.repo.GetPasswordHash(r.Context(), userID)
 	if err != nil {
 		return false
 	}
-	return auth.CheckPassword(hash, password)
+	if !auth.CheckPassword(hash, password) {
+		h.pwThrottle.fail(userID)
+		return false
+	}
+	h.pwThrottle.reset(userID)
+	return true
 }
 
 // Disable2FA turns off TOTP for the caller. It re-verifies the account password

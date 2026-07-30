@@ -65,7 +65,10 @@ func (r *AuditRepo) List(ctx context.Context, f AuditFilter) ([]model.AuditEntry
 		add("a.user_id = $%d::uuid", f.UserID)
 	}
 	if f.Action != "" {
-		add("a.action ILIKE '%%' || $%d || '%%'", f.Action)
+		// Escape LIKE metacharacters so a literal % or _ can be searched and a
+		// user-supplied pattern can't turn into match-everything.
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Action)
+		add("a.action ILIKE '%%' || $%d || '%%'", esc)
 	}
 	if f.EntityType != "" {
 		add("a.entity_type = $%d", f.EntityType)

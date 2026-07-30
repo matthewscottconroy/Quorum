@@ -569,3 +569,21 @@ func TestMembersErase_Success(t *testing.T) {
 		t.Error("Erase was not called")
 	}
 }
+
+// Erasing a member whose linked login is an admin must be refused (409): the
+// erasure retires the account, and silently retiring an admin could lock the
+// org out.
+func TestMembersErase_RefusesLinkedAdmin(t *testing.T) {
+	h := NewMembersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Jane Doe"}, nil
+		},
+		EraseFn: func(_ context.Context, _ string) error { return repo.ErrErasureLinkedAdmin },
+	}, nil, nil)
+	req := chiRequest("POST", "/members/m1/erase?confirm=Jane%20Doe", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Erase(rr, withCtxUser(req, "u", "superadmin"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for admin-linked member, got %d: %s", rr.Code, rr.Body)
+	}
+}

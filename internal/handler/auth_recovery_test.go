@@ -590,3 +590,30 @@ func TestRegenerateRecoveryCodes_Rejects(t *testing.T) {
 		t.Errorf("2FA disabled: expected 400, got %d", rr2.Code)
 	}
 }
+
+// A hijacked session must not be able to brute-force the account password
+// through the 2FA-management endpoints: repeated failures lock the gate.
+func TestPasswordGate_ThrottlesBruteForce(t *testing.T) {
+	pwHash, _ := auth.HashPassword("goodpassword1")
+	repo := &mockAuthRepo{
+		GetUserByIDFn:     func(_ context.Context, _ string) (*model.User, error) { return testUser(testUserID, "member"), nil },
+		GetPasswordHashFn: func(_ context.Context, _ string) (string, error) { return pwHash, nil },
+	}
+	h := NewAuthHandler(repo, testConfig())
+	// Exhaust the failure budget with wrong passwords.
+	for i := 0; i < mfaMaxFailures; i++ {
+		rr := httptest.NewRecorder()
+		h.Setup2FA(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/setup",
+			strings.NewReader(`{"password":"wrong"}`)), testUserID, "member"))
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i+1, rr.Code)
+		}
+	}
+	// Now even the CORRECT password is refused while locked out.
+	rr := httptest.NewRecorder()
+	h.Setup2FA(rr, withCtxUser(httptest.NewRequest("POST", "/auth/2fa/setup",
+		strings.NewReader(`{"password":"goodpassword1"}`)), testUserID, "member"))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("correct password during lockout must still be refused, got %d", rr.Code)
+	}
+}

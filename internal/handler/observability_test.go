@@ -13,7 +13,7 @@ import (
 
 func TestRequestID_GeneratesAndEchoes(t *testing.T) {
 	var seen string
-	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := RequestID(false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen, _ = r.Context().Value(ctxRequestID).(string)
 		w.WriteHeader(200)
 	}))
@@ -27,22 +27,34 @@ func TestRequestID_GeneratesAndEchoes(t *testing.T) {
 	}
 }
 
-func TestRequestID_HonorsInboundHeader(t *testing.T) {
-	var seen string
-	h := RequestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen, _ = r.Context().Value(ctxRequestID).(string)
-	}))
+func TestRequestID_HonorsInboundHeaderOnlyBehindProxy(t *testing.T) {
+	capture := func(seen *string) http.Handler {
+		return http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			*seen, _ = r.Context().Value(ctxRequestID).(string)
+		})
+	}
+	// Behind a trusted proxy the inbound id is honored.
+	var trusted string
 	req := httptest.NewRequest("GET", "/x", nil)
 	req.Header.Set("X-Request-Id", "trace-abc")
-	h.ServeHTTP(httptest.NewRecorder(), req)
-	if seen != "trace-abc" {
-		t.Errorf("inbound request id not honored: got %q", seen)
+	RequestID(true)(capture(&trusted)).ServeHTTP(httptest.NewRecorder(), req)
+	if trusted != "trace-abc" {
+		t.Errorf("behind a proxy the inbound id should be honored, got %q", trusted)
+	}
+	// Directly exposed, a client-supplied id must be replaced: anyone could
+	// stamp requests with someone else's id and pollute log correlation.
+	var direct string
+	req2 := httptest.NewRequest("GET", "/x", nil)
+	req2.Header.Set("X-Request-Id", "trace-abc")
+	RequestID(false)(capture(&direct)).ServeHTTP(httptest.NewRecorder(), req2)
+	if direct == "trace-abc" || direct == "" {
+		t.Errorf("without a trusted proxy the inbound id must be replaced, got %q", direct)
 	}
 }
 
 func TestRequestID_RejectsOverlongInbound(t *testing.T) {
 	var seen string
-	h := RequestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	h := RequestID(true)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen, _ = r.Context().Value(ctxRequestID).(string)
 	}))
 	req := httptest.NewRequest("GET", "/x", nil)
@@ -117,10 +129,11 @@ func TestMetricsEndpoint_Gating(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "quorum_http_requests_in_flight") {
 		t.Errorf("exposition body missing:\n%s", rr.Body.String())
 	}
-	// Query-param token also works.
+	// Query-param tokens are deliberately NOT accepted: they leak the secret
+	// into proxy/CDN access logs and browser history.
 	rr = httptest.NewRecorder()
 	on(rr, httptest.NewRequest("GET", "/metrics?token=sekret", nil))
-	if rr.Code != http.StatusOK {
-		t.Errorf("query-param token should 200, got %d", rr.Code)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("query-param token must be rejected, got %d", rr.Code)
 	}
 }

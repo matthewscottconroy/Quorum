@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,10 +47,12 @@ type notifyEvent struct {
 // path, and a burst can neither spawn unbounded goroutines nor fail the action
 // that triggered it. Recipient resolution happens on the worker, not the caller.
 type NotificationService struct {
-	store notifyStore
-	email emailSender
-	jobs  chan notifyEvent
-	wg    sync.WaitGroup
+	store  notifyStore
+	email  emailSender
+	jobs   chan notifyEvent
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
 // NewNotificationService starts the delivery worker pool.
@@ -67,8 +70,17 @@ func NewNotificationService(store notifyStore, email emailSender) *NotificationS
 }
 
 // Close stops accepting events and waits for in-flight deliveries to finish.
+// Safe against late producers: enqueue() checks the closed flag under the same
+// lock, so a straggler is dropped rather than panicking on a closed channel.
 func (s *NotificationService) Close() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
 	close(s.jobs)
+	s.mu.Unlock()
 	s.wg.Wait()
 }
 
@@ -89,6 +101,12 @@ func (s *NotificationService) NotifyMember(memberID, notifType, title string, bo
 }
 
 func (s *NotificationService) enqueue(e notifyEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		slog.Warn("notifications: service closed, dropping event", "type", e.notifType)
+		return
+	}
 	select {
 	case s.jobs <- e:
 	default:
@@ -154,7 +172,9 @@ func (s *NotificationService) deliver(e notifyEvent) {
 	if len(emails) == 0 {
 		return
 	}
-	subject := "Quorum: " + e.title
+	// Titles are free text; a newline in an email subject is a header-injection
+	// vector and EmailService.Send would (rightly) refuse the whole message.
+	subject := "Quorum: " + strings.NewReplacer("\r", " ", "\n", " ").Replace(e.title)
 	body := e.title
 	if e.body != nil && *e.body != "" {
 		body += "\n\n" + *e.body

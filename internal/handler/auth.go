@@ -44,6 +44,12 @@ type AuthHandler struct {
 	mailer      mailer
 	audit       auditRepo
 	mfaThrottle *failureThrottle
+	// pwThrottle bounds password re-verification attempts (change-password,
+	// 2FA setup/disable, recovery-code regeneration). These endpoints sit behind
+	// a session, not the login rate limiter, so without it a stolen session
+	// could brute-force the account password at full HTTP speed and then strip
+	// or replace the second factor.
+	pwThrottle *failureThrottle
 }
 
 // mfaMaxFailures / mfaLockWindow bound how many failed two-factor attempts a
@@ -57,7 +63,12 @@ const (
 
 // NewAuthHandler constructs an AuthHandler backed by the given repo and config.
 func NewAuthHandler(r authRepo, cfg *config.Config) *AuthHandler {
-	return &AuthHandler{repo: r, cfg: cfg, mfaThrottle: newFailureThrottle(mfaMaxFailures, mfaLockWindow)}
+	return &AuthHandler{
+		repo:        r,
+		cfg:         cfg,
+		mfaThrottle: newFailureThrottle(mfaMaxFailures, mfaLockWindow),
+		pwThrottle:  newFailureThrottle(mfaMaxFailures, mfaLockWindow),
+	}
 }
 
 // failureThrottle enforces a temporary per-key lockout after too many failed
@@ -665,10 +676,16 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "user error", "internal_error")
 		return
 	}
+	if h.pwThrottle.blocked(userID) {
+		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again later", "rate_limited")
+		return
+	}
 	if !auth.CheckPassword(hash, body.CurrentPassword) {
+		h.pwThrottle.fail(userID)
 		writeError(w, http.StatusUnauthorized, "current password incorrect", "unauthorized")
 		return
 	}
+	h.pwThrottle.reset(userID)
 	newHash, err := auth.HashPassword(body.NewPassword)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "hash error", "internal_error")

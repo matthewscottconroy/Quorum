@@ -2,6 +2,14 @@ import { api } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDateTime, guardButton } from '../utils.js';
 
+// Notification links are server-authored in-app hash routes. Render only those:
+// esc() stops HTML injection but not a javascript: URL, so anything that isn't a
+// '#/...' route is refused outright (defense in depth against a compromised or
+// tampered notification row).
+function isSafeLink(link) {
+  return typeof link === 'string' && link.startsWith('#/');
+}
+
 const PREF_FIELDS = [
   { key: 'governance_email', label: 'Governance', hint: 'Motions opened for voting and decided' },
   { key: 'meetings_email', label: 'Meetings', hint: 'New meetings scheduled' },
@@ -93,7 +101,7 @@ class PageNotifications extends HTMLElement {
           <div class="nfeed-time">${esc(fmtDateTime(n.created_at))}</div>
         </div>
         <div class="nfeed-actions">
-          ${n.link ? `<a class="btn-ghost btn-sm" href="${esc(n.link)}" data-read="${esc(n.id)}">Open</a>` : ''}
+          ${isSafeLink(n.link) ? `<a class="btn-ghost btn-sm" href="${esc(n.link)}" data-read="${esc(n.id)}">Open</a>` : ''}
           ${n.read_at ? '' : `<button class="btn-ghost btn-sm" data-read="${esc(n.id)}">Mark read</button>`}
         </div>
       </div>`).join('')}</div>`;
