@@ -22,3 +22,6 @@ coverage.*
 .idea/
 .vscode/*
 !.vscode/settings.json
+
+# Python bytecode (ops/ verifier)
+__pycache__/
