@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Quorum database backup at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

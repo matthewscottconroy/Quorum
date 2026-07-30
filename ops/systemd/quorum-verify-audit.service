@@ -1,0 +1,12 @@
+# Daily audit-chain verification (COMPLIANCE.md). A non-zero exit means the
+# audit log was tampered with — alert on this unit failing:
+#   OnFailure=<your alerting unit>
+[Unit]
+Description=Quorum audit-log hash-chain verification
+Documentation=file:///opt/quorum/COMPLIANCE.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/quorum
+EnvironmentFile=/opt/quorum/.env
+ExecStart=/opt/quorum/quorum -verify-audit

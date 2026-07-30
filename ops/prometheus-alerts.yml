@@ -1,0 +1,83 @@
+# Prometheus alert rules for Quorum.
+#
+# Wire-up: point a scrape job at /metrics with the bearer token, then load this
+# file in your Prometheus rule_files. Example scrape config:
+#
+#   scrape_configs:
+#     - job_name: quorum
+#       metrics_path: /metrics
+#       authorization:
+#         type: Bearer
+#         credentials: <QUORUM_METRICS_TOKEN>
+#       static_configs:
+#         - targets: ["quorum.internal:8080"]
+#
+# Thresholds are starting points for a small-org deployment; tune to taste.
+
+groups:
+  - name: quorum
+    rules:
+      - alert: QuorumDown
+        expr: up{job="quorum"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Quorum is not responding to scrapes"
+          description: "The /metrics endpoint has been unreachable for 2 minutes."
+
+      - alert: QuorumHigh5xxRate
+        expr: |
+          sum(rate(quorum_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(quorum_http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "More than 5% of requests are failing with 5xx"
+          description: "Check the structured logs (level=ERROR, msg=http_request) and correlate by request_id."
+
+      - alert: QuorumPanics
+        expr: increase(quorum_http_panics_total[15m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "A handler panicked"
+          description: "Recovered panics are logged as msg=http_panic with a stack trace and request_id."
+
+      - alert: QuorumDBPoolSaturated
+        expr: quorum_db_pool_acquired_conns / clamp_min(quorum_db_pool_max_conns, 1) > 0.8
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Database connection pool over 80% for 10 minutes"
+          description: "Sustained saturation stalls requests; look for slow queries or raise the pool size."
+
+      - alert: QuorumFailedLoginSpike
+        expr: sum(rate(quorum_http_requests_total{route="/api/v1/auth/login", status="401"}[10m])) * 600 > 20
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 20 failed logins in 10 minutes"
+          description: >
+            Possible credential stuffing or an insider guessing a colleague's
+            password. Failed logins against real accounts appear in the audit
+            log as auth.login_failed with the target account.
+
+      - alert: QuorumDenied2FASpike
+        expr: sum(rate(quorum_http_requests_total{route="/api/v1/auth/login/2fa", status=~"401|429"}[15m])) * 900 > 10
+        labels: {severity: warning}
+        annotations:
+          summary: "Burst of failed/throttled two-factor attempts"
+          description: "Someone with a valid password is guessing codes; see auth.2fa_failed audit entries."
+
+      - alert: QuorumSlowRequests
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(quorum_http_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "p99 request latency above 2s"
+
+      # The audit chain has no metric (verification is a query, not a counter);
+      # schedule `quorum -verify-audit` via cron/systemd (see ops/systemd/) and
+      # alert on the service failing, or wire its exit code into your check
+      # system. A broken chain is a drop-everything incident: see COMPLIANCE.md.

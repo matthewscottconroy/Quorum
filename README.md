@@ -419,6 +419,12 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | **[BACKUP.md](BACKUP.md)** | Backup/restore/verify tooling, scheduling, retention, full recovery from scratch, RPO/RTO |
 | **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** | What's done, what's left before a real launch, and the pre-deploy checklist |
 | **[SECURITY.md](SECURITY.md)** | Security model and reporting |
+| **[COMPLIANCE.md](COMPLIANCE.md)** | Why Quorum's records are evidence-grade: the audit hash chain, the append-only ledger, and the third-party verification procedure |
+
+The `ops/` directory ships deployment collateral: Prometheus alert rules,
+systemd units for nightly backups / weekly restore-verification / daily
+audit-chain verification, and `verify-audit-export.py` — the standalone script
+an accountant or lawyer runs to independently verify an audit evidence export.
 
 Two operator one-shots are built into the binary:
 

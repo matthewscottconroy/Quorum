@@ -166,7 +166,20 @@ gate. The audit log records who performed it.
 **Audit log** → in the UI at **Audit log** (admin+), filterable by action,
 resource, and date range. Every mutating request is recorded with the actor, the
 resource type, and the affected row id — including creates, whose id is
-recovered from the response.
+recovered from the response. Denied attempts (`DENIED(403) …`), failed logins
+against real accounts, and failed 2FA codes are recorded too — the
+insider-threat signals.
+
+The log is hash-chained and append-only ([COMPLIANCE.md](COMPLIANCE.md)).
+Check its integrity any time:
+
+```sh
+/opt/quorum/quorum -verify-audit     # exit 0 intact, 1 broken (cron-able; ops/systemd/ has a daily timer)
+```
+
+A broken chain is a drop-everything incident: preserve database backups
+immediately (they contain the untampered history and its head hashes) before
+touching anything else.
 
 For correlation with server logs, each request carries a `request_id` (returned
 in the `X-Request-Id` header and present on every structured log line):

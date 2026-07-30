@@ -4,7 +4,7 @@ This document tracks the remaining work to get Quorum from "works end-to-end in
 a smoke test" to "confidently running in production." It is a living checklist,
 not a release gate — triage by your own risk tolerance and deployment scale.
 
-Last reviewed: **2026-07-30**.
+Last reviewed: **2026-07-30** (evidence-integrity pass).
 
 ---
 
@@ -87,8 +87,10 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   production `QUORUM_DATABASE_URL`, and — critically — `verify` restores a dump
   into a throwaway database and checks it, so "untested backups are not backups"
   is enforceable in CI/cron. Full runbook: **[BACKUP.md](BACKUP.md)**.
-- Still deployment-side: schedule `backup create` (cron/systemd timer, examples
-  in BACKUP.md), **ship the dumps off-box**, and periodically run `backup verify`.
+- **Done (units shipped):** `ops/systemd/` carries ready-to-install timers for
+  the nightly backup, weekly restore-verification, and daily audit-chain
+  verification. Still deployment-side: install them and **ship the dumps
+  off-box**.
   For a tighter RPO than nightly dumps, use a managed Postgres with WAL archiving
   / PITR and keep these logical dumps as the portable, test-restored safety net.
 - Decide a retention policy for the audit log and soft-deleted members.
@@ -121,9 +123,10 @@ Constraint honored: **no SSO** — recovery is fully in-app.
   `quorum_http_requests_in_flight`, `quorum_http_panics_total`, and DB pool
   gauges (acquired/idle/total/max). Panics are recovered, counted, and logged
   with a stack + request id by the app's own recoverer.
-- Still to wire (deployment-side): scrape `/metrics` from Prometheus and alert
-  on 5xx rate, failed-login spikes, panic count, DB pool saturation, and
-  scheduler failures (dues aging / reminders). Optionally forward panics to an
+- **Done (rules shipped):** `ops/prometheus-alerts.yml` carries the alert pack
+  (down, 5xx rate, panics, DB pool saturation, failed-login and 2FA-failure
+  spikes, p99 latency) plus the scrape-config example; loading it into your
+  Prometheus is the remaining deployment step. Optionally forward panics to an
   error aggregator (Sentry) — the structured `http_panic` log line is the hook.
 - The metrics are **in-process** (per replica); aggregate across replicas in
   Prometheus. `/healthz` (liveness) and `/readyz` (readiness, checks the DB)
@@ -170,8 +173,15 @@ Constraint honored: **no SSO** — recovery is fully in-app.
 - **Done:** the retention schedule is configurable —
   `QUORUM_AUDIT_RETENTION_DAYS` (default 365) drives the nightly audit prune;
   processed webhook events are kept 90 days; expired tokens are pruned nightly.
-- Still open (deployment-side): a written **privacy policy**, and **encryption at
-  rest** for the database volume.
+- A counsel-review-ready **privacy policy template** now exists
+  (PRIVACY_POLICY_TEMPLATE.md) with the technical claims pre-filled and accurate.
+  Still open (deployment-side): counsel review of that template, and
+  **encryption at rest** for the database volume.
+- **New — evidence integrity ([COMPLIANCE.md](COMPLIANCE.md)):** the audit log
+  is hash-chained and append-only at the database level, the payments ledger is
+  immutable, invoice identity is frozen, denied actions and auth failures by
+  known accounts are recorded, and third parties can verify exports
+  independently (`ops/verify-audit-export.py`).
 
 ### 10. Operational runbooks
 - **Done:** [RUNBOOK.md](RUNBOOK.md) covers rotating `QUORUM_JWT_SECRET`,

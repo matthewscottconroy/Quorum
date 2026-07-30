@@ -1,0 +1,12 @@
+# Weekly proof that the latest backup actually restores (BACKUP.md: "untested
+# backups are not backups"). Pairs with quorum-backup-verify.timer.
+[Unit]
+Description=Quorum backup restore-verification
+Documentation=file:///opt/quorum/BACKUP.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/quorum
+EnvironmentFile=/opt/quorum/.env
+Environment=QUORUM_BACKUP_MODE=url
+ExecStart=/opt/quorum/scripts/backup.sh verify
