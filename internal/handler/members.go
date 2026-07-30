@@ -247,3 +247,30 @@ func (h *MembersHandler) GetActionItems(w http.ResponseWriter, r *http.Request) 
 	}
 	writePage(w, items, total, f.Limit, f.Offset)
 }
+
+// Erase fulfils a right-to-erasure ("right to be forgotten") request: it strips
+// the member's personal data in place, keeping the financial and governance
+// records that reference them intact and consistent. Superadmin only, and gated
+// on ?confirm= matching the member's display name like the other destructive
+// actions, because it cannot be undone.
+func (h *MembersHandler) Erase(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	member, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "member not found", "query error")
+		return
+	}
+	if !confirmMatches(w, r, member.DisplayName) {
+		return
+	}
+	if err := h.repo.Erase(r.Context(), id); err != nil {
+		writeRepoError(w, err, "member not found", "erase error")
+		return
+	}
+	// The AuditMiddleware records who erased which member id; that entry is the
+	// durable evidence the request was fulfilled.
+	w.WriteHeader(http.StatusNoContent)
+}

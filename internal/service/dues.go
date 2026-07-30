@@ -64,7 +64,7 @@ type duesGenerator interface {
 }
 
 // Retention windows for the nightly prune. Providers retry webhooks for a few
-// days at most, so 90 days keeps dedup safe; audit entries are kept a year.
+// days at most, so 90 days keeps dedup safe; audit entries default to a year.
 const (
 	processedEventRetention = 90 * 24 * time.Hour
 	auditLogRetention       = 365 * 24 * time.Hour
@@ -76,6 +76,27 @@ type DuesService struct {
 	email     emailSender
 	janitor   janitor
 	generator duesGenerator
+
+	// auditRetention overrides the default audit-log retention window. A
+	// data-retention schedule is a policy decision (and in some jurisdictions a
+	// legal one), so deployments can set it via QUORUM_AUDIT_RETENTION_DAYS.
+	auditRetention time.Duration
+}
+
+// SetAuditRetention overrides how long audit entries are kept. A non-positive
+// value keeps the default.
+func (s *DuesService) SetAuditRetention(d time.Duration) {
+	if d > 0 {
+		s.auditRetention = d
+	}
+}
+
+// auditRetentionWindow returns the configured window, or the default.
+func (s *DuesService) auditRetentionWindow() time.Duration {
+	if s.auditRetention > 0 {
+		return s.auditRetention
+	}
+	return auditLogRetention
 }
 
 // NewDuesService constructs the service. janitor and generator may be nil, in
@@ -237,7 +258,7 @@ func (s *DuesService) pruneBookkeeping(ctx context.Context) {
 	} else if n > 0 {
 		log.Printf("pruned %d old processed events", n)
 	}
-	if n, err := s.janitor.PruneAuditLog(ctx, auditLogRetention); err != nil {
+	if n, err := s.janitor.PruneAuditLog(ctx, s.auditRetentionWindow()); err != nil {
 		log.Printf("prune audit_log error: %v", err)
 	} else if n > 0 {
 		log.Printf("pruned %d old audit entries", n)

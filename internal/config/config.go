@@ -71,6 +71,11 @@ type Config struct {
 	// error (default: info).
 	LogLevel string
 
+	// AuditRetentionDays is how long audit_log entries are kept by the nightly
+	// prune (default 365). Retention is a policy decision — some jurisdictions
+	// require a defined schedule — so it is configurable.
+	AuditRetentionDays int
+
 	// MetricsToken gates the Prometheus /metrics endpoint. When empty (default)
 	// the endpoint is disabled entirely; when set, scrapers must present it as a
 	// bearer token (Authorization: Bearer <token>) or ?token=<token>. This keeps
@@ -141,6 +146,14 @@ func Load() (*Config, error) {
 		cfg.SMTPPort, err = strconv.Atoi(smtpPort)
 		if err != nil {
 			return nil, fmt.Errorf("invalid QUORUM_SMTP_PORT: %w", err)
+		}
+	}
+
+	cfg.AuditRetentionDays = 365
+	if v := getEnv("QUORUM_AUDIT_RETENTION_DAYS", ""); v != "" {
+		cfg.AuditRetentionDays, err = strconv.Atoi(v)
+		if err != nil || cfg.AuditRetentionDays <= 0 {
+			return nil, fmt.Errorf("invalid QUORUM_AUDIT_RETENTION_DAYS: must be a positive number of days")
 		}
 	}
 

@@ -102,6 +102,7 @@ func main() {
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
 	duesSvc := service.NewDuesService(duesRepo, emailSvc, maintenanceRepo, duesRepo)
+	duesSvc.SetAuditRetention(time.Duration(cfg.AuditRetentionDays) * 24 * time.Hour)
 	schedDone := duesSvc.StartScheduler(ctx)
 	notifySvc := service.NewNotificationService(notifyRepo, emailSvc)
 
@@ -248,8 +249,12 @@ func main() {
 			r.Get("/members/{id}", membersH.Get) // ownership-scoped
 			r.With(mw.RequireRole("officer")).Patch("/members/{id}", membersH.Update)
 			r.With(mw.RequireRole("admin")).Delete("/members/{id}", membersH.Delete) // soft-delete
-			r.Get("/members/{id}/dues", membersH.GetDues)                            // ownership-scoped
-			r.Get("/members/{id}/action-items", membersH.GetActionItems)             // ownership-scoped
+			// Right to erasure: strips personal data in place, keeping the
+			// financial and governance records that reference the member intact
+			// (see MembersRepo.Erase). Irreversible, so superadmin only.
+			r.With(mw.RequireRole("superadmin")).Post("/members/{id}/erase", membersH.Erase)
+			r.Get("/members/{id}/dues", membersH.GetDues)                // ownership-scoped
+			r.Get("/members/{id}/action-items", membersH.GetActionItems) // ownership-scoped
 
 			r.With(mw.RequireRole("officer")).Get("/dues", duesH.List)
 			r.With(mw.RequireRole("officer")).Post("/dues", duesH.Create)

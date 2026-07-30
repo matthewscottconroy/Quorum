@@ -231,3 +231,55 @@ func scanMember(row scannable) (model.Member, error) {
 	}
 	return m, nil
 }
+
+// Erase implements a GDPR-style right-to-erasure for one member: it strips
+// personal data from the member row (name, email, phone, address, notes,
+// metadata) in place rather than deleting it.
+//
+// Deleting the row is not the right primitive here — dues invoices, payments,
+// attendance, and votes reference the member, and an organization has a
+// legitimate (often statutory) interest in keeping its financial and governance
+// records intact. Anonymizing severs the link to a natural person while leaving
+// the ledger and the meeting minutes consistent.
+//
+// It also unlinks and revokes any login: the account's member_id is cleared and
+// its refresh tokens are revoked, so the erased person retains no access.
+// Returns pgx.ErrNoRows if no such member exists.
+func (r *MembersRepo) Erase(ctx context.Context, id string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// A stable, non-identifying placeholder keeps display_name's NOT NULL
+	// constraint satisfied and keeps rows distinguishable in listings.
+	tag, err := tx.Exec(ctx, `
+		UPDATE members SET
+			display_name = 'Erased member ' || left(id::text, 8),
+			email        = NULL,
+			phone        = NULL,
+			address      = NULL,
+			notes        = NULL,
+			metadata     = NULL,
+			status       = 'inactive',
+			updated_at   = now()
+		WHERE id = $1::uuid`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	// Revoke any sessions belonging to the linked account, then unlink it.
+	if _, err := tx.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked = TRUE
+		WHERE revoked = FALSE AND user_id IN (SELECT id FROM users WHERE member_id = $1::uuid)`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET member_id = NULL WHERE member_id = $1::uuid`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

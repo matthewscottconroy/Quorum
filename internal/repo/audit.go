@@ -115,14 +115,3 @@ func (r *AuditRepo) List(ctx context.Context, f AuditFilter) ([]model.AuditEntry
 	}
 	return out, total, rows.Err()
 }
-
-// PruneOlderThan deletes audit entries older than the cutoff, returning how many
-// were removed. Retention is a policy decision (see PRODUCTION_READINESS §3);
-// this is the mechanism the nightly job uses to enforce it.
-func (r *AuditRepo) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, err := r.db.Exec(ctx, `DELETE FROM audit_log WHERE created_at < $1`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
-}

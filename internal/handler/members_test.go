@@ -530,3 +530,42 @@ func TestMembersGetDues_OfficerSeesAny(t *testing.T) {
 		t.Errorf("officer viewing any member's dues: got %d, want 200", rr.Code)
 	}
 }
+
+func TestMembersErase_RequiresConfirm(t *testing.T) {
+	erased := false
+	h := NewMembersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Jane Doe"}, nil
+		},
+		EraseFn: func(_ context.Context, _ string) error { erased = true; return nil },
+	}, nil, nil)
+	// No ?confirm= → 400 and nothing erased.
+	req := chiRequest("POST", "/members/m1/erase", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Erase(rr, withCtxUser(req, "u", "superadmin"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without confirmation, got %d", rr.Code)
+	}
+	if erased {
+		t.Fatal("erase must not run without confirmation")
+	}
+}
+
+func TestMembersErase_Success(t *testing.T) {
+	var erasedID string
+	h := NewMembersHandler(&mockMembersRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Member, error) {
+			return &model.Member{ID: "m1", DisplayName: "Jane Doe"}, nil
+		},
+		EraseFn: func(_ context.Context, id string) error { erasedID = id; return nil },
+	}, nil, nil)
+	req := chiRequest("POST", "/members/m1/erase?confirm=Jane%20Doe", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Erase(rr, withCtxUser(req, "u", "superadmin"))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rr.Code, rr.Body)
+	}
+	if erasedID == "" {
+		t.Error("Erase was not called")
+	}
+}

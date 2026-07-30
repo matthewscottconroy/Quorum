@@ -185,8 +185,15 @@ type mockMembersRepo struct {
 	UpdateFn func(ctx context.Context, id string, fields map[string]any) (*model.Member, error)
 	DeleteFn func(ctx context.Context, id string) error
 	CountFn  func(ctx context.Context) (int, error)
+	EraseFn  func(ctx context.Context, id string) error
 }
 
+func (m *mockMembersRepo) Erase(ctx context.Context, id string) error {
+	if m.EraseFn != nil {
+		return m.EraseFn(ctx, id)
+	}
+	return nil
+}
 func (m *mockMembersRepo) List(ctx context.Context, f repo.MemberFilter) ([]model.Member, int, error) {
 	return m.ListFn(ctx, f)
 }

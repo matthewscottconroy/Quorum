@@ -41,6 +41,7 @@ type authRepo interface {
 // membersRepo is satisfied by *repo.MembersRepo.
 type membersRepo interface {
 	List(ctx context.Context, f repo.MemberFilter) ([]model.Member, int, error)
+	Erase(ctx context.Context, id string) error
 	Get(ctx context.Context, id string) (*model.Member, error)
 	Create(ctx context.Context, m *model.Member) (*model.Member, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Member, error)
