@@ -109,6 +109,20 @@ misconfigured retention policy; the configured retention
 pruning beyond that. Pruning removes the chain's *prefix* only, which does not
 break verification of what remains.
 
+## Exported PDF documents
+
+Every PDF report is watermarked with the exporting account and UTC time (as a
+light diagonal stamp on each page and in each footer) and carries an embedded
+integrity stamp: "Integrity (SHA-256): <digest>", where the digest is computed
+over the document's exact bytes with the digest field zeroed. Two checks:
+
+1. **Integrity** (offline, stdlib Python): `ops/verify-pdf-export.py file.pdf`
+   re-zeros the field, hashes, and compares. Any post-export edit fails.
+2. **Authenticity**: the same digest is recorded in the audit log's
+   `EXPORT <what>` entry (`detail.sha256`), inside the hash chain — so a
+   fabricated document with a self-consistent stamp still fails, because no
+   chained export entry carries its digest.
+
 ## Financial records
 
 - `transactions` (payments received): append-only, database-enforced.

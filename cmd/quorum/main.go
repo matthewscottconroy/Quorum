@@ -145,7 +145,7 @@ func main() {
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	auditH := handler.NewAuditHandler(auditRepo)
 	sprintsH := handler.NewSprintsHandler(sprintsRepo)
-	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo)
+	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
 	auditH.SetVerifier(auditRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)

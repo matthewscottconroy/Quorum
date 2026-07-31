@@ -16,7 +16,9 @@ class PageReports extends HTMLElement {
       <div class="page-header"><h1>Reports</h1></div>
       <p style="color:var(--color-text-muted);font-size:.85rem;margin-bottom:1rem">
         🧾 Every export is recorded in the audit log (who, what, when) — admins can review them under
-        <a href="#/audit">Audit log</a> by filtering for “EXPORT”.</p>
+        <a href="#/audit">Audit log</a> by filtering for “EXPORT”. PDFs are watermarked with the exporter
+        and time, and carry an embedded SHA-256 integrity stamp that is also written to the audit entry —
+        anyone can verify a document offline with <code>ops/verify-pdf-export.py</code>.</p>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem">
         <div class="card" style="padding:1.1rem">

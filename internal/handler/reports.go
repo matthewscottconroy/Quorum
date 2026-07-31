@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -32,6 +33,11 @@ func auditExport(r *http.Request, ar auditRepo, what string, detail map[string]a
 	ar.Log(r.Context(), uid, "EXPORT "+what, "export", "", detail) //nolint:errcheck
 }
 
+// exporterLookup resolves the exporting account for the watermark.
+type exporterLookup interface {
+	GetUserByID(ctx context.Context, id string) (*model.User, error)
+}
+
 // ReportsHandler renders the PDF reports.
 type ReportsHandler struct {
 	members  membersRepo
@@ -41,17 +47,34 @@ type ReportsHandler struct {
 	auditRd  auditReader
 	verifier chainVerifier
 	audit    auditRepo
+	users    exporterLookup
 }
 
 // NewReportsHandler constructs a ReportsHandler.
-func NewReportsHandler(m membersRepo, d duesRepo, mt meetingsRepo, g minutesGovSource, ard auditReader, v chainVerifier, a auditRepo) *ReportsHandler {
-	return &ReportsHandler{members: m, dues: d, meetings: mt, gov: g, auditRd: ard, verifier: v, audit: a}
+func NewReportsHandler(m membersRepo, d duesRepo, mt meetingsRepo, g minutesGovSource, ard auditReader, v chainVerifier, a auditRepo, u exporterLookup) *ReportsHandler {
+	return &ReportsHandler{members: m, dues: d, meetings: mt, gov: g, auditRd: ard, verifier: v, audit: a, users: u}
 }
 
-func servePDF(w http.ResponseWriter, d *pdf.Doc, filename string) {
+// stamp watermarks the document with who is exporting and when, and returns
+// the finished bytes plus the document's SHA-256 (spliced into the PDF and
+// recorded in the audit entry, so the file is verifiable offline AND anchored
+// to the tamper-evident chain).
+func (h *ReportsHandler) stamp(r *http.Request, d *pdf.Doc) ([]byte, string) {
+	who := userIDFromCtx(r)
+	if h.users != nil {
+		if u, err := h.users.GetUserByID(r.Context(), who); err == nil && u.Email != "" {
+			who = u.Email
+		}
+	}
+	d.Watermark(fmt.Sprintf("Exported by %s - %s", who, time.Now().UTC().Format("2006-01-02 15:04 UTC")))
+	return d.Finalize()
+}
+
+func servePDF(w http.ResponseWriter, data []byte, digest, filename string) {
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-	_, _ = w.Write(d.Bytes())
+	w.Header().Set("X-Document-SHA256", digest)
+	_, _ = w.Write(data)
 }
 
 func deref(s *string) string {
@@ -94,8 +117,9 @@ func (h *ReportsHandler) MembersPDF(w http.ResponseWriter, r *http.Request) {
 			d.Indented("joined " + m.JoinedAt.Format("2006-01-02") + " - dues: " + m.DuesStatus)
 		}
 	}
-	auditExport(r, h.audit, "members.pdf", map[string]any{"members": total})
-	servePDF(w, d, "quorum-members.pdf")
+	data, digest := h.stamp(r, d)
+	auditExport(r, h.audit, "members.pdf", map[string]any{"members": total, "sha256": digest})
+	servePDF(w, data, digest, "quorum-members.pdf")
 }
 
 // DuesPDF renders the receivables/collections picture (officer+).
@@ -150,8 +174,9 @@ func (h *ReportsHandler) DuesPDF(w http.ResponseWriter, r *http.Request) {
 			t.OccurredAt.Format("2006-01-02"), model.FormatMoney(t.AmountMinor, t.Currency),
 			t.Currency, name, t.Provider))
 	}
-	auditExport(r, h.audit, "dues.pdf", map[string]any{"invoices": total})
-	servePDF(w, d, "quorum-dues.pdf")
+	data, digest := h.stamp(r, d)
+	auditExport(r, h.audit, "dues.pdf", map[string]any{"invoices": total, "sha256": digest})
+	servePDF(w, data, digest, "quorum-dues.pdf")
 }
 
 // MinutesPDF renders one meeting's minutes as PDF (officer+), same content as
@@ -268,8 +293,9 @@ func (h *ReportsHandler) MinutesPDF(w http.ResponseWriter, r *http.Request) {
 			d.Line(fmt.Sprintf("%s - %s", dec.Outcome, dec.Summary))
 		}
 	}
-	auditExport(r, h.audit, "meetings/"+id+"/minutes.pdf", map[string]any{"meeting": mt.Title})
-	servePDF(w, d, "minutes-"+mt.ScheduledAt.Format("2006-01-02")+".pdf")
+	data, digest := h.stamp(r, d)
+	auditExport(r, h.audit, "meetings/"+id+"/minutes.pdf", map[string]any{"meeting": mt.Title, "sha256": digest})
+	servePDF(w, data, digest, "minutes-"+mt.ScheduledAt.Format("2006-01-02")+".pdf")
 }
 
 // AuditPDF renders the recent audit log with the chain status (admin+).
@@ -315,8 +341,9 @@ func (h *ReportsHandler) AuditPDF(w http.ResponseWriter, r *http.Request) {
 			d.Indented(e.Detail)
 		}
 	}
-	auditExport(r, h.audit, "audit.pdf", map[string]any{"entries_shown": len(entries)})
-	servePDF(w, d, "quorum-audit.pdf")
+	data, digest := h.stamp(r, d)
+	auditExport(r, h.audit, "audit.pdf", map[string]any{"entries_shown": len(entries), "sha256": digest})
+	servePDF(w, data, digest, "quorum-audit.pdf")
 }
 
 func joinSorted(names []string) string {

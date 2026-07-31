@@ -9,7 +9,10 @@ package pdf
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -31,12 +34,25 @@ const (
 	avgCharEm = 0.52
 )
 
+// integrityMarker labels the digest line; the 64-zero placeholder that follows
+// it is replaced by the real SHA-256 during Finalize. Verifiers reverse this:
+// zero the 64 hex digits after the marker, hash the file, compare.
+const integrityMarker = "Integrity (SHA-256): "
+
+const integrityPlaceholder = "0000000000000000000000000000000000000000000000000000000000000000"
+
 // Doc accumulates styled lines and renders a complete PDF.
 type Doc struct {
-	title string
-	pages []*bytes.Buffer
-	y     float64
+	title     string
+	watermark string
+	pages     []*bytes.Buffer
+	y         float64
 }
+
+// Watermark sets a light diagonal stamp rendered UNDER the text of every page
+// (typically "exported by <who> - <when>"), plus the same line in each footer
+// where it survives grayscale printing.
+func (d *Doc) Watermark(text string) { d.watermark = text }
 
 // New starts a document; title is used for the metadata and the first heading
 // is up to the caller.
@@ -177,14 +193,62 @@ func (d *Doc) Bold(s string) {
 // Space adds vertical whitespace.
 func (d *Doc) Space() { d.y -= bodyLead / 2 }
 
-// Bytes assembles the final PDF.
+// Bytes assembles the final PDF without an integrity stamp (kept for callers
+// that do not need verifiability; reports use Finalize).
 func (d *Doc) Bytes() []byte {
-	// Footers (page x of y) are stamped now that the page count is known.
+	out, _ := d.assemble()
+	return out
+}
+
+// Finalize appends the integrity line, assembles the document with a
+// placeholder digest, computes SHA-256 over those exact bytes, and splices the
+// real digest into the placeholder (same length, so no offset moves). It
+// returns the final bytes and the digest hex. To verify: replace the 64 hex
+// digits after the marker with zeros, hash the file, compare — see
+// ops/verify-pdf-export.py. The digest is also recorded in the audit log's
+// EXPORT entry, tying the physical document to the tamper-evident chain.
+func (d *Doc) Finalize() ([]byte, string) {
+	d.Space()
+	d.text("F1", footerSize, bodyLead, 0, integrityMarker+integrityPlaceholder)
+	out, _ := d.assemble()
+
+	needle := []byte(esc(integrityMarker + integrityPlaceholder))
+	idx := bytes.Index(out, needle)
+	if idx < 0 {
+		// Cannot happen (we just wrote it, uncompressed); fail safe by
+		// returning the unstamped bytes with the digest of what we have.
+		sum := sha256.Sum256(out)
+		return out, hex.EncodeToString(sum[:])
+	}
+	sum := sha256.Sum256(out)
+	digest := hex.EncodeToString(sum[:])
+	copy(out[idx+len(esc(integrityMarker)):], digest)
+	return out, digest
+}
+
+func (d *Doc) assemble() ([]byte, string) {
+	// Footers and watermarks are stamped now that the page count is known.
 	total := len(d.pages)
 	for i, p := range d.pages {
+		footer := fmt.Sprintf("%s - page %d of %d", d.title, i+1, total)
+		if d.watermark != "" {
+			footer = d.watermark + " - " + footer
+			// Diagonal stamp under the content: draw into a fresh buffer first
+			// so it precedes (renders beneath) the page's text.
+			angle := math.Atan2(pageH-2*marginTop, pageW-2*marginX)
+			size := 30.0
+			if est := float64(len(d.watermark)) * avgCharEm; est*size > 640 {
+				size = 640 / est // long exporter emails shrink to fit the diagonal
+			}
+			var wm bytes.Buffer
+			fmt.Fprintf(&wm, "q 0.88 g BT /F2 %.1f Tf %.4f %.4f %.4f %.4f %.1f %.1f Tm (%s) Tj ET Q\n",
+				size, math.Cos(angle), math.Sin(angle), -math.Sin(angle), math.Cos(angle),
+				marginX+20, marginBot+60, esc(d.watermark))
+			wm.Write(p.Bytes())
+			*p = wm
+		}
 		fmt.Fprintf(p, "BT /F1 %.1f Tf %.1f %.1f Td (%s) Tj ET\n",
-			footerSize, marginX, marginBot-24,
-			esc(fmt.Sprintf("%s - page %d of %d", d.title, i+1, total)))
+			footerSize, marginX, marginBot-24, esc(footer))
 	}
 
 	var buf bytes.Buffer
@@ -219,5 +283,5 @@ func (d *Doc) Bytes() []byte {
 	}
 	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n",
 		len(offsets)+1, xrefAt)
-	return buf.Bytes()
+	return buf.Bytes(), ""
 }
