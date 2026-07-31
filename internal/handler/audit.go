@@ -23,7 +23,11 @@ type auditReader interface {
 type AuditHandler struct {
 	repo     auditReader
 	verifier chainVerifier
+	audit    auditRepo
 }
+
+// SetAuditLogger lets the audit viewer itself record exports of the log.
+func (h *AuditHandler) SetAuditLogger(a auditRepo) { h.audit = a }
 
 // NewAuditHandler constructs an AuditHandler.
 func NewAuditHandler(r auditReader) *AuditHandler {
@@ -118,6 +122,7 @@ func (h *AuditHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "verification error", "internal_error")
 		return
 	}
+	auditExport(r, h.audit, "audit.csv", map[string]any{"entries": st.Entries})
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="quorum-audit-log.csv"`)
 	cw := csv.NewWriter(w)

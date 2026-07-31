@@ -107,6 +107,7 @@ func (h *MeetingsHandler) ExportICS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 		return
 	}
+	auditExport(r, h.audit, "meetings.ics", map[string]any{"events": len(meetings)})
 	writeICS(w, meetings, "quorum-meetings.ics")
 }
 
@@ -121,5 +122,6 @@ func (h *MeetingsHandler) MeetingICS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "meeting not found", "not_found")
 		return
 	}
+	auditExport(r, h.audit, "meetings/"+id+"/meeting.ics", nil)
 	writeICS(w, []model.Meeting{*mt}, "meeting.ics")
 }

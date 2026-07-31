@@ -21,7 +21,12 @@ type ExportHandler struct {
 	members membersRepo
 	dues    duesRepo
 	auth    authRepo
+	audit   auditRepo
 }
+
+// SetAuditLogger attaches the audit log: every export is recorded (who, what,
+// when) in the tamper-evident chain.
+func (h *ExportHandler) SetAuditLogger(a auditRepo) { h.audit = a }
 
 // NewExportHandler constructs an ExportHandler.
 func NewExportHandler(m membersRepo, d duesRepo, a authRepo) *ExportHandler {
@@ -87,6 +92,7 @@ func (h *ExportHandler) allTransactions(ctx context.Context, memberID string) ([
 
 // ExportMembersCSV streams every member as CSV (member role and above).
 func (h *ExportHandler) ExportMembersCSV(w http.ResponseWriter, r *http.Request) {
+	auditExport(r, h.audit, "members.csv", nil)
 	members, err := h.allMembers(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "export failed", "internal_error")
@@ -106,6 +112,7 @@ func (h *ExportHandler) ExportMembersCSV(w http.ResponseWriter, r *http.Request)
 
 // ExportDuesCSV streams every dues invoice as CSV (officer role and above).
 func (h *ExportHandler) ExportDuesCSV(w http.ResponseWriter, r *http.Request) {
+	auditExport(r, h.audit, "dues.csv", nil)
 	invoices, err := h.allInvoices(r.Context(), "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "export failed", "internal_error")
@@ -126,6 +133,7 @@ func (h *ExportHandler) ExportDuesCSV(w http.ResponseWriter, r *http.Request) {
 
 // ExportTransactionsCSV streams every payment transaction as CSV (officer and above).
 func (h *ExportHandler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Request) {
+	auditExport(r, h.audit, "transactions.csv", nil)
 	txns, err := h.allTransactions(r.Context(), "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "export failed", "internal_error")
@@ -149,6 +157,7 @@ func (h *ExportHandler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Req
 // a portable personal-data export. A user not linked to a member record still
 // gets their account back with empty member sections.
 func (h *ExportHandler) ExportMyData(w http.ResponseWriter, r *http.Request) {
+	auditExport(r, h.audit, "my-data.json", nil)
 	userID := userIDFromCtx(r)
 	user, err := h.auth.GetUserByID(r.Context(), userID)
 	if err != nil {

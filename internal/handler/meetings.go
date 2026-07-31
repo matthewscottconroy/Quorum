@@ -16,7 +16,11 @@ type MeetingsHandler struct {
 	notifier deletionNotifier
 	events   eventNotifier
 	gov      minutesGovSource
+	audit    auditRepo
 }
+
+// SetAuditLogger attaches the audit log for export recording (.ics, minutes).
+func (h *MeetingsHandler) SetAuditLogger(a auditRepo) { h.audit = a }
 
 // NewMeetingsHandler constructs a MeetingsHandler.
 func NewMeetingsHandler(r meetingsRepo) *MeetingsHandler {

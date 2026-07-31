@@ -47,11 +47,17 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// sprint_id additionally accepts the sentinel "none" (the backlog).
+	if v := q.Get("sprint_id"); v != "" && v != "none" && !isValidUUID(v) {
+		writeError(w, 400, "sprint_id must be a UUID or \"none\"", "bad_request")
+		return
+	}
 	f := repo.ActionItemFilter{
 		AssigneeID: q.Get("assignee_id"),
 		MeetingID:  q.Get("meeting_id"),
 		PlanID:     q.Get("plan_id"),
 		Status:     q.Get("status"),
+		SprintID:   q.Get("sprint_id"),
 		Limit:      clampLimit(q.Get("limit"), 100),
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
@@ -73,6 +79,7 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AssigneeID  *string `json:"assignee_id"`
 		MeetingID   *string `json:"meeting_id"`
 		PlanID      *string `json:"plan_id"`
+		SprintID    *string `json:"sprint_id"`
 		DueDate     *string `json:"due_date"`
 		Priority    string  `json:"priority"`
 	}
@@ -94,6 +101,7 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	for name, v := range map[string]*string{
 		"assignee_id": body.AssigneeID, "meeting_id": body.MeetingID, "plan_id": body.PlanID,
+		"sprint_id": body.SprintID,
 	} {
 		if v != nil && !isValidUUID(*v) {
 			writeError(w, 400, name+" must be a UUID", "bad_request")
@@ -107,6 +115,7 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		AssigneeID:  body.AssigneeID,
 		MeetingID:   body.MeetingID,
 		PlanID:      body.PlanID,
+		SprintID:    body.SprintID,
 		Status:      "open",
 		Priority:    priority,
 	}
@@ -162,7 +171,7 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for _, p := range []string{"assignee_id", "meeting_id", "plan_id"} {
+	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "sprint_id"} {
 		if v, present := body[p]; present && v != nil {
 			s, ok := v.(string)
 			if !ok || !isValidUUID(s) {

@@ -234,6 +234,8 @@ const routes = {
   '#/audit':           '<page-audit>',
   '#/meetings':        '<page-meetings>',
   '#/calendar':        '<page-calendar>',
+  '#/board':           '<page-board>',
+  '#/reports':         '<page-reports>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
   '#/resources':       '<page-resources>',
@@ -286,6 +288,8 @@ import './components/page-notifications.js';
 import './components/page-audit.js';
 import './components/page-meetings.js';
 import './components/page-calendar.js';
+import './components/page-board.js';
+import './components/page-reports.js';
 import './components/page-plans.js';
 import './components/page-contacts.js';
 import './components/page-resources.js';

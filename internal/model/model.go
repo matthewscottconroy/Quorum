@@ -142,11 +142,30 @@ type ActionItem struct {
 	DueDate      *time.Time `json:"due_date,omitempty"`
 	Status       string     `json:"status"`
 	Priority     string     `json:"priority"`
+	SprintID     *string    `json:"sprint_id,omitempty"`
+	SprintName   *string    `json:"sprint_name,omitempty"`
 	CreatedBy    string     `json:"created_by"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	AssigneeName *string    `json:"assignee_name,omitempty"`
 }
+
+// Sprint is a time-boxed iteration for scoping and tracking work; action items
+// are attached to at most one sprint (unattached items form the backlog).
+type Sprint struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Goal      *string   `json:"goal,omitempty"`
+	StartsOn  string    `json:"starts_on"` // YYYY-MM-DD
+	EndsOn    string    `json:"ends_on"`   // YYYY-MM-DD
+	Status    string    `json:"status"`    // planned | active | completed
+	CreatedBy *string   `json:"created_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ValidSprintStatuses is the authoritative allowed set for Sprint.Status.
+var ValidSprintStatuses = map[string]bool{"planned": true, "active": true, "completed": true}
 
 // Plan represents a strategic initiative tracked over time.
 // Status values: "draft", "active", "completed", "archived".

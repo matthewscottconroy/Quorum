@@ -202,6 +202,7 @@ func (h *MeetingsHandler) MinutesDocument(w http.ResponseWriter, r *http.Request
 		}
 	}
 	doc := buildMinutesDocument(mt, entries, motions)
+	auditExport(r, h.audit, "meetings/"+id+"/minutes.md", map[string]any{"meeting": mt.Title})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf("attachment; filename=%q", "minutes-"+mt.ScheduledAt.Format("2006-01-02")+".md"))

@@ -116,6 +116,7 @@ func main() {
 	budgetRepo := repo.NewBudgetRepo(pool, fxRepo)
 	analyticsRepo := repo.NewAnalyticsRepo(pool, fxRepo)
 	notifyRepo := repo.NewNotifyRepo(pool)
+	sprintsRepo := repo.NewSprintsRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -143,6 +144,8 @@ func main() {
 	fxH := handler.NewFXHandler(fxRepo)
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	auditH := handler.NewAuditHandler(auditRepo)
+	sprintsH := handler.NewSprintsHandler(sprintsRepo)
+	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo)
 	auditH.SetVerifier(auditRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
 	webhooksH := handler.NewWebhooksHandler(duesRepo, cfg.StripeWebhookSecret, cfg.PayPalWebhookID, cfg.AllowUnsignedWebhooks)
@@ -167,6 +170,10 @@ func main() {
 	governanceH.SetEventNotifier(notifySvc)
 	meetingsH.SetEventNotifier(notifySvc)
 	meetingsH.SetGovernanceSource(governanceRepo) // motions/votes for the minutes document
+	// Every export is recorded in the audit chain: who, what, when.
+	exportH.SetAuditLogger(auditRepo)
+	meetingsH.SetAuditLogger(auditRepo)
+	auditH.SetAuditLogger(auditRepo)
 	actionItemsH.SetEventNotifier(notifySvc)
 
 	// Metrics registry with DB pool saturation gauges sampled at scrape time.
@@ -363,6 +370,13 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/export/dues.csv", exportH.ExportDuesCSV)
 			r.With(mw.RequireRole("officer")).Get("/export/transactions.csv", exportH.ExportTransactionsCSV)
 
+			// PDF reports: printable documents for officers; the audit-log
+			// report is admin-only like the viewer. Every render is logged.
+			r.With(mw.RequireRole("officer")).Get("/reports/members.pdf", reportsH.MembersPDF)
+			r.With(mw.RequireRole("officer")).Get("/reports/dues.pdf", reportsH.DuesPDF)
+			r.With(mw.RequireRole("officer")).Get("/reports/meetings/{id}/minutes.pdf", reportsH.MinutesPDF)
+			r.With(mw.RequireRole("admin")).Get("/reports/audit.pdf", reportsH.AuditPDF)
+
 			r.With(mw.RequireRole("member")).Get("/meetings", meetingsH.List)
 			r.With(mw.RequireRole("officer")).Post("/meetings", meetingsH.Create)
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}", meetingsH.Get)
@@ -409,6 +423,12 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}/proxies", governanceH.ListProxies)
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/proxies", governanceH.CreateProxy)
 			r.With(mw.RequireRole("officer")).Delete("/proxies/{id}", governanceH.DeleteProxy)
+
+			// Sprints: iteration time-boxes for the work board.
+			r.With(mw.RequireRole("member")).Get("/sprints", sprintsH.List)
+			r.With(mw.RequireRole("officer")).Post("/sprints", sprintsH.Create)
+			r.With(mw.RequireRole("officer")).Patch("/sprints/{id}", sprintsH.Update)
+			r.With(mw.RequireRole("officer")).Delete("/sprints/{id}", sprintsH.Delete)
 
 			r.With(mw.RequireRole("member")).Get("/action-items", actionItemsH.List)
 			r.With(mw.RequireRole("officer")).Post("/action-items", actionItemsH.Create)
