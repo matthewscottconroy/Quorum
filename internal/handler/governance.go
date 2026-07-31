@@ -172,6 +172,7 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		MoverID    *string `json:"mover_id"`
 		SeconderID *string `json:"seconder_id"`
 		Threshold  string  `json:"threshold"`
+		Business   string  `json:"business"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
@@ -197,6 +198,13 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
 		return
 	}
+	if body.Business == "" {
+		body.Business = "new"
+	}
+	if body.Business != "new" && body.Business != "old" {
+		writeError(w, http.StatusBadRequest, "business must be new or old", "bad_request")
+		return
+	}
 	status := "draft"
 	if body.SeconderID != nil {
 		status = "seconded"
@@ -208,6 +216,7 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		MoverID:    body.MoverID,
 		SeconderID: body.SeconderID,
 		Threshold:  body.Threshold,
+		Business:   body.Business,
 		Status:     status,
 	}, userIDFromCtx(r))
 	if err != nil {
@@ -242,6 +251,7 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		MoverID    *string `json:"mover_id"`
 		SeconderID *string `json:"seconder_id"`
 		Threshold  *string `json:"threshold"`
+		Business   *string `json:"business"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
@@ -263,7 +273,11 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
 		return
 	}
-	m, err := h.repo.UpdateMotion(r.Context(), id, body.Title, body.Detail, body.MoverID, body.SeconderID, body.Threshold)
+	if body.Business != nil && *body.Business != "new" && *body.Business != "old" {
+		writeError(w, http.StatusBadRequest, "business must be new or old", "bad_request")
+		return
+	}
+	m, err := h.repo.UpdateMotion(r.Context(), id, body.Title, body.Detail, body.MoverID, body.SeconderID, body.Threshold, body.Business)
 	if err != nil {
 		if isFKViolation(err) {
 			writeError(w, http.StatusBadRequest, "mover or seconder does not exist", "bad_request")

@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -60,7 +61,8 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
 		       m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
-		       m.status, m.created_by::text, m.created_at, m.updated_at
+		       m.status, m.created_by::text, m.minutes_finalized_at, m.minutes_finalized_by::text,
+		       m.created_at, m.updated_at
 		FROM meetings m
 		%s
 		ORDER BY m.scheduled_at DESC
@@ -75,7 +77,8 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	for rows.Next() {
 		var mt model.Meeting
 		if err := rows.Scan(&total, &mt.ID, &mt.Title, &mt.ScheduledAt, &mt.EndsAt, &mt.Location,
-			&mt.Agenda, &mt.Notes, &mt.Status, &mt.CreatedBy, &mt.CreatedAt, &mt.UpdatedAt); err != nil {
+			&mt.Agenda, &mt.Notes, &mt.Status, &mt.CreatedBy, &mt.MinutesFinalizedAt, &mt.MinutesFinalizedBy,
+			&mt.CreatedAt, &mt.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		meetings = append(meetings, mt)
@@ -97,7 +100,8 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 func (r *MeetingsRepo) Get(ctx context.Context, id string) (*model.Meeting, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
-		       m.status, m.created_by::text, m.created_at, m.updated_at
+		       m.status, m.created_by::text, m.minutes_finalized_at, m.minutes_finalized_by::text,
+		       m.created_at, m.updated_at
 		FROM meetings m WHERE m.id = $1::uuid`, id)
 	mt, err := scanMeeting(row)
 	if err != nil {
@@ -120,7 +124,7 @@ func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy 
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO meetings (title, scheduled_at, ends_at, location, agenda, notes, status, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid)
-		RETURNING id::text, title, scheduled_at, ends_at, location, agenda, notes, status, created_by::text, created_at, updated_at`,
+		RETURNING id::text, title, scheduled_at, ends_at, location, agenda, notes, status, created_by::text, minutes_finalized_at, minutes_finalized_by::text, created_at, updated_at`,
 		mt.Title, mt.ScheduledAt, mt.EndsAt, mt.Location, mt.Agenda, mt.Notes, mt.Status, createdBy)
 	created, err := scanMeeting(row)
 	if err != nil {
@@ -160,7 +164,9 @@ func (r *MeetingsRepo) HasGovernanceHistory(ctx context.Context, meetingID strin
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM meeting_decisions WHERE meeting_id = $1::uuid)
 		    OR EXISTS(SELECT 1 FROM motions WHERE meeting_id = $1::uuid
-		              AND status IN ('carried', 'failed', 'tabled', 'withdrawn'))`, meetingID).Scan(&exists)
+		              AND status IN ('carried', 'failed', 'tabled', 'withdrawn'))
+		    OR EXISTS(SELECT 1 FROM meetings WHERE id = $1::uuid
+		              AND minutes_finalized_at IS NOT NULL)`, meetingID).Scan(&exists)
 	return exists, err
 }
 
@@ -317,7 +323,8 @@ func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
 func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT m.id::text, m.title, m.scheduled_at, m.ends_at, m.location, m.agenda, m.notes,
-		       m.status, m.created_by::text, m.created_at, m.updated_at
+		       m.status, m.created_by::text, m.minutes_finalized_at, m.minutes_finalized_by::text,
+		       m.created_at, m.updated_at
 		FROM meetings m
 		WHERE m.scheduled_at >= now() AND m.status = 'scheduled'
 		ORDER BY m.scheduled_at
@@ -340,6 +347,126 @@ func (r *MeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, er
 func scanMeeting(row scannable) (model.Meeting, error) {
 	var mt model.Meeting
 	err := row.Scan(&mt.ID, &mt.Title, &mt.ScheduledAt, &mt.EndsAt, &mt.Location, &mt.Agenda,
-		&mt.Notes, &mt.Status, &mt.CreatedBy, &mt.CreatedAt, &mt.UpdatedAt)
+		&mt.Notes, &mt.Status, &mt.CreatedBy, &mt.MinutesFinalizedAt, &mt.MinutesFinalizedBy,
+		&mt.CreatedAt, &mt.UpdatedAt)
 	return mt, err
+}
+
+// ---- Minutes (recording secretary) ----
+
+// ErrMinutesFinalized is returned when attempting to finalize minutes twice.
+var ErrMinutesFinalized = errors.New("minutes are already finalized")
+
+// ListMinutes returns a meeting's journal in chronological order, with the
+// linked motion's title and the recorder's email resolved for display.
+func (r *MeetingsRepo) ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT e.id::text, e.meeting_id::text, e.seq, e.kind, e.body,
+		       e.motion_id::text, mo.title, e.recorded_by::text, u.email, e.recorded_at
+		FROM meeting_minutes_entries e
+		LEFT JOIN motions mo ON mo.id = e.motion_id
+		LEFT JOIN users u ON u.id = e.recorded_by
+		WHERE e.meeting_id = $1::uuid
+		ORDER BY e.seq`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]model.MinutesEntry, 0)
+	for rows.Next() {
+		var e model.MinutesEntry
+		if err := rows.Scan(&e.ID, &e.MeetingID, &e.Seq, &e.Kind, &e.Body,
+			&e.MotionID, &e.MotionTitle, &e.RecordedBy, &e.RecordedByName, &e.RecordedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// AddMinutesEntry appends one journal line. The database refuses if the
+// meeting's minutes are finalized.
+func (r *MeetingsRepo) AddMinutesEntry(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO meeting_minutes_entries (meeting_id, kind, body, motion_id, recorded_by)
+		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid)
+		RETURNING id::text`, meetingID, kind, body, motionID, recordedBy).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return r.getMinutesEntry(ctx, id)
+}
+
+func (r *MeetingsRepo) getMinutesEntry(ctx context.Context, id string) (*model.MinutesEntry, error) {
+	var e model.MinutesEntry
+	err := r.db.QueryRow(ctx, `
+		SELECT e.id::text, e.meeting_id::text, e.seq, e.kind, e.body,
+		       e.motion_id::text, mo.title, e.recorded_by::text, u.email, e.recorded_at
+		FROM meeting_minutes_entries e
+		LEFT JOIN motions mo ON mo.id = e.motion_id
+		LEFT JOIN users u ON u.id = e.recorded_by
+		WHERE e.id = $1::uuid`, id).
+		Scan(&e.ID, &e.MeetingID, &e.Seq, &e.Kind, &e.Body,
+			&e.MotionID, &e.MotionTitle, &e.RecordedBy, &e.RecordedByName, &e.RecordedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// UpdateMinutesEntry replaces an entry's kind/body/motion link (a correction
+// during the meeting). meetingID scopes the update so an entry id from another
+// meeting cannot be targeted. Refused by the database once finalized.
+func (r *MeetingsRepo) UpdateMinutesEntry(ctx context.Context, meetingID, entryID, kind, body string, motionID *string) (*model.MinutesEntry, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE meeting_minutes_entries
+		SET kind = $1, body = $2, motion_id = $3::uuid
+		WHERE id = $4::uuid AND meeting_id = $5::uuid`,
+		kind, body, motionID, entryID, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	return r.getMinutesEntry(ctx, entryID)
+}
+
+// DeleteMinutesEntry removes an entry (before finalization only; the database
+// enforces that).
+func (r *MeetingsRepo) DeleteMinutesEntry(ctx context.Context, meetingID, entryID string) error {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM meeting_minutes_entries WHERE id = $1::uuid AND meeting_id = $2::uuid`,
+		entryID, meetingID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// FinalizeMinutes marks a meeting's minutes approved: from then on the journal
+// is immutable (database trigger) and finalization cannot be undone. Returns
+// ErrMinutesFinalized if already done, pgx.ErrNoRows if the meeting is missing.
+func (r *MeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userID string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE meetings SET minutes_finalized_at = now(), minutes_finalized_by = $2::uuid, updated_at = now()
+		WHERE id = $1::uuid AND minutes_finalized_at IS NULL`, meetingID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM meetings WHERE id = $1::uuid)`, meetingID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return pgx.ErrNoRows
+		}
+		return ErrMinutesFinalized
+	}
+	return nil
 }

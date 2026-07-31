@@ -93,12 +93,34 @@ cmd_create() {
   if pg_dump_cmd > "$tmp"; then
     mv "$tmp" "$file"
     echo "    wrote $(du -h "$file" | cut -f1) ($(stat -c%s "$file") bytes)"
+    write_manifest "$file"
   else
     rm -f "$tmp"
     echo "    backup FAILED" >&2
     exit 1
   fi
   cmd_prune
+}
+
+# write_manifest records what would make this backup usable as evidence later:
+# the dump's SHA-256 (integrity of the file itself), the schema version, and
+# the audit chain's head hash AT BACKUP TIME — so any backup can serve as an
+# independent anchor when verifying that history was never rewritten
+# (see COMPLIANCE.md).
+write_manifest() {
+  local file="$1" sha ver head
+  sha="$(sha256sum "$file" | cut -d' ' -f1)"
+  ver="$(psql_cmd 'SELECT max(version) FROM schema_migrations' 2>/dev/null | tr -d '[:space:]')"
+  head="$(psql_cmd "SELECT coalesce((SELECT entry_hash FROM audit_log ORDER BY seq DESC LIMIT 1), 'none')" 2>/dev/null | tr -d '[:space:]')"
+  {
+    echo "file: $(basename "$file")"
+    echo "sha256: $sha"
+    echo "bytes: $(stat -c%s "$file")"
+    echo "created_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "schema_version: ${ver:-unknown}"
+    echo "audit_chain_head: ${head:-unknown}"
+  } > "${file}.manifest"
+  echo "    manifest: sha256=${sha:0:16}… chain_head=${head:0:16}…"
 }
 
 cmd_list() {
@@ -123,7 +145,7 @@ cmd_prune() {
     local i
     for (( i=KEEP; i<${#files[@]}; i++ )); do
       echo "    rm ${files[$i]}"
-      rm -f "${files[$i]}"
+      rm -f "${files[$i]}" "${files[$i]}.manifest"
     done
   fi
 }

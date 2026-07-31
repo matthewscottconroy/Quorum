@@ -1,4 +1,4 @@
-.PHONY: build run dev test test-web test-integration lint backup backup-list restore backup-verify \
+.PHONY: build run dev test test-web test-integration lint backup backup-list restore backup-verify backups-install \
         local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
@@ -46,6 +46,11 @@ restore:
 # Prove the latest (or FILE=...) backup is restorable, into a throwaway DB.
 backup-verify:
 	scripts/backup.sh verify "$(FILE)"
+
+# Install nightly-backup + weekly-verify + daily audit-chain systemd timers
+# pointed at this checkout (root: system-wide; otherwise per-user).
+backups-install:
+	ops/install-backup-timers.sh
 
 # ── Local stack via plain Podman (no compose provider needed) ─────────────────
 # Runs Postgres + the app in one Podman pod (shared netns → app reaches the DB
@@ -130,6 +135,7 @@ help:
 	@echo "  backup-list     List existing backups"
 	@echo "  backup-verify   Prove the latest backup restores into a scratch DB"
 	@echo "  restore         Restore a dump into the live DB (FILE=... , destructive)"
+	@echo "  backups-install Install nightly backup/verify systemd timers for this checkout"
 	@echo "  lint            Run golangci-lint"
 	@echo ""
 	@echo "  local           Start the local stack with plain Podman (no compose needed)"

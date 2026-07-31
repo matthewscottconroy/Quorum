@@ -166,6 +166,7 @@ func main() {
 	// and assignments.
 	governanceH.SetEventNotifier(notifySvc)
 	meetingsH.SetEventNotifier(notifySvc)
+	meetingsH.SetGovernanceSource(governanceRepo) // motions/votes for the minutes document
 	actionItemsH.SetEventNotifier(notifySvc)
 
 	// Metrics registry with DB pool saturation gauges sampled at scrape time.
@@ -366,6 +367,15 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/meetings", meetingsH.Create)
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}", meetingsH.Get)
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}/ics", meetingsH.MeetingICS)
+
+			// Recording-secretary minutes: the journal is member-readable;
+			// writing is officer work; finalization is one-way and confirm-gated.
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/minutes", meetingsH.ListMinutes)
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/minutes.md", meetingsH.MinutesDocument)
+			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/minutes", meetingsH.AddMinutesEntry)
+			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}/minutes/{eid}", meetingsH.UpdateMinutesEntry)
+			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}/minutes/{eid}", meetingsH.DeleteMinutesEntry)
+			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/minutes/finalize", meetingsH.FinalizeMinutes)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}", meetingsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/meetings/{id}", meetingsH.Delete)
 			r.With(mw.RequireRole("officer")).Put("/meetings/{id}/attendees", meetingsH.SetAttendees)

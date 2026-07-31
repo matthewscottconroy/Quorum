@@ -176,7 +176,7 @@ func (r *GovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]m
 		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
 		       mo.mover_id::text, mv.display_name,
 		       mo.seconder_id::text, sc.display_name,
-		       mo.threshold, mo.status, mo.created_by::text,
+		       mo.threshold, mo.business, mo.status, mo.created_by::text,
 		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
 		FROM motions mo
 		LEFT JOIN members mv ON mv.id = mo.mover_id
@@ -258,7 +258,7 @@ func (r *GovernanceRepo) GetMotion(ctx context.Context, id string) (*model.Motio
 		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
 		       mo.mover_id::text, mv.display_name,
 		       mo.seconder_id::text, sc.display_name,
-		       mo.threshold, mo.status, mo.created_by::text,
+		       mo.threshold, mo.business, mo.status, mo.created_by::text,
 		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
 		FROM motions mo
 		LEFT JOIN members mv ON mv.id = mo.mover_id
@@ -287,14 +287,19 @@ func (r *GovernanceRepo) GetMotion(ctx context.Context, id string) (*model.Motio
 	return &m, nil
 }
 
-// CreateMotion inserts a new draft motion.
+// CreateMotion inserts a new draft motion. An unset business class defaults to
+// new business, matching the column default — callers that predate the field
+// (and tests) stay valid.
 func (r *GovernanceRepo) CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error) {
+	if m.Business == "" {
+		m.Business = "new"
+	}
 	var id string
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO motions (meeting_id, title, detail, mover_id, seconder_id, threshold, status, created_by)
-		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8::uuid)
+		INSERT INTO motions (meeting_id, title, detail, mover_id, seconder_id, threshold, business, status, created_by)
+		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid)
 		RETURNING id::text`,
-		m.MeetingID, m.Title, m.Detail, m.MoverID, m.SeconderID, m.Threshold, m.Status, createdBy).Scan(&id)
+		m.MeetingID, m.Title, m.Detail, m.MoverID, m.SeconderID, m.Threshold, m.Business, m.Status, createdBy).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +308,7 @@ func (r *GovernanceRepo) CreateMotion(ctx context.Context, m *model.Motion, crea
 
 // UpdateMotion edits an editable motion's fields (title/detail/threshold/mover/
 // seconder). Callers gate this to non-terminal motions.
-func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error) {
+func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE motions SET
 			title       = coalesce($1, title),
@@ -311,9 +316,10 @@ func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, det
 			mover_id    = coalesce($3::uuid, mover_id),
 			seconder_id = coalesce($4::uuid, seconder_id),
 			threshold   = coalesce($5, threshold),
+			business    = coalesce($6, business),
 			updated_at  = now()
-		WHERE id = $6::uuid`,
-		title, detail, moverID, seconderID, threshold, id)
+		WHERE id = $7::uuid`,
+		title, detail, moverID, seconderID, threshold, business, id)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +591,7 @@ func scanMotion(row scannable) (model.Motion, error) {
 	var m model.Motion
 	err := row.Scan(&m.ID, &m.MeetingID, &m.Title, &m.Detail,
 		&m.MoverID, &m.MoverName, &m.SeconderID, &m.SeconderName,
-		&m.Threshold, &m.Status, &m.CreatedBy,
+		&m.Threshold, &m.Business, &m.Status, &m.CreatedBy,
 		&m.OpenedAt, &m.ClosedAt, &m.CreatedAt, &m.UpdatedAt)
 	return m, err
 }

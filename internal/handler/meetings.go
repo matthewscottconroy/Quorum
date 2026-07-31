@@ -15,6 +15,7 @@ type MeetingsHandler struct {
 	repo     meetingsRepo
 	notifier deletionNotifier
 	events   eventNotifier
+	gov      minutesGovSource
 }
 
 // NewMeetingsHandler constructs a MeetingsHandler.

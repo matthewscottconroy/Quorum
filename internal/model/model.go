@@ -90,20 +90,22 @@ type Transaction struct {
 // Status values: "scheduled", "completed", "cancelled".
 // Attendees and Decisions are populated only when fetching a single meeting.
 type Meeting struct {
-	ID          string            `json:"id"`
-	Title       string            `json:"title"`
-	ScheduledAt time.Time         `json:"scheduled_at"`
-	EndsAt      *time.Time        `json:"ends_at,omitempty"`
-	Location    *string           `json:"location,omitempty"`
-	Agenda      *string           `json:"agenda,omitempty"`
-	Notes       *string           `json:"notes,omitempty"`
-	Status      string            `json:"status"`
-	CreatedBy   string            `json:"created_by"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	Attendees   []MeetingAttendee `json:"attendees,omitempty"`
-	Decisions   []MeetingDecision `json:"decisions,omitempty"`
-	ActionItems []ActionItem      `json:"action_items,omitempty"`
+	ID                 string            `json:"id"`
+	Title              string            `json:"title"`
+	ScheduledAt        time.Time         `json:"scheduled_at"`
+	EndsAt             *time.Time        `json:"ends_at,omitempty"`
+	Location           *string           `json:"location,omitempty"`
+	Agenda             *string           `json:"agenda,omitempty"`
+	Notes              *string           `json:"notes,omitempty"`
+	Status             string            `json:"status"`
+	CreatedBy          string            `json:"created_by"`
+	MinutesFinalizedAt *time.Time        `json:"minutes_finalized_at,omitempty"`
+	MinutesFinalizedBy *string           `json:"minutes_finalized_by,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	Attendees          []MeetingAttendee `json:"attendees,omitempty"`
+	Decisions          []MeetingDecision `json:"decisions,omitempty"`
+	ActionItems        []ActionItem      `json:"action_items,omitempty"`
 }
 
 // MeetingAttendee records one member's attendance at a meeting.
@@ -291,6 +293,30 @@ type BudgetTotals struct {
 	Currency     string `json:"currency"`
 }
 
+// MinutesEntry is one chronological line in a meeting's journal, written by
+// the recording secretary. Kind follows Robert's Rules structure; MotionID
+// optionally ties a discussion entry to the motion being debated. Once the
+// meeting's minutes are finalized, entries are immutable (database-enforced).
+type MinutesEntry struct {
+	ID             string    `json:"id"`
+	MeetingID      string    `json:"meeting_id"`
+	Seq            int64     `json:"seq"`
+	Kind           string    `json:"kind"`
+	Body           string    `json:"body"`
+	MotionID       *string   `json:"motion_id,omitempty"`
+	MotionTitle    *string   `json:"motion_title,omitempty"`
+	RecordedBy     *string   `json:"recorded_by,omitempty"`
+	RecordedByName *string   `json:"recorded_by_name,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at"`
+}
+
+// ValidMinutesKinds is the authoritative allowed set for MinutesEntry.Kind.
+var ValidMinutesKinds = map[string]bool{
+	"call_to_order": true, "previous_minutes": true, "report": true,
+	"old_business": true, "new_business": true, "discussion": true,
+	"point_of_order": true, "recess": true, "adjournment": true, "note": true,
+}
+
 // ValidBudgetStatuses and ValidBudgetKinds are the authoritative allowed sets.
 var (
 	ValidBudgetStatuses = map[string]bool{"draft": true, "active": true, "archived": true}
@@ -361,6 +387,7 @@ type Motion struct {
 	SeconderID   *string      `json:"seconder_id,omitempty"`
 	SeconderName *string      `json:"seconder_name,omitempty"`
 	Threshold    string       `json:"threshold"`
+	Business     string       `json:"business"` // "new" or "old" (Robert's Rules agenda split)
 	Status       string       `json:"status"`
 	CreatedBy    *string      `json:"created_by,omitempty"`
 	OpenedAt     *time.Time   `json:"opened_at,omitempty"`

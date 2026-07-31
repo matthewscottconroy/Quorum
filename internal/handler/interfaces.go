@@ -85,6 +85,11 @@ type meetingsRepo interface {
 	UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
 	DeleteDecision(ctx context.Context, id string) error
 	Upcoming(ctx context.Context, n int) ([]model.Meeting, error)
+	ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error)
+	AddMinutesEntry(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error)
+	UpdateMinutesEntry(ctx context.Context, meetingID, entryID, kind, body string, motionID *string) (*model.MinutesEntry, error)
+	DeleteMinutesEntry(ctx context.Context, meetingID, entryID string) error
+	FinalizeMinutes(ctx context.Context, meetingID, userID string) error
 }
 
 // plansRepo is satisfied by *repo.PlansRepo.
@@ -174,7 +179,7 @@ type governanceRepo interface {
 	ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error)
 	GetMotion(ctx context.Context, id string) (*model.Motion, error)
 	CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
-	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
+	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error)
 	SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
 	DeleteMotion(ctx context.Context, id string) error
 	MotionStatus(ctx context.Context, id string) (status, meetingID string, err error)

@@ -322,6 +322,21 @@ func isCheckViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23514"
 }
 
+// isDBRule reports whether err is a RAISE EXCEPTION (SQLSTATE P0001) from one
+// of our integrity triggers; dbRuleMessage extracts its human-readable text.
+func isDBRule(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "P0001"
+}
+
+func dbRuleMessage(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Message
+	}
+	return "operation not allowed"
+}
+
 // isConstraint reports whether err is a violation of the named constraint, so
 // a handler can turn a specific database rule into a specific message.
 func isConstraint(err error, name string) bool {
@@ -343,6 +358,11 @@ func writeRepoError(w http.ResponseWriter, err error, notFoundMsg, fallbackMsg s
 	switch {
 	case isNotFound(err):
 		writeError(w, http.StatusNotFound, notFoundMsg, "not_found")
+	case isDBRule(err):
+		// A RAISE EXCEPTION from one of our integrity triggers (append-only
+		// ledger, finalized minutes, …) is a business rule, not a server fault:
+		// surface its message as a conflict.
+		writeError(w, http.StatusConflict, dbRuleMessage(err), "conflict")
 	case isCheckViolation(err):
 		writeError(w, http.StatusBadRequest, "a field value is invalid or exceeds the maximum length", "bad_request")
 	case isFKViolation(err):

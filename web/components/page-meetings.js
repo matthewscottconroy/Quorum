@@ -1,4 +1,4 @@
-import { api, canWrite, isAuthenticated, isSuperadmin, currentMemberId } from '../app.js';
+import { api, apiDownload, canWrite, isAuthenticated, isSuperadmin, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete } from '../utils.js';
 import './vote-tally.js';
@@ -198,6 +198,10 @@ class PageMeetings extends HTMLElement {
           <div id="gov-section" style="grid-column:1 / -1;border-top:1px solid var(--color-border);padding-top:1rem">
             <div style="text-align:center;padding:.5rem"><span class="spinner"></span></div>
           </div>
+
+          <div id="minutes-section" style="grid-column:1 / -1;border-top:1px solid var(--color-border);padding-top:1rem">
+            <div style="text-align:center;padding:.5rem"><span class="spinner"></span></div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Close</button>
@@ -237,6 +241,7 @@ class PageMeetings extends HTMLElement {
 
     renderDecisions(mt.decisions);
     this.renderGovernance(dialog, id);
+    this.renderMinutes(dialog, id, mt);
 
     // Reload the list whenever the editor closes (close button, Cancel, or Escape),
     // but only while still mounted and authenticated so a logout-triggered close
@@ -392,6 +397,7 @@ class PageMeetings extends HTMLElement {
                 ${m.mover_name ? 'Moved by ' + esc(m.mover_name) : 'No mover'}${m.seconder_name ? ' · seconded by ' + esc(m.seconder_name) : ''} · ${THRESHOLD_LABEL[m.threshold] || esc(m.threshold)}
               </div>
             </div>
+            ${m.business === 'old' ? '<span class="badge" style="background:var(--color-bg);color:var(--color-text-muted)">old business</span>' : ''}
             <span class="badge badge-${MOTION_BADGE[m.status] || 'none'}">${esc(m.status)}</span>
           </div>
           ${m.detail ? `<div style="font-size:.82rem;margin:.4rem 0">${esc(m.detail)}</div>` : ''}
@@ -410,6 +416,10 @@ class PageMeetings extends HTMLElement {
             <option value="majority">Simple majority</option>
             <option value="two_thirds">Two-thirds</option>
             <option value="unanimous">Unanimous</option>
+          </select>
+          <select id="nm-business" style="padding:.3rem .4rem;font-size:.85rem" title="Robert's Rules agenda class">
+            <option value="new">New business</option>
+            <option value="old">Old business</option>
           </select>
           <button class="btn-primary gov-act" data-act="create" style="font-size:.82rem">Add motion</button>
         </div>
@@ -440,6 +450,120 @@ class PageMeetings extends HTMLElement {
       ${proxyBlock}`;
   }
 
+  /**
+   * Recording-secretary journal (Robert's Rules): chronological entries the
+   * secretary types during the meeting, each optionally tied to a motion.
+   * Officers add/correct/remove entries until the minutes are FINALIZED —
+   * after that the journal is immutable (database-enforced) and only the
+   * document export remains.
+   */
+  async renderMinutes(dialog, meetingId, mt) {
+    const host = dialog.querySelector('#minutes-section');
+    if (!host) return;
+    const officer = canWrite();
+    const KINDS = [
+      ['call_to_order','Call to order'], ['previous_minutes','Previous minutes'],
+      ['report','Report'], ['old_business','Old business'], ['new_business','New business'],
+      ['discussion','Discussion'], ['point_of_order','Point of order'],
+      ['recess','Recess'], ['adjournment','Adjournment'], ['note','Note'],
+    ];
+    const kindLabel = k => (KINDS.find(x => x[0] === k) ?? [k, k])[1];
+
+    let entries = [], motions = [];
+    try {
+      [entries, motions] = await Promise.all([
+        api('GET', `/meetings/${meetingId}/minutes`),
+        api('GET', `/meetings/${meetingId}/motions`).catch(() => []),
+      ]);
+    } catch {
+      host.innerHTML = '<p style="color:var(--color-text-muted)">Failed to load minutes.</p>';
+      return;
+    }
+    entries = entries ?? []; motions = motions ?? [];
+    const finalized = !!mt.minutes_finalized_at;
+    const canEdit = officer && !finalized;
+    const motionOpts = ['<option value="">— link a motion (optional) —</option>']
+      .concat(motions.map(m => `<option value="${esc(m.id)}">${esc(m.title)}</option>`)).join('');
+
+    host.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">
+        <h3 style="font-size:.95rem;margin:0">Minutes ${finalized
+          ? `<span class="badge" style="background:color-mix(in srgb, var(--color-success,#137333) 15%, transparent);color:var(--color-success,#137333)">finalized ${esc(fmtDateTime(mt.minutes_finalized_at))}</span>`
+          : '<span class="badge" style="background:var(--color-bg);color:var(--color-text-muted)">draft</span>'}</h3>
+        <div style="display:flex;gap:.4rem">
+          <button class="btn-secondary" id="min-export" style="font-size:.8rem">Export minutes (.md)</button>
+          ${canEdit ? '<button class="btn-primary" id="min-finalize" style="font-size:.8rem">Finalize minutes</button>' : ''}
+        </div>
+      </div>
+      <div id="min-list" style="margin-top:.75rem">
+        ${entries.length ? entries.map(e => `
+          <div style="display:flex;gap:.6rem;align-items:flex-start;padding:.45rem 0;border-bottom:1px solid var(--color-border,#eee)" data-eid="${esc(e.id)}">
+            <span class="badge" style="background:var(--color-bg);color:var(--color-text-muted);white-space:nowrap">${esc(kindLabel(e.kind))}</span>
+            <div style="flex:1;font-size:.88rem">
+              ${esc(e.body)}
+              ${e.motion_title ? `<div style="font-size:.75rem;color:var(--color-text-muted)">re: motion “${esc(e.motion_title)}”</div>` : ''}
+              <div style="font-size:.72rem;color:var(--color-text-muted)">${esc(fmtDateTime(e.recorded_at))}${e.recorded_by_name ? ' · ' + esc(e.recorded_by_name) : ''}</div>
+            </div>
+            ${canEdit ? `<button class="btn-ghost min-del" data-eid="${esc(e.id)}" style="font-size:.75rem;color:var(--color-danger)">Remove</button>` : ''}
+          </div>`).join('')
+        : '<p style="font-size:.85rem;color:var(--color-text-muted)">No journal entries yet.</p>'}
+      </div>
+      ${canEdit ? `
+        <div style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.75rem;margin-top:.6rem">
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.5rem">
+            <select id="min-kind" style="padding:.3rem .4rem;font-size:.85rem">
+              ${KINDS.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}
+            </select>
+            <select id="min-motion" style="flex:1;min-width:160px;padding:.3rem .4rem;font-size:.85rem">${motionOpts}</select>
+          </div>
+          <div class="form-group"><textarea id="min-body" rows="2" placeholder="What happened? e.g. “Meeting called to order at 6:03 PM by Chair Alvarez.”"></textarea></div>
+          <button class="btn-secondary" id="min-add" style="width:100%">+ Record entry</button>
+        </div>` : ''}
+    `;
+
+    const reload = async () => {
+      const fresh = await api('GET', `/meetings/${meetingId}`);
+      this.renderMinutes(dialog, meetingId, fresh);
+    };
+
+    host.querySelector('#min-export').addEventListener('click', () => {
+      apiDownload(`/meetings/${meetingId}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
+    });
+    host.querySelector('#min-add')?.addEventListener('click', async () => {
+      const body = host.querySelector('#min-body').value.trim();
+      if (!body) { toast('Entry text is required', 'error'); return; }
+      try {
+        await api('POST', `/meetings/${meetingId}/minutes`, {
+          kind: host.querySelector('#min-kind').value,
+          body,
+          motion_id: host.querySelector('#min-motion').value || null,
+        });
+        await reload();
+      } catch (err) { toast(err.error ?? 'Failed to record', 'error'); }
+    });
+    host.querySelectorAll('.min-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api('DELETE', `/meetings/${meetingId}/minutes/${btn.dataset.eid}`);
+          await reload();
+        } catch (err) { toast(err.error ?? 'Failed to remove', 'error'); }
+      });
+    });
+    host.querySelector('#min-finalize')?.addEventListener('click', () => {
+      confirmDelete({
+        noun: 'minutes (finalize — this is permanent)',
+        name: mt.title,
+        onConfirm: async (confirmVal) => {
+          try {
+            await api('POST', `/meetings/${meetingId}/minutes/finalize?confirm=${encodeURIComponent(confirmVal)}`);
+            toast('Minutes finalized', 'success');
+            await reload();
+          } catch (err) { toast(err.error ?? 'Finalize failed', 'error'); throw err; }
+        },
+      });
+    });
+  }
+
   /** Event delegation for all governance controls; reload() re-renders on success. */
   wireGovernance(host, meetingId, reload) {
     host.addEventListener('click', async e => {
@@ -458,6 +582,7 @@ class PageMeetings extends HTMLElement {
             detail: host.querySelector('#nm-detail').value.trim() || null,
             mover_id: mover || null,
             threshold: host.querySelector('#nm-threshold').value,
+            business: host.querySelector('#nm-business').value,
           });
           toast('Motion added','success');
         } else if (act === 'second') {

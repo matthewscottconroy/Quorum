@@ -297,6 +297,11 @@ type mockMeetingsRepo struct {
 	GetAttendeesFn         func(ctx context.Context, meetingID string) ([]model.MeetingAttendee, error)
 	AttendeeEmailsFn       func(ctx context.Context, meetingID string) ([]string, error)
 	HasGovernanceHistoryFn func(ctx context.Context, meetingID string) (bool, error)
+	ListMinutesFn          func(ctx context.Context, meetingID string) ([]model.MinutesEntry, error)
+	AddMinutesEntryFn      func(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error)
+	UpdateMinutesEntryFn   func(ctx context.Context, meetingID, entryID, kind, body string, motionID *string) (*model.MinutesEntry, error)
+	DeleteMinutesEntryFn   func(ctx context.Context, meetingID, entryID string) error
+	FinalizeMinutesFn      func(ctx context.Context, meetingID, userID string) error
 	SetAttendeesFn         func(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
 	CreateDecisionFn       func(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
 	UpdateDecisionFn       func(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
@@ -345,6 +350,36 @@ func (m *mockMeetingsRepo) UpdateDecision(ctx context.Context, id string, summar
 }
 func (m *mockMeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
 	return m.DeleteDecisionFn(ctx, id)
+}
+func (m *mockMeetingsRepo) ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error) {
+	if m.ListMinutesFn != nil {
+		return m.ListMinutesFn(ctx, meetingID)
+	}
+	return nil, nil
+}
+func (m *mockMeetingsRepo) AddMinutesEntry(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error) {
+	if m.AddMinutesEntryFn != nil {
+		return m.AddMinutesEntryFn(ctx, meetingID, kind, body, motionID, recordedBy)
+	}
+	return &model.MinutesEntry{ID: "e1", MeetingID: meetingID, Kind: kind, Body: body}, nil
+}
+func (m *mockMeetingsRepo) UpdateMinutesEntry(ctx context.Context, meetingID, entryID, kind, body string, motionID *string) (*model.MinutesEntry, error) {
+	if m.UpdateMinutesEntryFn != nil {
+		return m.UpdateMinutesEntryFn(ctx, meetingID, entryID, kind, body, motionID)
+	}
+	return &model.MinutesEntry{ID: entryID, MeetingID: meetingID, Kind: kind, Body: body}, nil
+}
+func (m *mockMeetingsRepo) DeleteMinutesEntry(ctx context.Context, meetingID, entryID string) error {
+	if m.DeleteMinutesEntryFn != nil {
+		return m.DeleteMinutesEntryFn(ctx, meetingID, entryID)
+	}
+	return nil
+}
+func (m *mockMeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userID string) error {
+	if m.FinalizeMinutesFn != nil {
+		return m.FinalizeMinutesFn(ctx, meetingID, userID)
+	}
+	return nil
 }
 func (m *mockMeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {
 	return m.UpcomingFn(ctx, n)
@@ -502,7 +537,7 @@ type mockGovernanceRepo struct {
 	ListMotionsFn           func(ctx context.Context, meetingID string) ([]model.Motion, error)
 	GetMotionFn             func(ctx context.Context, id string) (*model.Motion, error)
 	CreateMotionFn          func(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
-	UpdateMotionFn          func(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error)
+	UpdateMotionFn          func(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error)
 	SetMotionStatusFn       func(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
 	DeleteMotionFn          func(ctx context.Context, id string) error
 	MotionStatusFn          func(ctx context.Context, id string) (string, string, error)
@@ -555,8 +590,8 @@ func (m *mockGovernanceRepo) GetMotion(ctx context.Context, id string) (*model.M
 func (m *mockGovernanceRepo) CreateMotion(ctx context.Context, mo *model.Motion, createdBy string) (*model.Motion, error) {
 	return m.CreateMotionFn(ctx, mo, createdBy)
 }
-func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold *string) (*model.Motion, error) {
-	return m.UpdateMotionFn(ctx, id, title, detail, moverID, seconderID, threshold)
+func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error) {
+	return m.UpdateMotionFn(ctx, id, title, detail, moverID, seconderID, threshold, business)
 }
 func (m *mockGovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
 	return m.SetMotionStatusFn(ctx, id, status, seconderID)
