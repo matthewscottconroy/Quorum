@@ -17,7 +17,7 @@ type authRepo interface {
 	CreateFirstUser(ctx context.Context, email, hash, role string) (*model.User, error)
 	UpdateLastLogin(ctx context.Context, id string) error
 	StoreRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
-	GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt time.Time, err error)
+	GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt, createdAt time.Time, err error)
 	RevokeRefreshToken(ctx context.Context, hash string) error
 	CountUsers(ctx context.Context) (int, error)
 	ListUsers(ctx context.Context) ([]model.User, error)

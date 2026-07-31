@@ -39,7 +39,7 @@ type mockAuthRepo struct {
 	CreateFirstUserFn               func(ctx context.Context, email, hash, role string) (*model.User, error)
 	UpdateLastLoginFn               func(ctx context.Context, id string) error
 	StoreRefreshTokenFn             func(ctx context.Context, userID, hash string, expiresAt time.Time) error
-	GetRefreshTokenFn               func(ctx context.Context, hash string) (string, bool, time.Time, error)
+	GetRefreshTokenFn               func(ctx context.Context, hash string) (string, bool, time.Time, time.Time, error)
 	RevokeRefreshTokenFn            func(ctx context.Context, hash string) error
 	CountUsersFn                    func(ctx context.Context) (int, error)
 	ListUsersFn                     func(ctx context.Context) ([]model.User, error)
@@ -130,7 +130,7 @@ func (m *mockAuthRepo) UpdateLastLogin(ctx context.Context, id string) error {
 func (m *mockAuthRepo) StoreRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error {
 	return m.StoreRefreshTokenFn(ctx, userID, hash, expiresAt)
 }
-func (m *mockAuthRepo) GetRefreshToken(ctx context.Context, hash string) (string, bool, time.Time, error) {
+func (m *mockAuthRepo) GetRefreshToken(ctx context.Context, hash string) (string, bool, time.Time, time.Time, error) {
 	return m.GetRefreshTokenFn(ctx, hash)
 }
 func (m *mockAuthRepo) RevokeRefreshToken(ctx context.Context, hash string) error {

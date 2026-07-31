@@ -7,6 +7,11 @@
 # checks it without ever touching the live one.
 #
 # Two connection modes:
+# Encryption at rest for backups: set QUORUM_BACKUP_PASSPHRASE and dumps are
+# encrypted with AES-256 (openssl enc -pbkdf2) into .pgdump.enc files; verify
+# and restore decrypt transparently when the passphrase is set. Keep the
+# passphrase in your secret manager — an encrypted backup without it is gone.
+#
 #   podman (default) — exec pg_dump/pg_restore INSIDE the quorum-db container, so
 #                      the client tools always match the server version. Used for
 #                      the local Podman stack.
@@ -86,11 +91,22 @@ cmd_create() {
   local ts file tmp
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   file="${BACKUP_DIR}/quorum-${ts}.pgdump"
+  if [[ -n "${QUORUM_BACKUP_PASSPHRASE:-}" ]]; then
+    file="${file}.enc"
+  fi
   tmp="${file}.partial"
   echo "==> Backing up ${DB_NAME} (mode: ${MODE}) → ${file}"
   # Dump to a .partial first, rename on success, so a crashed dump never looks
   # like a complete backup to the retention/restore logic.
-  if pg_dump_cmd > "$tmp"; then
+  local dump_ok=0
+  if [[ -n "${QUORUM_BACKUP_PASSPHRASE:-}" ]]; then
+    # AES-256, key derived with PBKDF2; passphrase read from the environment,
+    # never the command line (which would leak into `ps`).
+    pg_dump_cmd | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt       -pass env:QUORUM_BACKUP_PASSPHRASE > "$tmp" && dump_ok=1
+  else
+    pg_dump_cmd > "$tmp" && dump_ok=1
+  fi
+  if [[ "$dump_ok" == 1 ]]; then
     mv "$tmp" "$file"
     echo "    wrote $(du -h "$file" | cut -f1) ($(stat -c%s "$file") bytes)"
     write_manifest "$file"
@@ -100,6 +116,17 @@ cmd_create() {
     exit 1
   fi
   cmd_prune
+}
+
+# decrypt_to stdin(file) -> stdout plaintext dump, transparently handling .enc.
+decrypt_stream() {
+  local file="$1"
+  if [[ "$file" == *.enc ]]; then
+    [[ -n "${QUORUM_BACKUP_PASSPHRASE:-}" ]] || { echo "encrypted backup: set QUORUM_BACKUP_PASSPHRASE" >&2; exit 1; }
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000       -pass env:QUORUM_BACKUP_PASSPHRASE -in "$file"
+  else
+    cat "$file"
+  fi
 }
 
 # write_manifest records what would make this backup usable as evidence later:
@@ -125,13 +152,13 @@ write_manifest() {
 
 cmd_list() {
   mkdir -p "$BACKUP_DIR"
-  if ! ls "$BACKUP_DIR"/quorum-*.pgdump >/dev/null 2>&1; then
+  if ! ls "$BACKUP_DIR"/quorum-*.pgdump* >/dev/null 2>&1; then
     echo "No backups in ${BACKUP_DIR}."
     return 0
   fi
   echo "Backups in ${BACKUP_DIR} (newest first):"
   # shellcheck disable=SC2012
-  ls -1t "$BACKUP_DIR"/quorum-*.pgdump | while read -r f; do
+  ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" | while read -r f; do
     printf "  %s  %s\n" "$(du -h "$f" | cut -f1)" "$f"
   done
 }
@@ -139,7 +166,7 @@ cmd_list() {
 cmd_prune() {
   mkdir -p "$BACKUP_DIR"
   local -a files
-  mapfile -t files < <(ls -1t "$BACKUP_DIR"/quorum-*.pgdump 2>/dev/null || true)
+  mapfile -t files < <(ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" || true)
   if (( ${#files[@]} > KEEP )); then
     echo "==> Pruning $(( ${#files[@]} - KEEP )) old backup(s), keeping ${KEEP}"
     local i
@@ -151,7 +178,7 @@ cmd_prune() {
 }
 
 latest_backup() {
-  ls -1t "$BACKUP_DIR"/quorum-*.pgdump 2>/dev/null | head -1
+  ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" | head -1
 }
 
 cmd_restore() {
@@ -170,10 +197,10 @@ cmd_restore() {
   # replace, not a merge. Errors are surfaced (no --exit-on-error so a benign
   # DROP-of-missing on a fresh DB doesn't abort a valid restore).
   if [[ "$MODE" == "url" ]]; then
-    pg_restore --clean --if-exists --no-owner --no-privileges -d "$(backup_url)" "$file"
+    decrypt_stream "$file" | pg_restore --clean --if-exists --no-owner --no-privileges -d "$(backup_url)"
   else
-    podman exec -i -e PGPASSWORD="$(db_pass)" "$POD_DB" \
-      pg_restore --clean --if-exists --no-owner --no-privileges -U "$DB_USER" -d "$DB_NAME" < "$file"
+    decrypt_stream "$file" | podman exec -i -e PGPASSWORD="$(db_pass)" "$POD_DB" \
+      pg_restore --clean --if-exists --no-owner --no-privileges -U "$DB_USER" -d "$DB_NAME"
   fi
   echo "==> Restore complete. Current schema version:"
   psql_cmd "SELECT max(version) FROM schema_migrations;"
@@ -204,8 +231,8 @@ cmd_verify() {
       exit 1
     fi
     psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE $scratch" "$admin_url" >/dev/null
-    pg_restore --clean --if-exists --no-owner --no-privileges \
-      -d "$scratch_url" "$file" >/dev/null 2>&1 || true
+    decrypt_stream "$file" | pg_restore --clean --if-exists --no-owner --no-privileges \
+      -d "$scratch_url" >/dev/null 2>&1 || true
     local n
     n="$(psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" "$scratch_url")"
     local ver
@@ -215,8 +242,8 @@ cmd_verify() {
     [[ "${n:-0}" -gt 0 ]] || { echo "    VERIFY FAILED: no tables restored" >&2; exit 1; }
   else
     podman exec -e PGPASSWORD="$(db_pass)" "$POD_DB" createdb -U "$DB_USER" "$scratch"
-    podman exec -i -e PGPASSWORD="$(db_pass)" "$POD_DB" \
-      pg_restore --clean --if-exists --no-owner --no-privileges -U "$DB_USER" -d "$scratch" < "$file" >/dev/null 2>&1 || true
+    decrypt_stream "$file" | podman exec -i -e PGPASSWORD="$(db_pass)" "$POD_DB" \
+      pg_restore --clean --if-exists --no-owner --no-privileges -U "$DB_USER" -d "$scratch" >/dev/null 2>&1 || true
     local n ver
     n="$(podman exec -e PGPASSWORD="$(db_pass)" "$POD_DB" psql -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" -U "$DB_USER" -d "$scratch")"
     ver="$(podman exec -e PGPASSWORD="$(db_pass)" "$POD_DB" psql -tAc "SELECT max(version) FROM schema_migrations" -U "$DB_USER" -d "$scratch")"

@@ -219,6 +219,45 @@ export function navigate(hash) {
   location.hash = hash;
 }
 
+// ── Idle logout ──────────────────────────────────────────────────────────────
+// The server refuses refresh tokens older than the idle window (default 30
+// minutes — rotation makes token age equal time-since-last-activity), so an
+// abandoned session dies server-side regardless of this timer. This client
+// tracker matches that window for a clean UX: warn shortly before, then sign
+// out locally instead of letting the next click fail confusingly.
+const IDLE_LIMIT_MS = 30 * 60 * 1000;
+const IDLE_WARN_MS = IDLE_LIMIT_MS - 60 * 1000;
+let idleWarnTimer = null;
+let idleLogoutTimer = null;
+
+function resetIdleTimers() {
+  clearTimeout(idleWarnTimer);
+  clearTimeout(idleLogoutTimer);
+  if (!isAuthenticated()) return;
+  idleWarnTimer = setTimeout(async () => {
+    const { toast } = await import('./components/toast-notification.js');
+    toast('You will be signed out in 1 minute due to inactivity', 'error');
+  }, IDLE_WARN_MS);
+  idleLogoutTimer = setTimeout(async () => {
+    if (!isAuthenticated()) return;
+    try { await api('POST', '/auth/logout'); } catch { /* best effort */ }
+    clearAuth();
+    document.dispatchEvent(new CustomEvent('auth-changed'));
+    navigate('#/login');
+    const { toast } = await import('./components/toast-notification.js');
+    toast('Signed out after 30 minutes of inactivity', 'error');
+  }, IDLE_LIMIT_MS);
+}
+
+// Any genuine interaction counts as activity; passive listeners keep this free.
+for (const ev of ['mousedown', 'keydown', 'touchstart', 'scroll']) {
+  document.addEventListener(ev, resetIdleTimers, { passive: true });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') resetIdleTimers();
+});
+document.addEventListener('auth-changed', resetIdleTimers);
+
 const routes = {
   '#/login':           '<login-page>',
   '#/forgot-password': '<forgot-password-page>',

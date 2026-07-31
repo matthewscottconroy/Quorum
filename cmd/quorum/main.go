@@ -10,6 +10,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -59,6 +60,18 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Encryption in transit is the deployment's job, but silence would imply
+	// safety: warn loudly when the database connection crosses a network
+	// boundary without TLS. (localhost/pod-internal traffic never leaves the
+	// host, so sslmode=disable is fine there.)
+	if u, perr := url.Parse(cfg.DatabaseURL); perr == nil {
+		host := u.Hostname()
+		local := host == "localhost" || host == "127.0.0.1" || host == "::1" || host == ""
+		if !local && (u.Query().Get("sslmode") == "disable" || u.Query().Get("sslmode") == "") {
+			log.Println("WARNING: database connection to a remote host without sslmode=require/verify-full — credentials and data cross the network in cleartext. Set sslmode in QUORUM_DATABASE_URL.")
+		}
+	}
 
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {

@@ -71,6 +71,13 @@ type Config struct {
 	// error (default: info).
 	LogLevel string
 
+	// IdleTimeoutMinutes signs an inactive session out: a refresh token older
+	// than this window is refused (rotation makes token age = time since last
+	// activity), and the UI signs out after the same period of no interaction.
+	// Default 30; 0 disables idle logout (sessions then live the full refresh
+	// TTL regardless of activity).
+	IdleTimeoutMinutes int
+
 	// AuditRetentionDays is how long audit_log entries are kept by the nightly
 	// prune (default 365). Retention is a policy decision — some jurisdictions
 	// require a defined schedule — so it is configurable.
@@ -146,6 +153,14 @@ func Load() (*Config, error) {
 		cfg.SMTPPort, err = strconv.Atoi(smtpPort)
 		if err != nil {
 			return nil, fmt.Errorf("invalid QUORUM_SMTP_PORT: %w", err)
+		}
+	}
+
+	cfg.IdleTimeoutMinutes = 30
+	if v := getEnv("QUORUM_IDLE_TIMEOUT_MINUTES", ""); v != "" {
+		cfg.IdleTimeoutMinutes, err = strconv.Atoi(v)
+		if err != nil || cfg.IdleTimeoutMinutes < 0 || (cfg.IdleTimeoutMinutes > 0 && cfg.IdleTimeoutMinutes < 5) {
+			return nil, fmt.Errorf("invalid QUORUM_IDLE_TIMEOUT_MINUTES: must be 0 (disabled) or at least 5")
 		}
 	}
 

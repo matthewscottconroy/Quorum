@@ -197,3 +197,44 @@ Run `go list -m -json all | jq .` and cross-reference with `govulncheck ./...` t
 ## Reporting a vulnerability
 
 Please report security issues privately by emailing the project maintainers rather than opening a public issue. Include a description of the vulnerability, the steps needed to reproduce it, and the potential impact. We aim to respond within 48 hours.
+
+## Sessions & idle logout
+
+Access tokens live 15 minutes (`QUORUM_JWT_ACCESS_TTL`); refresh tokens live 7
+days (`QUORUM_JWT_REFRESH_TTL`), are stored hashed, and rotate on every use.
+Idle logout is enforced **server-side**: rotation makes a refresh token's age
+equal the time since the session's last activity, so a token older than
+`QUORUM_IDLE_TIMEOUT_MINUTES` (default 30) is refused and revoked, and the
+event is audited (`auth.session_idle_timeout`). The UI mirrors the window —
+warning at 29 minutes of inactivity, signing out at 30 — but the guarantee is
+the server's, not the browser's.
+
+## Screen capture, printing, and exports
+
+Browser printing of application screens is disabled (a print attempt produces
+a notice pointing to the audited path): screen views are live, unwatermarked,
+and leave no record, while **Reports → PDF** exports are watermarked with the
+exporter and time, sealed with a verifiable SHA-256, and logged to the audit
+chain.
+
+Screenshots **cannot be prevented** by a web application — the OS captures
+rendered pixels, outside the page's reach — and any vendor claiming otherwise
+is selling theater. The honest posture is the one Quorum takes: make the
+*legitimate* export path attributable and verifiable, and treat capture
+prevention as a policy/device-management concern (MDM, watermarked displays),
+not an application feature.
+
+## Encryption at rest and in transit
+
+- **Client ↔ server:** terminate TLS in front of the app (reverse proxy);
+  cookies are `Secure` when `QUORUM_BASE_URL` is https.
+- **Server ↔ database:** governed by `sslmode` in `QUORUM_DATABASE_URL`.
+  Same-host/pod traffic (the default local stack) never crosses a network;
+  for a remote database set `sslmode=require` (or `verify-full`) — the server
+  logs a loud startup warning if a remote connection is configured without it.
+- **Database at rest:** not encrypted by Quorum — use full-disk/volume
+  encryption (LUKS) or your managed database's at-rest encryption.
+- **Backups at rest:** set `QUORUM_BACKUP_PASSPHRASE` and dumps are encrypted
+  with AES-256 (PBKDF2, 200k iterations); verify/restore decrypt
+  transparently. Keep the passphrase in a secret manager — an encrypted backup
+  without it is unrecoverable. See BACKUP.md.

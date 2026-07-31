@@ -91,11 +91,11 @@ func (r *AuthRepo) StoreRefreshToken(ctx context.Context, userID, hash string, e
 }
 
 // GetRefreshToken returns the user id, revoked flag, and expiry for a token hash.
-func (r *AuthRepo) GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt time.Time, err error) {
+func (r *AuthRepo) GetRefreshToken(ctx context.Context, hash string) (userID string, revoked bool, expiresAt, createdAt time.Time, err error) {
 	err = r.db.QueryRow(ctx, `
-		SELECT user_id::text, revoked, expires_at
+		SELECT user_id::text, revoked, expires_at, created_at
 		FROM refresh_tokens WHERE token_hash = $1`, hash).
-		Scan(&userID, &revoked, &expiresAt)
+		Scan(&userID, &revoked, &expiresAt, &createdAt)
 	return
 }
 

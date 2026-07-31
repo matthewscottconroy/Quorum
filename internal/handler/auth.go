@@ -318,7 +318,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hashed := auth.HashRefreshToken(plain)
-	userID, revoked, expiresAt, err := h.repo.GetRefreshToken(r.Context(), hashed)
+	userID, revoked, expiresAt, createdAt, err := h.repo.GetRefreshToken(r.Context(), hashed)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Unknown token: genuinely unauthenticated.
@@ -332,6 +332,18 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	if revoked || time.Now().After(expiresAt) {
 		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token", "unauthorized")
+		return
+	}
+	// Idle logout, enforced server-side: rotation mints a fresh token on every
+	// refresh, so this token's age IS the time since the session's last
+	// activity. Too old → the session sat idle past the window; revoke it and
+	// require a fresh sign-in (a stolen cookie from an abandoned machine is
+	// useless after the idle window, regardless of the 7-day hard expiry).
+	if h.cfg.IdleTimeoutMinutes > 0 &&
+		time.Since(createdAt) > time.Duration(h.cfg.IdleTimeoutMinutes)*time.Minute {
+		h.repo.RevokeRefreshToken(r.Context(), hashed) //nolint:errcheck
+		h.logAudit(r, userID, "auth.session_idle_timeout")
+		writeError(w, http.StatusUnauthorized, "session expired after inactivity; please sign in again", "unauthorized")
 		return
 	}
 

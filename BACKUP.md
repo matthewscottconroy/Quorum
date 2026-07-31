@@ -30,6 +30,15 @@ notifications, the audit log, everything. It does **not** capture:
 | `podman` (default) | Local Podman stack | `podman exec` into the `quorum-db` container, so client tools match the server version |
 | `url` | Production / CI / managed Postgres | Host `pg_dump`/`pg_restore` against `QUORUM_DATABASE_URL` (or `QUORUM_BACKUP_DATABASE_URL`). Requires postgres client tools on the host, matching the server's major version. |
 
+## Encryption
+
+Set `QUORUM_BACKUP_PASSPHRASE` (in the systemd unit's environment or your
+cron's) and every dump is encrypted with AES-256 (`openssl enc -pbkdf2`,
+200k iterations) into a `.pgdump.enc` file; `verify` and `restore` decrypt
+transparently when the passphrase is set, and refuse clearly when it is not.
+Store the passphrase in your secret manager, separately from the backups —
+an encrypted backup without its passphrase is gone.
+
 ## Taking backups
 
 ```sh

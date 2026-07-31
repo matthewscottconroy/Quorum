@@ -20,9 +20,10 @@ import (
 
 func testConfig() *config.Config {
 	return &config.Config{
-		JWTSecret:     testSecret,
-		JWTAccessTTL:  15 * time.Minute,
-		JWTRefreshTTL: 168 * time.Hour,
+		JWTSecret:          testSecret,
+		JWTAccessTTL:       15 * time.Minute,
+		JWTRefreshTTL:      168 * time.Hour,
+		IdleTimeoutMinutes: 30,
 	}
 }
 
@@ -362,11 +363,11 @@ func TestRefresh_Success(t *testing.T) {
 	expires := time.Now().Add(time.Hour)
 
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, h string) (string, bool, time.Time, error) {
+		GetRefreshTokenFn: func(_ context.Context, h string) (string, bool, time.Time, time.Time, error) {
 			if h != hashed {
-				return "", false, time.Time{}, errors.New("not found")
+				return "", false, time.Time{}, time.Now(), errors.New("not found")
 			}
-			return userID, false, expires, nil
+			return userID, false, expires, time.Now(), nil
 		},
 		RevokeRefreshTokenFn: func(_ context.Context, _ string) error { return nil },
 		GetUserByIDFn:        func(_ context.Context, id string) (*model.User, error) { return testUser(id, "member"), nil },
@@ -405,8 +406,8 @@ func TestRefresh_StoresNewTokenBeforeRevokingOld(t *testing.T) {
 	plain, _, _ := auth.GenerateRefreshToken()
 	var calls []string
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
-			return "user-abc", false, time.Now().Add(time.Hour), nil
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return "user-abc", false, time.Now().Add(time.Hour), time.Now(), nil
 		},
 		GetUserByIDFn: func(_ context.Context, id string) (*model.User, error) { return testUser(id, "member"), nil },
 		StoreRefreshTokenFn: func(_ context.Context, _, _ string, _ time.Time) error {
@@ -437,8 +438,8 @@ func TestRefresh_StoreFailure(t *testing.T) {
 	plain, _, _ := auth.GenerateRefreshToken()
 	revokeCalled := false
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
-			return "user-abc", false, time.Now().Add(time.Hour), nil
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return "user-abc", false, time.Now().Add(time.Hour), time.Now(), nil
 		},
 		GetUserByIDFn: func(_ context.Context, id string) (*model.User, error) { return testUser(id, "member"), nil },
 		StoreRefreshTokenFn: func(_ context.Context, _, _ string, _ time.Time) error {
@@ -467,8 +468,8 @@ func TestRefresh_StoreFailure(t *testing.T) {
 func TestRefresh_RevokeFailure(t *testing.T) {
 	plain, _, _ := auth.GenerateRefreshToken()
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
-			return "user-abc", false, time.Now().Add(time.Hour), nil
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return "user-abc", false, time.Now().Add(time.Hour), time.Now(), nil
 		},
 		GetUserByIDFn:       func(_ context.Context, id string) (*model.User, error) { return testUser(id, "member"), nil },
 		StoreRefreshTokenFn: func(_ context.Context, _, _ string, _ time.Time) error { return nil },
@@ -490,9 +491,9 @@ func TestRefresh_RevokeFailure(t *testing.T) {
 
 func TestRefresh_InvalidToken(t *testing.T) {
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
 			// Unknown token → no row.
-			return "", false, time.Time{}, pgx.ErrNoRows
+			return "", false, time.Time{}, time.Now(), pgx.ErrNoRows
 		},
 	}
 	h := NewAuthHandler(repo, testConfig())
@@ -511,8 +512,8 @@ func TestRefresh_InvalidToken(t *testing.T) {
 // 500, so a transient outage does not force-log-out every session as 401 would.
 func TestRefresh_LookupOutage(t *testing.T) {
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
-			return "", false, time.Time{}, errors.New("connection refused")
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return "", false, time.Time{}, time.Now(), errors.New("connection refused")
 		},
 	}
 	h := NewAuthHandler(repo, testConfig())
@@ -530,9 +531,9 @@ func TestRefresh_LookupOutage(t *testing.T) {
 func TestRefresh_RevokedToken(t *testing.T) {
 	plain, hashed, _ := auth.GenerateRefreshToken()
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, h string) (string, bool, time.Time, error) {
+		GetRefreshTokenFn: func(_ context.Context, h string) (string, bool, time.Time, time.Time, error) {
 			_ = hashed
-			return "u", true, time.Now().Add(time.Hour), nil
+			return "u", true, time.Now().Add(time.Hour), time.Now(), nil
 		},
 	}
 	h := NewAuthHandler(repo, testConfig())
@@ -550,8 +551,8 @@ func TestRefresh_RevokedToken(t *testing.T) {
 func TestRefresh_ExpiredToken(t *testing.T) {
 	plain, _, _ := auth.GenerateRefreshToken()
 	repo := &mockAuthRepo{
-		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, error) {
-			return "u", false, time.Now().Add(-time.Second), nil
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return "u", false, time.Now().Add(-time.Second), time.Now(), nil
 		},
 	}
 	h := NewAuthHandler(repo, testConfig())
@@ -1229,5 +1230,46 @@ func TestUpdateUser_NeitherField(t *testing.T) {
 	h.UpdateUser(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status: got %d, want 400 when neither role nor member_id present", rr.Code)
+	}
+}
+
+// A refresh token older than the idle window is refused and revoked: rotation
+// makes token age equal time-since-last-activity, so this IS the idle logout.
+func TestRefresh_IdleTimeout(t *testing.T) {
+	revoked := false
+	repo := &mockAuthRepo{
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			// Valid, unrevoked, but minted 31 minutes ago (idle window is 30).
+			return "user-abc", false, time.Now().Add(6 * 24 * time.Hour), time.Now().Add(-31 * time.Minute), nil
+		},
+		RevokeRefreshTokenFn: func(_ context.Context, _ string) error { revoked = true; return nil },
+	}
+	h := NewAuthHandler(repo, testConfig())
+	req := httptest.NewRequest("POST", "/auth/refresh", strings.NewReader(`{"refresh_token":"tok"}`))
+	rr := httptest.NewRecorder()
+	h.Refresh(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("idle session refresh should 401, got %d: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), "inactivity") {
+		t.Errorf("response should explain the idle logout: %s", rr.Body)
+	}
+	if !revoked {
+		t.Error("the stale token must be revoked, not left usable")
+	}
+	// A recently-active session refreshes fine.
+	repo2 := &mockAuthRepo{
+		GetRefreshTokenFn: func(_ context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+			return testUserID, false, time.Now().Add(6 * 24 * time.Hour), time.Now().Add(-5 * time.Minute), nil
+		},
+		GetUserByIDFn:        func(_ context.Context, id string) (*model.User, error) { return testUser(id, "member"), nil },
+		StoreRefreshTokenFn:  func(_ context.Context, _, _ string, _ time.Time) error { return nil },
+		RevokeRefreshTokenFn: func(_ context.Context, _ string) error { return nil },
+	}
+	h2 := NewAuthHandler(repo2, testConfig())
+	rr2 := httptest.NewRecorder()
+	h2.Refresh(rr2, httptest.NewRequest("POST", "/auth/refresh", strings.NewReader(`{"refresh_token":"tok"}`)))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("active session should refresh, got %d: %s", rr2.Code, rr2.Body)
 	}
 }

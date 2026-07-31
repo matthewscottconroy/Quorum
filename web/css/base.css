@@ -271,3 +271,24 @@ dialog.modal::backdrop {
   vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Print control ────────────────────────────────────────────────────────────
+   Browser printing of application screens is disabled: screen views are live,
+   unwatermarked, and leave no export record. The audited path is Reports →
+   PDF, which stamps the exporter, the time, and a verifiable integrity hash,
+   and records the export in the audit log. (This is a policy control, not a
+   technical guarantee — determined users can still capture a screen.) */
+@media print {
+  body > * {
+    display: none !important;
+  }
+  body::before {
+    content: "Printing of application screens is disabled.\A\A Screen views are live and carry no export record. Please use Reports \2192 Download PDF instead: PDF exports are watermarked with the exporter and time, sealed with a verifiable integrity hash, and recorded in the audit log.\A\A \2014 Quorum";
+    white-space: pre-wrap;
+    display: block;
+    font: 14px/1.6 system-ui, sans-serif;
+    color: #333;
+    padding: 3rem;
+    max-width: 42rem;
+  }
+}

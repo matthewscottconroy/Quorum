@@ -253,6 +253,7 @@ remains deployment-side.
 ## Quick pre-deploy checklist
 
 - [ ] Real `QUORUM_JWT_SECRET`, `QUORUM_BASE_URL` (https), SMTP configured
+- [ ] `QUORUM_DATABASE_URL` uses `sslmode=require`+ for any remote DB; `QUORUM_BACKUP_PASSPHRASE` set
 - [ ] `QUORUM_SMTP_REQUIRE_TLS=true`, webhook secrets set, unsigned webhooks off
 - [ ] TLS terminated in front; HTTP server timeouts added
 - [ ] Automated + test-restored DB backups — *tooling ready ([BACKUP.md](BACKUP.md)); schedule it and ship dumps off-box*
