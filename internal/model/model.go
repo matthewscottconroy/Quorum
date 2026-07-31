@@ -479,15 +479,28 @@ type Contact struct {
 
 // Resource is a document, link, or reference stored in the resource library.
 type Resource struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description *string  `json:"description,omitempty"`
+	URL         *string  `json:"url,omitempty"`
+	Category    *string  `json:"category,omitempty"`
+	Tags        []string `json:"tags"`
+	// GroupNames are the visibility groups restricting who sees this resource;
+	// empty means visible to all members.
+	GroupNames []string  `json:"group_names,omitempty"`
+	AddedBy    string    `json:"added_by"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// Group is a named set of members used to constrain resource visibility.
+type Group struct {
 	ID          string    `json:"id"`
-	Title       string    `json:"title"`
+	Name        string    `json:"name"`
 	Description *string   `json:"description,omitempty"`
-	URL         *string   `json:"url,omitempty"`
-	Category    *string   `json:"category,omitempty"`
-	Tags        []string  `json:"tags"`
-	AddedBy     string    `json:"added_by"`
+	MemberCount int       `json:"member_count"`
+	MemberIDs   []string  `json:"member_ids,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Page is a paginated response envelope.

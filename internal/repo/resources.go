@@ -21,13 +21,39 @@ func NewResourcesRepo(db *pgxpool.Pool) *ResourcesRepo {
 	return &ResourcesRepo{db: db}
 }
 
-// ResourceFilter holds the optional query parameters for listing resources.
+// ResourceFilter holds the optional query parameters for listing resources,
+// plus the viewer scope: unless ViewerSeesAll (officer and above), a resource
+// restricted to visibility groups is returned only when ViewerMemberID belongs
+// to one of them; unrestricted resources are visible to everyone.
 type ResourceFilter struct {
 	Search   string
 	Category string
 	Tag      string
 	Limit    int
 	Offset   int
+
+	ViewerSeesAll  bool
+	ViewerMemberID string
+}
+
+// visibilityCond builds the group-visibility predicate for the viewer. It
+// appends to args when the viewer has a linked member.
+func visibilityCond(f ResourceFilter, args *[]any, idx *int) string {
+	if f.ViewerSeesAll {
+		return ""
+	}
+	unrestricted := "NOT EXISTS (SELECT 1 FROM resource_groups rg WHERE rg.resource_id = r.id)"
+	if f.ViewerMemberID == "" {
+		// No linked member: only unrestricted resources are visible.
+		return unrestricted
+	}
+	cond := fmt.Sprintf(`(%s OR EXISTS (
+		SELECT 1 FROM resource_groups rg
+		JOIN group_members gm ON gm.group_id = rg.group_id
+		WHERE rg.resource_id = r.id AND gm.member_id = $%d::uuid))`, unrestricted, *idx)
+	*args = append(*args, f.ViewerMemberID)
+	*idx++
+	return cond
 }
 
 // List returns a page of resources matching the filter, plus the total count.
@@ -53,6 +79,10 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 		idx++
 	}
 
+	if vc := visibilityCond(f, &args, &idx); vc != "" {
+		conds = append(conds, vc)
+	}
+
 	where := ""
 	if len(conds) > 0 {
 		where = "WHERE " + strings.Join(conds, " AND ")
@@ -66,6 +96,9 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
 		       id::text, title, description, url, category, tags,
+		       coalesce((SELECT array_agg(g.name ORDER BY g.name)
+		                 FROM resource_groups rg JOIN groups g ON g.id = rg.group_id
+		                 WHERE rg.resource_id = r.id), '{}'),
 		       added_by::text, created_at, updated_at
 		FROM resources r
 		%s
@@ -84,7 +117,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	for rows.Next() {
 		var res model.Resource
 		if err := rows.Scan(&total, &res.ID, &res.Title, &res.Description, &res.URL,
-			&res.Category, &res.Tags, &res.AddedBy, &res.CreatedAt, &res.UpdatedAt); err != nil {
+			&res.Category, &res.Tags, &res.GroupNames, &res.AddedBy, &res.CreatedAt, &res.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		if res.Tags == nil {
@@ -106,12 +139,36 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 }
 
 // Get returns the resource with the given id, or pgx.ErrNoRows if none exists.
+// Visibility is NOT applied here — use GetVisible for viewer-facing reads;
+// Get serves the officer-gated edit/delete paths.
 func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT id::text, title, description, url, category, tags,
 		       added_by::text, created_at, updated_at
 		FROM resources WHERE id = $1::uuid`, id)
 	res, err := scanResource(row)
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// GetVisible returns the resource only if the viewer may see it; a restricted
+// resource outside the viewer's groups behaves exactly like a missing one
+// (pgx.ErrNoRows), so its existence is not disclosed.
+func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll bool, viewerMemberID string) (*model.Resource, error) {
+	args := []any{id}
+	idx := 2
+	f := ResourceFilter{ViewerSeesAll: viewerSeesAll, ViewerMemberID: viewerMemberID}
+	vis := visibilityCond(f, &args, &idx)
+	q := `
+		SELECT id::text, title, description, url, category, tags,
+		       added_by::text, created_at, updated_at
+		FROM resources r WHERE id = $1::uuid`
+	if vis != "" {
+		q += " AND " + vis
+	}
+	res, err := scanResource(r.db.QueryRow(ctx, q, args...))
 	if err != nil {
 		return nil, err
 	}

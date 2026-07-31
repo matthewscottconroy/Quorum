@@ -89,6 +89,16 @@ class PageSettings extends HTMLElement {
         </section>
 
         ${isAdmin() ? `
+        <section class="card" style="padding:1.25rem;grid-column:1 / -1" id="groups-section">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.35rem">
+            <h2 style="font-size:1rem;margin:0">Visibility groups</h2>
+            <button class="btn-secondary" id="group-add-btn" style="font-size:.8rem">+ New group</button>
+          </div>
+          <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .75rem">
+            Groups constrain who can see a resource in the library. A resource with no groups is visible to
+            all members; officers and admins always see everything.</p>
+          <div id="groups-list"><span class="spinner"></span></div>
+        </section>
         <section class="card" style="padding:1.25rem">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
             <h2 style="font-size:1rem">User accounts</h2>
@@ -180,6 +190,8 @@ class PageSettings extends HTMLElement {
     this.querySelector('#twofa-disable-btn')?.addEventListener('click', () => this.open2FADisable());
     this.querySelector('#twofa-codes-btn')?.addEventListener('click', () => this.openRegenerateCodes());
     this.loadSessionCount();
+    this.loadGroups();
+    this.querySelector('#group-add-btn')?.addEventListener('click', () => this.openGroupModal(null));
     this.querySelector('#revoke-sessions-btn')?.addEventListener('click', e => this.revokeOtherSessions(e.target));
 
     this.querySelector('#add-user-btn')?.addEventListener('click', () => this.openAddUserModal());
@@ -317,6 +329,97 @@ class PageSettings extends HTMLElement {
     }));
   }
 
+  /** Admin: visibility groups — list, create/edit (with member picker), delete. */
+  async loadGroups() {
+    const host = this.querySelector('#groups-list');
+    if (!host) return;
+    try {
+      const groups = await api('GET', '/groups') ?? [];
+      host.innerHTML = groups.length ? groups.map(g => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:.45rem 0;border-bottom:1px solid var(--color-border,#eee)">
+          <div>
+            <strong>${esc(g.name)}</strong>
+            <span style="font-size:.8rem;color:var(--color-text-muted)"> · ${g.member_count} member${g.member_count === 1 ? '' : 's'}</span>
+            ${g.description ? `<div style="font-size:.8rem;color:var(--color-text-muted)">${esc(g.description)}</div>` : ''}
+          </div>
+          <div style="display:flex;gap:.4rem">
+            <button class="btn-ghost group-edit" data-id="${esc(g.id)}" style="font-size:.78rem">Edit</button>
+            <button class="btn-ghost group-del" data-id="${esc(g.id)}" data-name="${esc(g.name)}" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
+          </div>
+        </div>`).join('')
+        : '<p style="font-size:.85rem;color:var(--color-text-muted)">No groups yet — every resource is visible to all members.</p>';
+      host.querySelectorAll('.group-edit').forEach(b => b.addEventListener('click', async () => {
+        try { this.openGroupModal(await api('GET', `/groups/${b.dataset.id}`)); }
+        catch { toast('Failed to load group', 'error'); }
+      }));
+      host.querySelectorAll('.group-del').forEach(b => b.addEventListener('click', () => {
+        confirmDelete({
+          noun: 'group (resources restricted only by it become visible to ALL members)',
+          name: b.dataset.name,
+          onConfirm: async (confirmVal) => {
+            try {
+              await api('DELETE', `/groups/${b.dataset.id}?confirm=${encodeURIComponent(confirmVal)}`);
+              toast('Group deleted', 'success');
+              this.loadGroups();
+            } catch (err) { toast(err.error ?? 'Delete failed', 'error'); throw err; }
+          },
+        });
+      }));
+    } catch {
+      host.innerHTML = '<p style="color:var(--color-text-muted)">Failed to load groups.</p>';
+    }
+  }
+
+  async openGroupModal(group) {
+    const isNew = !group;
+    let members = [];
+    try { members = (await api('GET', '/members?limit=200'))?.data ?? []; }
+    catch { toast('Failed to load members', 'error'); return; }
+    const inGroup = new Set(group?.member_ids ?? []);
+    const { dialog, close } = openModal({
+      title: isNew ? 'New visibility group' : `Edit group — ${group.name}`,
+      maxWidth: '520px',
+      body: `
+        <div class="modal-body">
+          <div class="form-group"><label for="g-name">Name *</label><input id="g-name" value="${esc(group?.name ?? '')}" placeholder="e.g. Board, Finance committee"></div>
+          <div class="form-group"><label for="g-desc">Description</label><input id="g-desc" value="${esc(group?.description ?? '')}"></div>
+          <div class="form-group"><label>Members (${members.length})</label>
+            <div style="max-height:220px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.5rem" id="g-members">
+              ${members.map(m => `
+                <label style="display:flex;align-items:center;gap:.5rem;margin:0;padding:.2rem 0;cursor:pointer;text-transform:none;font-weight:400;letter-spacing:normal;color:var(--color-text);font-size:.88rem">
+                  <input type="checkbox" value="${esc(m.id)}" ${inGroup.has(m.id) ? 'checked' : ''} style="width:auto;margin:0">
+                  ${esc(m.display_name)}${m.email ? ` <span style="color:var(--color-text-muted);font-size:.78rem">${esc(m.email)}</span>` : ''}
+                </label>`).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="cancel-btn">Cancel</button>
+          <button class="btn-primary" id="save-btn">${isNew ? 'Create' : 'Save'}</button>
+        </div>`,
+    });
+    dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const saveBtn = dialog.querySelector('#save-btn');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const name = dialog.querySelector('#g-name').value.trim();
+      if (!name) { toast('Name is required', 'error'); return; }
+      const member_ids = [...dialog.querySelectorAll('#g-members input:checked')].map(c => c.value);
+      try {
+        let id = group?.id;
+        if (isNew) {
+          const created = await api('POST', '/groups', { name, description: dialog.querySelector('#g-desc').value.trim() || null });
+          id = created.id;
+        } else {
+          await api('PATCH', `/groups/${id}`, { name, description: dialog.querySelector('#g-desc').value.trim() || null });
+        }
+        await api('PUT', `/groups/${id}/members`, { member_ids });
+        toast(isNew ? 'Group created' : 'Group saved', 'success');
+        close();
+        this.loadGroups();
+      } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
+    }));
+  }
+
   /** Shows how many devices currently hold a live session. */
   async loadSessionCount() {
     const el = this.querySelector('#session-count');
@@ -338,6 +441,8 @@ class PageSettings extends HTMLElement {
         const { revoked } = await api('POST', '/auth/me/sessions/revoke-others');
         toast(revoked ? `Signed out ${revoked} other session${revoked === 1 ? '' : 's'}` : 'No other sessions to sign out', 'success');
         this.loadSessionCount();
+    this.loadGroups();
+    this.querySelector('#group-add-btn')?.addEventListener('click', () => this.openGroupModal(null));
       } catch (err) {
         toast(err.error ?? 'Could not sign out other devices', 'error');
       }

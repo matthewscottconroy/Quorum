@@ -447,15 +447,22 @@ func (m *mockContactsRepo) Delete(ctx context.Context, id string) error {
 // ---- mockResourcesRepo ----
 
 type mockResourcesRepo struct {
-	ListFn   func(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error)
-	GetFn    func(ctx context.Context, id string) (*model.Resource, error)
-	CreateFn func(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
-	UpdateFn func(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
-	DeleteFn func(ctx context.Context, id string) error
+	GetVisibleFn func(ctx context.Context, id string, seesAll bool, memberID string) (*model.Resource, error)
+	ListFn       func(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error)
+	GetFn        func(ctx context.Context, id string) (*model.Resource, error)
+	CreateFn     func(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
+	UpdateFn     func(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
+	DeleteFn     func(ctx context.Context, id string) error
 }
 
 func (m *mockResourcesRepo) List(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error) {
 	return m.ListFn(ctx, f)
+}
+func (m *mockResourcesRepo) GetVisible(ctx context.Context, id string, seesAll bool, memberID string) (*model.Resource, error) {
+	if m.GetVisibleFn != nil {
+		return m.GetVisibleFn(ctx, id, seesAll, memberID)
+	}
+	return m.GetFn(ctx, id)
 }
 func (m *mockResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, error) {
 	return m.GetFn(ctx, id)

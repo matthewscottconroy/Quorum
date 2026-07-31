@@ -30,6 +30,11 @@ func (h *ResourcesHandler) List(w http.ResponseWriter, r *http.Request) {
 		Category: q.Get("category"),
 		Tag:      q.Get("tag"),
 		Limit:    clampLimit(q.Get("limit"), 100),
+		// Visibility scope: officers and above curate the whole library;
+		// everyone else sees unrestricted resources plus those shared with a
+		// group their member record belongs to.
+		ViewerSeesAll:  roleAtLeast(roleFromCtx(r), "officer"),
+		ViewerMemberID: memberIDFromCtx(r),
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
 		f.Offset = v
@@ -66,7 +71,18 @@ func (h *ResourcesHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get handles fetching a single resource by id.
 func (h *ResourcesHandler) Get(w http.ResponseWriter, r *http.Request) {
-	genericGet(w, r, h.repo.Get, "resource not found")
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	// Viewer-scoped read: a restricted resource outside the viewer's groups is
+	// indistinguishable from a missing one.
+	res, err := h.repo.GetVisible(r.Context(), id, roleAtLeast(roleFromCtx(r), "officer"), memberIDFromCtx(r))
+	if err != nil {
+		writeError(w, 404, "resource not found", "not_found")
+		return
+	}
+	writeJSON(w, 200, res)
 }
 
 // Update applies a partial update: only fields present in the request body

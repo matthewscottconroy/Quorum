@@ -130,6 +130,7 @@ func main() {
 	analyticsRepo := repo.NewAnalyticsRepo(pool, fxRepo)
 	notifyRepo := repo.NewNotifyRepo(pool)
 	sprintsRepo := repo.NewSprintsRepo(pool)
+	groupsRepo := repo.NewGroupsRepo(pool)
 
 	// Services
 	emailSvc := service.NewEmailService(cfg, authRepo)
@@ -158,6 +159,7 @@ func main() {
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	auditH := handler.NewAuditHandler(auditRepo)
 	sprintsH := handler.NewSprintsHandler(sprintsRepo)
+	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
 	auditH.SetVerifier(auditRepo)
 	exportH := handler.NewExportHandler(membersRepo, duesRepo, authRepo)
@@ -462,6 +464,17 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/contacts/{id}", contactsH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/contacts/{id}", contactsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/contacts/{id}", contactsH.Delete)
+
+			// Visibility groups: admin defines who is in which group; officers
+			// attach groups to resources while curating the library.
+			r.With(mw.RequireRole("member")).Get("/groups", groupsH.List)
+			r.With(mw.RequireRole("admin")).Post("/groups", groupsH.Create)
+			r.With(mw.RequireRole("admin")).Get("/groups/{id}", groupsH.Get)
+			r.With(mw.RequireRole("admin")).Patch("/groups/{id}", groupsH.Update)
+			r.With(mw.RequireRole("admin")).Delete("/groups/{id}", groupsH.Delete)
+			r.With(mw.RequireRole("admin")).Put("/groups/{id}/members", groupsH.SetMembers)
+			r.With(mw.RequireRole("officer")).Get("/resources/{id}/groups", groupsH.ResourceGroups)
+			r.With(mw.RequireRole("officer")).Put("/resources/{id}/groups", groupsH.SetResourceGroups)
 
 			r.With(mw.RequireRole("member")).Get("/resources", resourcesH.List)
 			r.With(mw.RequireRole("officer")).Post("/resources", resourcesH.Create)
