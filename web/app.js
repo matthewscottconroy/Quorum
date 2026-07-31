@@ -258,6 +258,41 @@ document.addEventListener('visibilitychange', () => {
 });
 document.addEventListener('auth-changed', resetIdleTimers);
 
+// ── Screen attribution watermark ─────────────────────────────────────────────
+// A faint, tiled stamp of the signed-in identity and date across every
+// authenticated view. Deterrence through attribution, not prevention: a web
+// page cannot stop the OS taking screenshots, but a captured screen now says
+// who was looking at it and when (see SECURITY.md). Published as a CSS
+// variable so both the viewport overlay and <dialog> modals — which render in
+// the browser top layer, above any z-index — carry the same stamp.
+function updateScreenWatermark() {
+  const overlay = document.getElementById('screen-watermark');
+  const user = getUser();
+  if (!user?.email) {
+    overlay?.remove();
+    document.documentElement.style.removeProperty('--screen-watermark');
+    return;
+  }
+  const stamp = `${user.email} · ${new Date().toISOString().slice(0, 10)}`;
+  const xml = stamp.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="260">` +
+    `<text x="230" y="130" text-anchor="middle" transform="rotate(-30 230 130)" ` +
+    `font-family="system-ui,sans-serif" font-size="15" fill="#1f2937" fill-opacity="0.05">${xml}</text></svg>`;
+  const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  document.documentElement.style.setProperty('--screen-watermark', url);
+  let el = overlay;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'screen-watermark';
+    el.setAttribute('aria-hidden', 'true');
+    el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9999;background-image:var(--screen-watermark)';
+    document.body.appendChild(el);
+  }
+}
+document.addEventListener('auth-changed', updateScreenWatermark);
+document.addEventListener('route-changed', updateScreenWatermark); // also refreshes the date in long-lived tabs
+
 const routes = {
   '#/login':           '<login-page>',
   '#/forgot-password': '<forgot-password-page>',
@@ -373,4 +408,4 @@ async function boot() {
 
 export { resolveRoute };
 
-boot();
+boot().then(updateScreenWatermark);

@@ -292,3 +292,10 @@ dialog.modal::backdrop {
     max-width: 42rem;
   }
 }
+
+/* Screen-attribution watermark inside modals: <dialog>.showModal() renders in
+   the browser top layer, above any z-index, so the viewport overlay cannot
+   reach it — the dialog surface carries the same stamp itself. */
+dialog.modal {
+  background-image: var(--screen-watermark, none);
+}

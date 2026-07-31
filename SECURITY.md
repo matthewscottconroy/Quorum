@@ -219,10 +219,14 @@ chain.
 
 Screenshots **cannot be prevented** by a web application — the OS captures
 rendered pixels, outside the page's reach — and any vendor claiming otherwise
-is selling theater. The honest posture is the one Quorum takes: make the
-*legitimate* export path attributable and verifiable, and treat capture
-prevention as a policy/device-management concern (MDM, watermarked displays),
-not an application feature.
+is selling theater. Quorum's posture is attribution, not prevention: every
+authenticated view (including modals) carries a faint tiled watermark of the
+signed-in account and date, so a captured screen identifies who was looking at
+it and when. It is a deterrent an insider can defeat with effort (edit the
+pixels, style-strip the page) — the point is that casual leaks become
+attributable, while the *legitimate* export path stays watermarked, sealed,
+and audit-logged. Treat true capture prevention as a device-management concern
+(MDM, managed browsers), not an application feature.
 
 ## Encryption at rest and in transit
 
