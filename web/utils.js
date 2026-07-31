@@ -280,3 +280,34 @@ export function confirmDelete({ noun = 'record', name = '', onConfirm } = {}) {
 
   return { dialog, close };
 }
+
+/* ── Word-frequency analysis (for document heat maps) ─────────────────────── */
+
+/** Common English words (plus document boilerplate) excluded from frequency
+ *  analysis so heat maps surface substance, not grammar. */
+const STOPWORDS = new Set(('a an and are as at be been but by for from had has have he her his i if in into is it its ' +
+  'me my no nor not of on or our she so than that the their them then there these they this to was we were what when ' +
+  'which who will with would you your all also am any can could did do does doing down each few had here how just more ' +
+  'most other out over own same some such too under until up very s t don now o re ve ll d m').split(' '));
+
+/**
+ * Computes word frequencies for a heat map: lowercases, strips punctuation,
+ * drops stopwords and 1-2 letter tokens and pure numbers, and returns the top
+ * `limit` entries as `{word, count}` sorted by count (ties alphabetical, so
+ * output is deterministic).
+ * @param {string} text
+ * @param {number} [limit=60]
+ * @returns {{word: string, count: number}[]}
+ */
+export function wordFrequencies(text, limit = 60) {
+  const counts = new Map();
+  for (const raw of String(text ?? '').toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) {
+    const w = raw.replace(/^['-]+|['-]+$/g, '');
+    if (w.length < 3 || STOPWORDS.has(w) || /^\d+$/.test(w)) continue;
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([word, count]) => ({ word, count }))
+    .sort((a, b) => b.count - a.count || a.word.localeCompare(b.word))
+    .slice(0, limit);
+}

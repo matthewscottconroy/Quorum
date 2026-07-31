@@ -1,6 +1,7 @@
 import { api, apiDownload, canWrite, isAuthenticated, isSuperadmin, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete } from '../utils.js';
+import { assembleMinutesText, openHeatmapModal } from './word-heatmap.js';
 import './vote-tally.js';
 
 /** Human labels + badge classes reused across the governance UI. */
@@ -491,6 +492,7 @@ class PageMeetings extends HTMLElement {
           ? `<span class="badge" style="background:color-mix(in srgb, var(--color-success,#137333) 15%, transparent);color:var(--color-success,#137333)">finalized ${esc(fmtDateTime(mt.minutes_finalized_at))}</span>`
           : '<span class="badge" style="background:var(--color-bg);color:var(--color-text-muted)">draft</span>'}</h3>
         <div style="display:flex;gap:.4rem">
+          <button class="btn-secondary" id="min-heatmap" style="font-size:.8rem" title="Preview the minutes as a word-frequency heat map">🔥 Heat map</button>
           <button class="btn-secondary" id="min-export" style="font-size:.8rem">Export minutes (.md)</button>
           ${canEdit ? '<button class="btn-primary" id="min-finalize" style="font-size:.8rem">Finalize minutes</button>' : ''}
         </div>
@@ -526,6 +528,9 @@ class PageMeetings extends HTMLElement {
       this.renderMinutes(dialog, meetingId, fresh);
     };
 
+    host.querySelector('#min-heatmap').addEventListener('click', () => {
+      openHeatmapModal(mt.title, assembleMinutesText(mt, entries, motions));
+    });
     host.querySelector('#min-export').addEventListener('click', () => {
       apiDownload(`/meetings/${meetingId}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
     });

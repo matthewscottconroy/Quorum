@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { moneyExponent, parseMoney, formatMoney } from './utils.js';
+import { moneyExponent, parseMoney, formatMoney, wordFrequencies } from './utils.js';
 
 test('moneyExponent: exponent by currency class', () => {
   // Default (2-decimal) currencies.
@@ -114,4 +114,30 @@ test('formatMoney: falls back gracefully for non-ISO codes', () => {
 test('formatMoney: non-numeric minor units treated as zero', () => {
   assert.match(formatMoney(NaN, 'USD'), /0\.00/);
   assert.match(formatMoney(undefined, 'USD'), /0\.00/);
+});
+
+test('wordFrequencies: counts, folds case, strips punctuation and stopwords', () => {
+  const out = wordFrequencies('The budget, the Budget! We approved the budget; motion carried. Motion seconded.');
+  assert.deepEqual(out[0], { word: 'budget', count: 3 });
+  assert.deepEqual(out[1], { word: 'motion', count: 2 });
+  // stopwords and short words never appear
+  assert.ok(!out.some(e => e.word === 'the' || e.word === 'we'));
+});
+
+test('wordFrequencies: drops numbers and short tokens, keeps hyphenated words', () => {
+  const out = wordFrequencies('2026 42 ad hoc two-thirds two-thirds vote');
+  assert.ok(out.some(e => e.word === 'two-thirds' && e.count === 2));
+  assert.ok(!out.some(e => e.word === '2026' || e.word === '42' || e.word === 'ad'));
+});
+
+test('wordFrequencies: deterministic order and limit', () => {
+  const out = wordFrequencies('zebra apple zebra apple mango', 2);
+  assert.equal(out.length, 2);
+  // equal counts tie-break alphabetically
+  assert.deepEqual(out.map(e => e.word), ['apple', 'zebra']);
+});
+
+test('wordFrequencies: empty and null input', () => {
+  assert.deepEqual(wordFrequencies(''), []);
+  assert.deepEqual(wordFrequencies(null), []);
 });

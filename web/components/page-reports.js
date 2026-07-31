@@ -1,6 +1,7 @@
 import { api, apiDownload, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, fmtDateTime } from '../utils.js';
+import { assembleMinutesText, openHeatmapModal } from './word-heatmap.js';
 
 // Printable PDF reports (officer+; the audit report is admin-only). Every
 // download here — and every export anywhere in Quorum — is recorded in the
@@ -40,9 +41,10 @@ class PageReports extends HTMLElement {
           <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .8rem">
             The recording secretary's document: attendance, proceedings, motions with votes, decisions.</p>
           <select id="mt-sel" style="width:100%;margin-bottom:.6rem"><option>Loading…</option></select>
-          <div style="display:flex;gap:.5rem">
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
             <button class="btn-primary" id="mt-pdf">Download PDF</button>
             <button class="btn-secondary" id="mt-md">Markdown</button>
+            <button class="btn-secondary" id="mt-heatmap" title="In-app preview; not an export, so nothing is downloaded or logged">🔥 Heat map</button>
           </div>
         </div>
 
@@ -65,6 +67,18 @@ class PageReports extends HTMLElement {
       const id = this.querySelector('#mt-sel').value;
       if (!id) { toast('Choose a meeting', 'error'); return; }
       apiDownload(`/reports/meetings/${id}/minutes.pdf`, 'minutes.pdf').catch(() => toast('Download failed', 'error'));
+    });
+    this.querySelector('#mt-heatmap').addEventListener('click', async () => {
+      const id = this.querySelector('#mt-sel').value;
+      if (!id) { toast('Choose a meeting', 'error'); return; }
+      try {
+        const [mt, entries, motions] = await Promise.all([
+          api('GET', `/meetings/${id}`),
+          api('GET', `/meetings/${id}/minutes`),
+          api('GET', `/meetings/${id}/motions`).catch(() => []),
+        ]);
+        openHeatmapModal(mt.title, assembleMinutesText(mt, entries, motions));
+      } catch { toast('Failed to load the meeting', 'error'); }
     });
     this.querySelector('#mt-md').addEventListener('click', () => {
       const id = this.querySelector('#mt-sel').value;
