@@ -146,6 +146,39 @@ certificates with certbot (`pip install certbot` on AL2023 — its repos don't
 package it — or use Ubuntu where `apt install certbot python3-certbot-apache`
 just works).
 
+## Containerized PostgreSQL (podman quadlet)
+
+Prefer the database in a container? On the podman path (Rocky) that's a
+first-class option, and it does **not** mean baking data into an image: the
+container image is only software, and the data directory is a bind mount on
+the host (`/var/lib/quorum/pgdata`, sitting on the encrypted EBS volume).
+Data survives image pulls, container re-creation, and reboots — no golden
+image anywhere.
+
+Instead of step 4's `dnf` install, use `ops/quadlet/quorum-postgres.container`
+(install instructions in its header). It's a **quadlet** — podman's
+systemd-native container unit — so the database is managed like any other
+service (`systemctl status quorum-postgres`), starts at boot, and reports
+"started" only once `pg_isready` passes, which makes the app unit's
+`After=quorum-postgres.service` ordering wait for a genuinely ready database.
+
+Details that keep the rest of this guide working:
+
+- The container is named `quorum-db`, which is exactly what
+  `scripts/backup.sh`'s podman mode expects. Either flip the two backup units
+  to `Environment=QUORUM_BACKUP_MODE=podman` (pg_dump runs inside the
+  container, client always matches server — recommended here) or keep `url`
+  mode and install host client tools (`dnf install postgresql`).
+- Port 5432 is published on **loopback only**; `QUORUM_DATABASE_URL` in
+  `.env` is unchanged.
+- `AutoUpdate=registry` + `systemctl enable --now podman-auto-update.timer`
+  pulls 16.x minor/security releases automatically — the container-world
+  equivalent of dnf-automatic. Major upgrades (16 → 17) are never automatic;
+  those need `pg_upgrade` or dump/restore, same as any Postgres.
+- Trade-off vs the distro package: the quadlet pins the exact server version
+  and isolates it; the package gets patched by dnf-automatic with everything
+  else. Both are sound — pick one and don't run both.
+
 ## Upgrading the running service
 
 An upgrade is: build the static binary, swap it, restart. Migrations are
@@ -209,9 +242,38 @@ nearly unchanged on a self-hosted forge:
            ops/deploy.sh deploy@your-app-host
    ```
 
-If you later publish the code, keep the forge as the private source of truth
-and add a **push mirror** to a public GitHub repo (repo Settings →
-Mirror) — public visibility without your pipeline depending on GitHub.
+### Publishing on GitHub: two shapes for public + private
+
+Both compose cleanly with the forge pipeline above; pick by where you want
+the source of truth.
+
+**Push-mirror (private forge is upstream).** You push to the forge; it
+mirror-pushes to a public GitHub repo (repo Settings → Mirror). Public
+visibility, zero pipeline dependency on GitHub, deploys fire the moment you
+push. Prefer this if the private copy is where development happens.
+
+**Pull-mirror (public GitHub is upstream).** GitHub is the source of truth;
+the forge holds a *pull mirror* that syncs on an interval and drives CI +
+deploy from its copy of `master`. What changes versus the push shape:
+
+- **Deploy lag**: the default mirror interval is hours. Shorten it in the
+  mirror settings, click "Synchronize now", or add a GitHub webhook that pokes
+  the forge for near-instant sync.
+- **Keep the fork at zero private commits.** Everything machine-specific
+  already lives outside git (`.env`, `.db.env`, forge secrets), so the
+  private copy can be a pure mirror — no drift, no rebasing, upgrades are
+  just "sync happened". If you must carry private patches, keep them on one
+  private branch continually rebased onto upstream `master`, and treat every
+  extra private commit as debt.
+- **Public CI for free**: `ci.yml` runs unchanged on GitHub's free public
+  runners too, so contributors get checks without touching your forge.
+
+Before the repo goes public, once: confirm `.env*` never entered history
+(`git log --all -- .env` is empty here), run a proper secret scanner
+(`gitleaks git .`) rather than trusting eyeballs, and note the license
+implications — AGPL-3.0 means anyone offering a modified Quorum as a network
+service must publish their changes, which protects the project; your own
+private, unpublished deployment config is unaffected.
 
 **GitLab CE** works too but wants 4 GB+ RAM for itself and monthly care —
 oversized for a small team. The zero-new-software alternative: keep the bare

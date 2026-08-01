@@ -4,7 +4,10 @@
 [Unit]
 Description=Quorum organization server
 Documentation=file:///opt/quorum/RUNBOOK.md
-After=network-online.target postgresql-16.service postgresql.service
+# Ordering names every supported database unit; absent ones are ignored.
+# quorum-postgres.service is the podman quadlet (ops/quadlet/), which only
+# reports started once its healthcheck passes.
+After=network-online.target postgresql-16.service postgresql.service quorum-postgres.service
 Wants=network-online.target
 
 [Service]
