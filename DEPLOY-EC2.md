@@ -229,7 +229,7 @@ nearly unchanged on a self-hosted forge:
    ```yaml
    deploy:
      needs: [backend, web]        # job names from ci.yml
-     if: github.ref == 'refs/heads/master'
+     if: github.ref == 'refs/heads/main'
      runs-on: ubuntu-latest
      steps:
        - uses: actions/checkout@v4
@@ -254,7 +254,7 @@ push. Prefer this if the private copy is where development happens.
 
 **Pull-mirror (public GitHub is upstream).** GitHub is the source of truth;
 the forge holds a *pull mirror* that syncs on an interval and drives CI +
-deploy from its copy of `master`. What changes versus the push shape:
+deploy from its copy of `main`. What changes versus the push shape:
 
 - **Deploy lag**: the default mirror interval is hours. Shorten it in the
   mirror settings, click "Synchronize now", or add a GitHub webhook that pokes
@@ -263,7 +263,7 @@ deploy from its copy of `master`. What changes versus the push shape:
   already lives outside git (`.env`, `.db.env`, forge secrets), so the
   private copy can be a pure mirror — no drift, no rebasing, upgrades are
   just "sync happened". If you must carry private patches, keep them on one
-  private branch continually rebased onto upstream `master`, and treat every
+  private branch continually rebased onto upstream `main`, and treat every
   extra private commit as debt.
 - **Public CI for free**: `ci.yml` runs unchanged on GitHub's free public
   runners too, so contributors get checks without touching your forge.
