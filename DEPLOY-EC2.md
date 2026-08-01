@@ -168,11 +168,50 @@ nearly unchanged on a self-hosted forge:
 
 1. Install **Forgejo** (community fork of Gitea; a single Go binary + SQLite,
    happy in ~300 MB RAM) on the instance that already holds the bare repo, and
-   import the repo.
-2. Add one **forgejo-runner** (the CI's `services: postgres` container means
-   the runner host needs docker or a podman socket).
+   import the repo:
+
+   ```sh
+   sudo useradd --system --create-home git
+   # download the forgejo binary for linux-amd64 from https://forgejo.org/download/
+   sudo install -m 755 forgejo-*-linux-amd64 /usr/local/bin/forgejo
+   # forgejo's docs ship a systemd unit; enable it, open the web setup,
+   # choose SQLite, then: New Migration -> Local path -> your bare repo
+   ```
+
+   Make sure Actions are on in `app.ini`: `[actions] ENABLED = true`.
+
+2. Add one **forgejo-runner**. The CI's `services: postgres` container means
+   the runner host needs docker or a podman socket:
+
+   ```sh
+   sudo systemctl enable --now podman.socket
+   # download forgejo-runner, then register it against your forge:
+   forgejo-runner register   # URL + registration token from the forge admin UI
+   DOCKER_HOST=unix:///run/podman/podman.sock forgejo-runner daemon
+   ```
+
 3. Add a deploy job gated on CI success that runs `ops/deploy.sh` against the
-   app instance over SSH (key stored as a forge secret).
+   app instance over SSH (private key stored as a forge secret):
+
+   ```yaml
+   deploy:
+     needs: [backend, web]        # job names from ci.yml
+     if: github.ref == 'refs/heads/master'
+     runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@v4
+       - uses: actions/setup-go@v5
+         with: { go-version: '1.23' }
+       - run: |
+           mkdir -p ~/.ssh && echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+           chmod 600 ~/.ssh/id_ed25519
+           echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+           ops/deploy.sh deploy@your-app-host
+   ```
+
+If you later publish the code, keep the forge as the private source of truth
+and add a **push mirror** to a public GitHub repo (repo Settings →
+Mirror) — public visibility without your pipeline depending on GitHub.
 
 **GitLab CE** works too but wants 4 GB+ RAM for itself and monthly care —
 oversized for a small team. The zero-new-software alternative: keep the bare

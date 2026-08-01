@@ -79,6 +79,33 @@ all, the bootstrap endpoint is only open while the users table is empty — see
 
 ---
 
+## Upgrade the application (single instance)
+
+**When:** deploying a new version of the code to the systemd deployment
+described in [DEPLOY-EC2.md](DEPLOY-EC2.md).
+
+From your dev machine or CI, on the branch you want to ship:
+
+```sh
+ops/deploy.sh deploy@app-host          # remote dir defaults to /opt/quorum
+```
+
+This builds the static binary, uploads it, swaps it atomically (keeping the
+previous binary as `quorum.prev`), restarts `quorum.service`, and polls
+`/readyz` for 30 seconds. If the new binary never becomes ready it prints the
+journal tail and **rolls back to the previous binary automatically**.
+
+Migrations are embedded and apply themselves at startup under an advisory
+lock — a deploy *is* the migration. If the release changes the schema, take a
+`make backup` first; a binary rollback after a schema change may then also
+need "Roll back a bad migration" below, because the old binary must match the
+old schema.
+
+User-visible effect: one restart blip of a second or two. Active sessions
+survive (auth is stateless JWT + refresh tokens in the database).
+
+---
+
 ## Roll back a bad migration
 
 **When:** a deploy applied a migration that broke something, and you need the

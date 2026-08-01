@@ -2,6 +2,14 @@
 
 This guide covers every supported deployment path from a laptop to a production Kubernetes cluster.
 
+> **Deploying to a single server or EC2 instance?** Start with
+> **[DEPLOY-EC2.md](DEPLOY-EC2.md)** instead — OS choice (Amazon Linux vs
+> Rocky vs Ubuntu, including podman availability), reverse-proxy setup,
+> the full install walkthrough, upgrades via `ops/deploy.sh`, and running
+> CI/CD on a self-hosted forge without GitHub. The Kubernetes sections
+> below (3–4) are for multi-node scale; a single instance does not need
+> them and should not use them.
+
 ---
 
 ## Table of Contents
