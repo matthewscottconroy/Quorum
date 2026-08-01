@@ -146,6 +146,46 @@ certificates with certbot (`pip install certbot` on AL2023 — its repos don't
 package it — or use Ubuntu where `apt install certbot python3-certbot-apache`
 just works).
 
+## Upgrading the running service
+
+An upgrade is: build the static binary, swap it, restart. Migrations are
+embedded in the binary and apply themselves at startup under a Postgres
+advisory lock, so **a deploy is the migration** — there is no separate step.
+`ops/deploy.sh user@host` does the whole thing from your dev machine or CI:
+build, upload, atomic swap (keeping the previous binary as `quorum.prev`),
+restart, poll `/readyz` for 30 s, and roll the binary back automatically if
+the new one never becomes ready. The restart blip is a second or two;
+`Restart=always` in the unit covers crashes thereafter. Before a release that
+changes the schema, take a backup (`make backup`); `quorum -migrate-down N`
+exists for a deliberate schema rollback, but restoring a backup is usually the
+saner path.
+
+## CI/CD without GitHub
+
+`.github/workflows/ci.yml` is written in GitHub Actions syntax, which is also
+what **Forgejo/Gitea Actions execute** — so the pipeline you already have runs
+nearly unchanged on a self-hosted forge:
+
+1. Install **Forgejo** (community fork of Gitea; a single Go binary + SQLite,
+   happy in ~300 MB RAM) on the instance that already holds the bare repo, and
+   import the repo.
+2. Add one **forgejo-runner** (the CI's `services: postgres` container means
+   the runner host needs docker or a podman socket).
+3. Add a deploy job gated on CI success that runs `ops/deploy.sh` against the
+   app instance over SSH (key stored as a forge secret).
+
+**GitLab CE** works too but wants 4 GB+ RAM for itself and monthly care —
+oversized for a small team. The zero-new-software alternative: keep the bare
+repo and put `go test ./... && ops/deploy.sh …` in a `post-receive` hook;
+crude, but honest CI/CD for one person. Publishing a public GitHub mirror
+later composes fine with either: the forge stays the private source of truth
+and mirror-pushes to GitHub.
+
+**Kubernetes: no.** `deploy/` carries a complete k8s/Helm/Tekton/Argo CD kit
+for the day this outgrows one box, but on a single instance Kubernetes adds a
+control plane to operate and nothing you don't already get from systemd +
+`Restart=always` + this deploy script. Revisit only at multi-node scale.
+
 ## Local PostgreSQL vs RDS
 
 Local PostgreSQL on the instance is a sound starting point *because this repo
