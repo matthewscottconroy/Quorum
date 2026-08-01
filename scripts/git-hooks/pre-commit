@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Fast checks on every commit — formatting and vet, mirroring CI's first
+# steps. Installed via `make hooks-install`. Bypass in an emergency with
+# `git commit --no-verify` (CI will still catch you).
+# Missing toolchain downgrades to a loud skip: CI remains the backstop.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v gofmt >/dev/null 2>&1; then
+    echo "pre-commit: Go toolchain not installed — SKIPPING gofmt/vet (CI will run them)." >&2
+    echo "install on Fedora: sudo dnf install golang" >&2
+    exit 0
+fi
+
+unformatted=$(gofmt -l internal/ cmd/)
+if [ -n "$unformatted" ]; then
+    echo "pre-commit: gofmt needed on:" >&2
+    echo "$unformatted" >&2
+    echo "fix with: gofmt -w internal/ cmd/" >&2
+    exit 1
+fi
+
+go vet ./...

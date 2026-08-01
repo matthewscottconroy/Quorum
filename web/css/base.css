@@ -1,0 +1,301 @@
+:root {
+  --color-primary:    #2563eb;
+  --color-primary-dk: #1d4ed8;
+  --color-success:    #16a34a;
+  --color-warning:    #d97706;
+  --color-danger:     #dc2626;
+  --color-info:       #0891b2;
+
+  --color-bg:         #f8fafc;
+  --color-surface:    #ffffff;
+  --color-border:     #e2e8f0;
+  --color-text:       #0f172a;
+  --color-text-muted: #64748b;
+  --color-nav-bg:     #1e293b;
+  --color-nav-text:   #cbd5e1;
+  --color-nav-active: #ffffff;
+
+  --radius:   6px;
+  --shadow:   0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+a { color: var(--color-primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  cursor: pointer;
+  font: inherit;
+  border: none;
+  border-radius: var(--radius);
+  padding: .45rem .9rem;
+  font-size: .875rem;
+  transition: background .15s, opacity .15s;
+}
+button:disabled { opacity: .55; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-dk); }
+
+.btn-secondary {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+.btn-secondary:hover:not(:disabled) { background: #cbd5e1; }
+
+.btn-danger {
+  background: var(--color-danger);
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-primary);
+  padding: .3rem .6rem;
+}
+.btn-ghost:hover:not(:disabled) { background: #eff6ff; }
+
+input, select, textarea {
+  font: inherit;
+  font-size: .9rem;
+  width: 100%;
+  padding: .45rem .7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: border-color .15s, box-shadow .15s;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+}
+textarea { resize: vertical; min-height: 80px; }
+
+label {
+  display: block;
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: .25rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.form-group { margin-bottom: 1rem; }
+.form-row { display: flex; gap: .75rem; }
+.form-row .form-group { flex: 1; }
+
+/* On narrow screens, stack two-column form rows and let the page header wrap. */
+@media (max-width: 640px) {
+  .form-row { flex-direction: column; gap: 0; }
+  .page-header { flex-wrap: wrap; gap: .5rem; }
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .9rem;
+}
+th {
+  text-align: left;
+  padding: .6rem .8rem;
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--color-text-muted);
+  border-bottom: 2px solid var(--color-border);
+  background: var(--color-bg);
+}
+td {
+  padding: .65rem .8rem;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+tr:hover td { background: #f1f5f9; }
+tr:last-child td { border-bottom: none; }
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+.page-header h1 {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.badge {
+  display: inline-block;
+  padding: .15rem .55rem;
+  font-size: .72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.badge-pending  { background: #fef3c7; color: #92400e; }
+.badge-paid     { background: #dcfce7; color: #166534; }
+.badge-overdue  { background: #fee2e2; color: #991b1b; }
+.badge-partial  { background: #dbeafe; color: #1e40af; }
+.badge-waived   { background: #f1f5f9; color: #475569; }
+.badge-active   { background: #dcfce7; color: #166534; }
+.badge-inactive { background: #f1f5f9; color: #475569; }
+.badge-open     { background: #dbeafe; color: #1e40af; }
+.badge-in_progress { background: #fef3c7; color: #92400e; }
+.badge-done     { background: #dcfce7; color: #166534; }
+.badge-draft    { background: #f1f5f9; color: #475569; }
+.badge-none     { background: #f1f5f9; color: #94a3b8; }
+.badge-scheduled { background: #dbeafe; color: #1e40af; }
+.badge-completed { background: #dcfce7; color: #166534; }
+.badge-cancelled { background: #fee2e2; color: #991b1b; }
+.badge-suspended { background: #fee2e2; color: #991b1b; }
+.badge-archived  { background: #f1f5f9; color: #475569; }
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--color-text-muted);
+}
+.empty-state p { font-size: 1rem; }
+
+.search-bar {
+  display: flex;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+.search-bar input { max-width: 320px; }
+
+dialog.modal {
+  border: none;
+  padding: 0;
+  margin: auto;
+}
+dialog.modal::backdrop {
+  background: rgba(0,0,0,.45);
+}
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.modal-header h2 { font-size: 1.1rem; font-weight: 700; }
+.modal-body { padding: 1.25rem; }
+.modal-footer {
+  display: flex; justify-content: flex-end; gap: .5rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.toast-container {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  z-index: 200; /* fallback stacking for browsers without the Popover API */
+  /* The container is a [popover="manual"] so it renders in the top layer,
+     above <dialog> backdrops. Undo the UA popover styles (inset:0,
+     margin:auto, border, padding, canvas background, fit-content sizing)
+     so it keeps its bottom-right placement and transparent look. */
+  top: auto;
+  left: auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+}
+.toast {
+  padding: .75rem 1.1rem;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: .9rem;
+  font-weight: 500;
+  box-shadow: var(--shadow-md);
+  animation: slide-in .2s ease;
+}
+.toast-success { background: var(--color-success); }
+.toast-error   { background: var(--color-danger); }
+.toast-info    { background: var(--color-primary); }
+.toast-warning { background: var(--color-warning); }
+
+@keyframes slide-in {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.spinner {
+  display: inline-block;
+  width: 1.1em; height: 1.1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Print control ────────────────────────────────────────────────────────────
+   Browser printing of application screens is disabled: screen views are live,
+   unwatermarked, and leave no export record. The audited path is Reports →
+   PDF, which stamps the exporter, the time, and a verifiable integrity hash,
+   and records the export in the audit log. (This is a policy control, not a
+   technical guarantee — determined users can still capture a screen.) */
+@media print {
+  body > * {
+    display: none !important;
+  }
+  body::before {
+    content: "Printing of application screens is disabled.\A\A Screen views are live and carry no export record. Please use Reports \2192 Download PDF instead: PDF exports are watermarked with the exporter and time, sealed with a verifiable integrity hash, and recorded in the audit log.\A\A \2014 Quorum";
+    white-space: pre-wrap;
+    display: block;
+    font: 14px/1.6 system-ui, sans-serif;
+    color: #333;
+    padding: 3rem;
+    max-width: 42rem;
+  }
+}
+
+/* Screen-attribution watermark inside modals: <dialog>.showModal() renders in
+   the browser top layer, above any z-index, so the viewport overlay cannot
+   reach it — the dialog surface carries the same stamp itself. */
+dialog.modal {
+  background-image: var(--screen-watermark, none);
+}

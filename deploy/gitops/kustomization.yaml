@@ -1,0 +1,26 @@
+# Kustomize overlay consumed by Argo CD.
+# This file lives in the GitOps repository (separate from the source repo)
+# and is the single source of truth for what is deployed to the cluster.
+#
+# The Tekton pipeline updates deployment.yaml's image tag and pushes a commit
+# here; Argo CD detects the push and reconciles the cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# This file is the GitOps entry-point consumed by Argo CD.
+# It delegates to the production overlay, which in turn uses the Kustomize
+# base defined in deploy/kustomize/base/.
+#
+# The Tekton pipeline updates the image tag in
+# deploy/kustomize/overlays/production/kustomization.yaml and pushes a commit;
+# Argo CD detects the push and syncs the cluster.
+
+namespace: quorum
+
+resources:
+  - ../kustomize/overlays/production
+
+# Argo CD syncs managed-by label; part-of is kept on all resources.
+commonLabels:
+  app.kubernetes.io/managed-by: argocd
+  app.kubernetes.io/part-of: quorum

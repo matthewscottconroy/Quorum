@@ -1,0 +1,14 @@
+# Caddy reverse proxy for Quorum: automatic Let's Encrypt TLS in five lines.
+# Caddy ships as a single static binary (works on any distro, including
+# Amazon Linux 2023 where certbot is not packaged):
+#   https://caddyserver.com/download  → /usr/local/bin/caddy + its systemd unit
+# Replace quorum.example.org with your domain (DNS must already point here).
+
+quorum.example.org {
+	# The app must listen on localhost only (QUORUM_PORT=8080, firewalled).
+	reverse_proxy 127.0.0.1:8080 {
+		# The app rate-limits by X-Real-IP when QUORUM_TRUST_PROXY_HEADERS=true.
+		header_up X-Real-IP {client_ip}
+	}
+	encode gzip
+}

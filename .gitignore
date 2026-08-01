@@ -1,0 +1,27 @@
+# Environment / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Compiled binary (produced by `make build`)
+/quorum
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.*
+
+# Local data / scratch
+/backups/
+*.pgdump
+*.log
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# Python bytecode (ops/ verifier)
+__pycache__/

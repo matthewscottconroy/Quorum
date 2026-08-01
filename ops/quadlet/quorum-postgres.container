@@ -1,0 +1,51 @@
+# PostgreSQL as a podman "quadlet" — a systemd-native container unit — for
+# single-instance deployments that prefer a containerized database over the
+# distro package (see DEPLOY-EC2.md, "Containerized PostgreSQL").
+#
+# Persistence: the data directory is a bind mount on the host
+# (/var/lib/quorum/pgdata, which sits on the encrypted EBS volume). The image
+# is only software; all state lives on the host and survives image pulls,
+# container re-creation, and reboots. There is no golden image.
+#
+# Install (rootful):
+#   sudo mkdir -p /var/lib/quorum/pgdata
+#   sudo install -m 600 -o root /dev/null /opt/quorum/.db.env
+#   # put in /opt/quorum/.db.env:  POSTGRES_DB=quorum
+#   #                              POSTGRES_USER=quorum
+#   #                              POSTGRES_PASSWORD=<same password as in
+#   #                              QUORUM_DATABASE_URL and DB_PASSWORD in .env>
+#   sudo cp ops/quadlet/quorum-postgres.container /etc/containers/systemd/
+#   sudo systemctl daemon-reload && sudo systemctl start quorum-postgres
+
+[Unit]
+Description=PostgreSQL 16 for Quorum (podman quadlet)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+# The name scripts/backup.sh's podman mode expects — with it, the backup
+# timers can run QUORUM_BACKUP_MODE=podman and exec pg_dump INSIDE this
+# container, so client tools always match the server version exactly.
+ContainerName=quorum-db
+Image=docker.io/library/postgres:16-alpine
+EnvironmentFile=/opt/quorum/.db.env
+# Loopback only — same stance as the app itself; never expose 5432.
+PublishPort=127.0.0.1:5432:5432
+# :Z relabels for SELinux (Rocky enforcing; harmless where permissive).
+Volume=/var/lib/quorum/pgdata:/var/lib/postgresql/data:Z
+HealthCmd=pg_isready -U quorum -d quorum
+HealthInterval=10s
+# systemd considers the unit "started" only once the healthcheck passes, so
+# After=quorum-postgres.service in quorum.service waits for a READY database.
+Notify=healthy
+# Track the 16-alpine tag: podman-auto-update.timer (enable it) pulls minor
+# and security releases and restarts the container. Major upgrades (16 -> 17)
+# are never automatic — those need pg_upgrade or dump/restore, on purpose.
+AutoUpdate=registry
+
+[Service]
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

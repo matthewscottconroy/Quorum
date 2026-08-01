@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Full local gate before anything leaves this machine — the same linter and
+# tests CI runs, so a push never turns the public checks red. Installed via
+# `make hooks-install`. Bypass with `git push --no-verify` if you must.
+# Missing tools downgrade to a loud skip: CI remains the backstop.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint run
+else
+    echo "pre-push: golangci-lint not installed — SKIPPING lint (CI will run it)." >&2
+    echo "install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8" >&2
+fi
+
+if command -v go >/dev/null 2>&1; then
+    go test ./...
+else
+    echo "pre-push: go not installed — SKIPPING tests (CI will run them)." >&2
+    echo "install on Fedora: sudo dnf install golang" >&2
+fi
+
+if command -v node >/dev/null 2>&1; then
+    node --test web/*.test.js
+else
+    echo "pre-push: node not installed — skipping web tests (CI will run them)." >&2
+fi

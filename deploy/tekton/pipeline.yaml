@@ -1,0 +1,129 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: quorum-build
+  namespace: tekton-pipelines
+spec:
+  description: |
+    Builds and deploys the Quorum application:
+      1. Clone source repository
+      2. Run Go tests
+      3. Build and push OCI image with Buildah (Podman build engine)
+      4. Update the image tag in the Kustomize GitOps overlay
+      Argo CD detects the overlay commit and syncs the cluster.
+
+  params:
+    - name: source-repo-url
+      type: string
+      description: Git URL of the Quorum source repository.
+    - name: source-revision
+      type: string
+      default: main
+      description: Git branch, tag, or commit SHA to build.
+    - name: image-repository
+      type: string
+      description: "Base image name (no tag), e.g. registry.example.com/quorum"
+    - name: gitops-repo-url
+      type: string
+      description: Git URL of the GitOps manifest repository (Argo CD watches this).
+    - name: gitops-revision
+      type: string
+      default: main
+      description: Branch in the GitOps repo to update.
+    - name: kustomize-overlay-path
+      type: string
+      default: deploy/kustomize/overlays/production
+      description: Path inside the GitOps repo to the Kustomize overlay directory.
+
+  workspaces:
+    - name: source
+      description: Holds the checked-out source code.
+    - name: gitops
+      description: Holds the checked-out GitOps repository.
+    - name: docker-credentials
+      description: Podman/Docker config.json for pushing to the registry.
+    - name: git-credentials
+      description: SSH key or token for pushing back to the GitOps repo.
+
+  tasks:
+    # ── 1. Clone source ──────────────────────────────────────────────────────
+    - name: fetch-source
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: Task
+          - name: name
+            value: git-clone
+          - name: namespace
+            value: tekton-pipelines
+      params:
+        - name: url
+          value: $(params.source-repo-url)
+        - name: revision
+          value: $(params.source-revision)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+
+    # ── 2. Run tests ─────────────────────────────────────────────────────────
+    - name: test
+      taskRef:
+        name: quorum-go-test
+        kind: Task
+      runAfter: [fetch-source]
+      workspaces:
+        - name: source
+          workspace: source
+
+    # ── 3. Build and push image with Buildah ─────────────────────────────────
+    - name: build-push
+      taskRef:
+        name: quorum-buildah-build
+        kind: Task
+      runAfter: [test]
+      params:
+        - name: image
+          value: $(params.image-repository):$(tasks.fetch-source.results.commit)
+        - name: image-latest
+          value: $(params.image-repository):latest
+      workspaces:
+        - name: source
+          workspace: source
+        - name: docker-credentials
+          workspace: docker-credentials
+
+    # ── 4. Update Kustomize overlay ───────────────────────────────────────────
+    - name: update-manifest
+      taskRef:
+        name: quorum-update-manifest
+        kind: Task
+      runAfter: [build-push]
+      params:
+        - name: gitops-repo-url
+          value: $(params.gitops-repo-url)
+        - name: gitops-revision
+          value: $(params.gitops-revision)
+        - name: image-repository
+          value: $(params.image-repository)
+        - name: image-tag
+          value: $(tasks.fetch-source.results.commit)
+        - name: kustomize-overlay-path
+          value: $(params.kustomize-overlay-path)
+        - name: commit-sha
+          value: $(tasks.fetch-source.results.commit)
+      workspaces:
+        - name: gitops
+          workspace: gitops
+        - name: git-credentials
+          workspace: git-credentials
+
+  results:
+    - name: image-digest
+      description: SHA256 digest of the built container image.
+      value: $(tasks.build-push.results.image-digest)
+    - name: commit
+      description: Source commit SHA that triggered this build.
+      value: $(tasks.fetch-source.results.commit)

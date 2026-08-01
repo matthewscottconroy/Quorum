@@ -1,0 +1,13 @@
+# Nightly database backup (see BACKUP.md). Pairs with quorum-backup.timer.
+#   cp ops/systemd/quorum-backup.* /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now quorum-backup.timer
+[Unit]
+Description=Quorum database backup
+Documentation=file:///opt/quorum/BACKUP.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/quorum
+EnvironmentFile=/opt/quorum/.env
+Environment=QUORUM_BACKUP_MODE=url
+ExecStart=/opt/quorum/scripts/backup.sh create

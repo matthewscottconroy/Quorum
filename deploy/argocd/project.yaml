@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: quorum
+  namespace: argocd
+spec:
+  description: Quorum organisation management application
+
+  # Allow syncing from the GitOps repo (Kustomize) or the source repo (Helm chart).
+  sourceRepos:
+    - git@github.com:your-org/quorum-gitops.git   # replace
+    - git@github.com:your-org/quorum.git           # replace — for Helm chart deployment
+
+  # Allow deploying only to the quorum namespace on the in-cluster server.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: quorum
+
+  # Cluster-scoped resources that Argo CD may manage for this project.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Namespace-scoped resources allowed.
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: ServiceAccount
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+
+  # Prevent accidental deletion of live resources.
+  orphanedResources:
+    warn: true

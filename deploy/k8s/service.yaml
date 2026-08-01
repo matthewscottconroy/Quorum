@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: quorum
+  namespace: quorum
+  labels:
+    app.kubernetes.io/name: quorum
+spec:
+  selector:
+    app.kubernetes.io/name: quorum
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP

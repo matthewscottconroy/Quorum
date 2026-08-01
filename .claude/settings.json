@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -i \"s/this\\\\._invoices = await api\\('GET', '\\\\/dues?' + params\\);/const _dPage = await api\\('GET', '\\\\/dues?' + params\\);\\\\n      this._invoices = _dPage?.data ?? _dPage ?? [];/\" /home/matthewscott/Development/EDT/quorum/web/components/page-dues.js)",
+      "Bash(sed -i \"s/this\\\\._meetings = await api\\('GET', '\\\\/meetings' + params\\);/const _mtPage = await api\\('GET', '\\\\/meetings' + params\\);\\\\n    this._meetings = _mtPage?.data ?? _mtPage ?? [];/\" /home/matthewscott/Development/EDT/quorum/web/components/page-meetings.js)",
+      "Bash(sed -i \"s/this\\\\._plans = await api\\('GET', '\\\\/plans'\\);/const _plPage = await api\\('GET', '\\\\/plans'\\);\\\\n    this._plans = _plPage?.data ?? _plPage ?? [];/\" /home/matthewscott/Development/EDT/quorum/web/components/page-plans.js)",
+      "Bash(sed -i \"s/this\\\\._contacts = await api\\('GET', '\\\\/contacts?' + params\\);/const _coPage = await api\\('GET', '\\\\/contacts?' + params\\);\\\\n    this._contacts = _coPage?.data ?? _coPage ?? [];/\" /home/matthewscott/Development/EDT/quorum/web/components/page-contacts.js)",
+      "Bash(sed -i \"s/this\\\\._resources = await api\\('GET', '\\\\/resources?' + params\\);/const _rePage = await api\\('GET', '\\\\/resources?' + params\\);\\\\n    this._resources = _rePage?.data ?? _rePage ?? [];/\" /home/matthewscott/Development/EDT/quorum/web/components/page-resources.js)",
+      "Bash(grep -n \"for k, v := range fields\\\\|fmt.Sprintf.*= \\\\$%d\\\\|%s = \\\\$\" /home/matthewscott/Development/EDT/quorum/internal/repo/plans.go /home/matthewscott/Development/EDT/quorum/internal/repo/action_items.go)"
+    ]
+  }
+}

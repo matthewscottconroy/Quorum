@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quorum-config
+  namespace: quorum
+data:
+  QUORUM_PORT: "8080"
+  QUORUM_BASE_URL: "https://quorum.example.com"   # replace with your domain
+  # This app sits behind the ingress, which sets X-Forwarded-For / X-Real-IP,
+  # so rate limiting keys on the real client IP instead of the ingress pod IP.
+  QUORUM_TRUST_PROXY_HEADERS: "true"
+  QUORUM_JWT_ACCESS_TTL: "15m"
+  QUORUM_JWT_REFRESH_TTL: "168h"
+  QUORUM_SMTP_HOST: ""        # set to enable email reminders
+  QUORUM_SMTP_PORT: "587"
+  QUORUM_SMTP_USER: ""
+  QUORUM_EMAIL_FROM: "quorum@example.com"
