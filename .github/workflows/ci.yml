@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly: vulnerability databases update without commits
 
 permissions:
   contents: read
@@ -27,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.x'
           cache: true
       - name: gofmt
         run: |
@@ -66,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.x'
           cache: true
       # Runs the full ladder up, back down to zero, and up again against a real
       # Postgres — so every .up.sql must have a .down.sql that truly reverses it,
@@ -83,10 +85,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.25.x'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
       - name: govulncheck

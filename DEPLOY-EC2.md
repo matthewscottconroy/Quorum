@@ -234,7 +234,7 @@ nearly unchanged on a self-hosted forge:
      steps:
        - uses: actions/checkout@v4
        - uses: actions/setup-go@v5
-         with: { go-version: '1.23' }
+         with: { go-version: '1.25.x' }
        - run: |
            mkdir -p ~/.ssh && echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_ed25519
            chmod 600 ~/.ssh/id_ed25519

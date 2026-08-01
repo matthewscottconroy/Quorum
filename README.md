@@ -41,7 +41,7 @@ The app is now available at `http://localhost:8080`.
 
 ## Local development (without Docker)
 
-Requires: Go 1.23+, PostgreSQL 16.
+Requires: Go 1.25+, PostgreSQL 16.
 
 ```sh
 # Start a local Postgres database separately, then:

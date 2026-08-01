@@ -31,6 +31,11 @@ test-integration:
 lint:
 	golangci-lint run
 
+# Scan for known vulnerabilities reachable from our code (also runs in CI,
+# weekly and on every push — findings appear over time, not with commits).
+vulncheck:
+	govulncheck ./...
+
 # ── Backups / disaster recovery ───────────────────────────────────────────────
 
 backup:

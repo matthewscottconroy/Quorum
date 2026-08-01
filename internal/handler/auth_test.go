@@ -1213,7 +1213,7 @@ func TestUpdateUser_SetsMemberLink(t *testing.T) {
 }
 
 func TestUpdateUser_UnlinksMember(t *testing.T) {
-	var captured *string = new(string)
+	captured := new(string)
 	repo := &mockAuthRepo{
 		GetUserByIDFn:   func(_ context.Context, id string) (*model.User, error) { return testUser(id, "restricted"), nil },
 		SetUserMemberFn: func(_ context.Context, _ string, memberID *string) error { captured = memberID; return nil },

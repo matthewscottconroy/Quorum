@@ -6,7 +6,7 @@ require on every commit.
 
 ## Prerequisites
 
-- **Go 1.23+**
+- **Go 1.25+**
 - **PostgreSQL 16** (only needed to run the app; the test suite needs no database)
 - **golangci-lint** for linting: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`
 - **Podman ≥ 4.7** or Docker, if you want to run the full container stack
