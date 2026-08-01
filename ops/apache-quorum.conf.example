@@ -1,0 +1,29 @@
+# Apache httpd reverse proxy for Quorum (mod_proxy, mod_proxy_http, mod_ssl,
+# mod_headers). Works fine; note the X-Forwarded-For handling below — Apache
+# APPENDS to an inbound X-Forwarded-For, which would let clients spoof their
+# rate-limit key, so we strip it and set X-Real-IP from the socket address
+# (which the app prefers when QUORUM_TRUST_PROXY_HEADERS=true).
+
+<VirtualHost *:80>
+    ServerName quorum.example.org
+    Redirect permanent / https://quorum.example.org/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName quorum.example.org
+
+    SSLEngine on
+    SSLCertificateFile      /etc/letsencrypt/live/quorum.example.org/fullchain.pem
+    SSLCertificateKeyFile   /etc/letsencrypt/live/quorum.example.org/privkey.pem
+
+    # Never trust client-supplied forwarding headers.
+    RequestHeader unset X-Forwarded-For
+    RequestHeader unset X-Real-IP
+    RequestHeader set X-Real-IP "%{REMOTE_ADDR}s"
+
+    ProxyPreserveHost On
+    ProxyPass        / http://127.0.0.1:8080/ retry=0 timeout=35
+    ProxyPassReverse / http://127.0.0.1:8080/
+
+    # The app sets its own security headers (CSP etc.); do not override here.
+</VirtualHost>

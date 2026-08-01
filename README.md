@@ -419,6 +419,7 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | **[BACKUP.md](BACKUP.md)** | Backup/restore/verify tooling, scheduling, retention, full recovery from scratch, RPO/RTO |
 | **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** | What's done, what's left before a real launch, and the pre-deploy checklist |
 | **[SECURITY.md](SECURITY.md)** | Security model and reporting |
+| **[DEPLOY-EC2.md](DEPLOY-EC2.md)** | Single-instance EC2 deployment: reverse-proxy choice (Caddy/Apache/nginx configs in ops/), Amazon Linux notes, install walkthrough |
 | **[COMPLIANCE.md](COMPLIANCE.md)** | Why Quorum's records are evidence-grade: the audit hash chain, the append-only ledger, and the third-party verification procedure |
 
 The `ops/` directory ships deployment collateral: Prometheus alert rules,

@@ -1,0 +1,33 @@
+# The Quorum server itself. Install alongside the backup/verify timers:
+#   cp ops/systemd/quorum.service /etc/systemd/system/  (edit paths if not /opt/quorum)
+#   systemctl daemon-reload && systemctl enable --now quorum
+[Unit]
+Description=Quorum organization server
+Documentation=file:///opt/quorum/RUNBOOK.md
+After=network-online.target postgresql-16.service postgresql.service
+Wants=network-online.target
+
+[Service]
+User=quorum
+Group=quorum
+WorkingDirectory=/opt/quorum
+EnvironmentFile=/opt/quorum/.env
+ExecStart=/opt/quorum/quorum
+Restart=always
+RestartSec=3
+
+# Hardening: the server binds an unprivileged port and writes nothing to disk
+# (backups run in their own units), so lock it down.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
