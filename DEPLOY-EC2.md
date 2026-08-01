@@ -22,12 +22,21 @@ rules from this codebase:
    key). Then set `QUORUM_TRUST_PROXY_HEADERS=true`.
 3. Don't override response headers — the app sets its own CSP/security set.
 
-**Amazon Linux?** Amazon Linux 2023 is a fine choice: current PostgreSQL
-packages, dnf, long AWS support, no license cost. Two honest caveats: its
-repos carry **no certbot and no podman** (Ubuntu 24.04 LTS is the better pick
-if you want either from packages). Both caveats vanish if you use Caddy —
-which needs neither. Recommendation: **AL2023 + Caddy**, or Ubuntu LTS if your
-team lives in the Debian world. Either works; don't overthink it.
+**Amazon Linux?** Amazon Linux 2023 is a fine choice *unless you want
+podman*: current PostgreSQL packages, dnf, long AWS support, no license cost.
+Its honest caveats: the repos carry **no podman and no certbot** (AWS ships
+Docker instead of podman, and sideloading podman onto AL2023 is a build-from-
+source maintenance burden — treat it as unavailable). The certbot gap vanishes
+with Caddy; the podman gap does not. So:
+
+- **Want podman → Rocky Linux 9.** Podman is the RHEL-native container stack:
+  `dnf install podman`, quadlets (systemd-native container units), SELinux
+  integration, rootless by default. Official free AMIs from the Rocky
+  Enterprise Software Foundation. Ubuntu 24.04 LTS is the runner-up
+  (`apt install podman`, v4.9).
+- **Don't need podman → AL2023 + Caddy** and skip the ceremony.
+
+Either way the app itself deploys the same: one static binary under systemd.
 
 **What gets installed?** See the walkthrough below. The full list on AL2023:
 `postgresql16-server`, the Caddy binary (or `httpd`/`nginx`), the `quorum`
@@ -96,6 +105,40 @@ make bootstrap                                         # creates the first super
 # then verify the bootstrap endpoint is closed and work through
 # PRODUCTION_READINESS.md's pre-deploy checklist.
 ```
+
+## Rocky Linux 9 variant (the podman path)
+
+Everything above holds; only the platform steps differ. Deltas from the
+AL2023 walkthrough:
+
+```sh
+# 0. Rocky quirks AL2023 doesn't have
+sudo dnf install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+sudo systemctl enable --now amazon-ssm-agent        # SSM agent is NOT preinstalled on Rocky AMIs
+sudo firewall-cmd --permanent --add-service=http --add-service=https && sudo firewall-cmd --reload
+#   firewalld is on by default — the security group alone is not enough here
+
+# 1. Packages
+sudo dnf install -y dnf-automatic podman epel-release
+sudo systemctl enable --now dnf-automatic.timer
+sudo dnf install -y podman-compose               # optional, from EPEL, for the dev-style compose stack
+
+# 2. PostgreSQL 16 comes from the AppStream module, not a versioned package
+sudo dnf module enable -y postgresql:16
+sudo dnf install -y postgresql-server
+sudo postgresql-setup --initdb && sudo systemctl enable --now postgresql
+
+# 6. Caddy from the project's COPR (per the Caddy docs)
+sudo dnf install -y 'dnf-command(copr)'
+sudo dnf copr enable -y @caddy/caddy && sudo dnf install -y caddy
+sudo cp ops/Caddyfile /etc/caddy/Caddyfile && sudo systemctl enable --now caddy
+```
+
+SELinux is enforcing on Rocky: the quorum binary under systemd and Caddy both
+run fine as-is, but if you choose **Apache or nginx** instead, allow the proxy
+to reach 127.0.0.1:8080 with `sudo setsebool -P httpd_can_network_connect 1`.
+Prefer building the binary off-box (`CGO_ENABLED=0 go build`) — it's fully
+static, and distro Go packages can lag the version this module requires.
 
 Using **Apache instead of Caddy**: `dnf install httpd mod_ssl`, drop
 `ops/apache-quorum.conf.example` into `/etc/httpd/conf.d/quorum.conf`, and get
