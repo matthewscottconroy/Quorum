@@ -415,7 +415,9 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 
 | Document | Covers |
 |---|---|
-| **[RUNBOOK.md](RUNBOOK.md)** | Rotating `QUORUM_JWT_SECRET`, recovering a locked-out admin, rolling back a migration, data requests, tracing a request by id, health/metrics, the nightly job, multi-replica caveats |
+| **[RUNBOOK.md](RUNBOOK.md)** | Day-2 operations: user onboarding/offboarding, access restriction, secret rotation, locked-out admin recovery, upgrades, migration rollback, backup management, disaster recovery, breach forensics, health litmus tests |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | Diagrams: system architecture, request/backup data flow, network zones and trust boundaries |
+| **[EMAIL-SETUP.md](EMAIL-SETUP.md)** | SMTP from zero: what a relay is, why mail gets spam-blocked (SPF/DKIM/DMARC), Amazon SES walkthrough, Gmail stopgap |
 | **[BACKUP.md](BACKUP.md)** | Backup/restore/verify tooling, scheduling, retention, full recovery from scratch, RPO/RTO |
 | **[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md)** | What's done, what's left before a real launch, and the pre-deploy checklist |
 | **[SECURITY.md](SECURITY.md)** | Security model and reporting |

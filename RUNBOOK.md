@@ -260,3 +260,207 @@ shared store or the ingress if you run more than one:
 - the login/refresh **rate limiter** (in-process sliding window),
 - the per-account **2FA failure throttle**,
 - **metrics** (scrape each replica; aggregate in Prometheus).
+
+---
+
+## Onboard a new user
+
+**When:** someone joins the organization. There is no self-signup by design —
+an admin creates every account.
+
+Your part (as admin, in the UI):
+
+1. **Members → Add member** — create their member record first (name, email,
+   tier). This is the organizational identity: dues, attendance, votes.
+2. **Settings → Users → Add user** — create the login: email, initial
+   password, role (see the ladder below), and **link it to the member record**
+   from step 1. Unlinked accounts see a "not linked yet" banner and almost
+   nothing else.
+3. Hand them the initial password over a channel you already trust (in
+   person, phone, existing chat — not a sticky note on the internet).
+
+Their part:
+
+4. Sign in, change the password (Account → password), and set up two-factor
+   (Account → security) — encourage this at onboarding, it's painless then
+   and a chore later.
+5. If SMTP is configured they can skip your handed password ceremony:
+   create the account with any strong throwaway, tell them to click
+   **Forgot password** immediately, and they set their own from the email.
+
+Role ladder (each includes everything below it):
+
+| Role | Grants |
+|---|---|
+| `restricted` | own member record only (self-service portal) |
+| `member` | read the shared org: directory, meetings, resources, dashboard |
+| `officer` | operate: members, dues, meetings/minutes, resources, boards |
+| `admin` | govern: users, groups, audit log, exports, settings |
+| `superadmin` | destroy: delete users, erase members (right-to-erasure) |
+
+Give the lowest role that works; promote later in **Settings → Users** (one
+PATCH, takes effect on their next token refresh, ~1 minute).
+
+---
+
+## Lock out or offboard a user
+
+**When:** someone leaves, a device is stolen, or an account looks compromised.
+There is no "disabled" flag — lockout is done with the three controls that
+exist, in escalating order:
+
+**Soft lock (reversible, 1 minute):**
+
+1. **Settings → Users** → change their role to `restricted` — they now see
+   only their own record.
+2. **Reset their password** (same screen) to a value you don't share — their
+   credentials stop working, and the reset revokes refresh tokens so open
+   sessions die at the next refresh (within minutes, bounded by the idle
+   timeout).
+
+**Departure (the normal case):** do the soft lock, and mark their member
+record appropriately (status change or soft-delete under Members — this keeps
+their dues/vote history, which the org's records need).
+
+**Full removal (superadmin, irreversible):**
+
+3. Delete the user account (Settings → Users → delete; superadmin only).
+4. If they exercise the right to erasure: **Members → Erase** strips personal
+   data in place while keeping financial/governance rows intact. Read the
+   confirmation carefully; there is no undo.
+
+Audit note: all of these actions are themselves recorded in the audit log —
+who locked whom, when.
+
+---
+
+## Restrict who can see what
+
+Three independent mechanisms, from coarse to fine:
+
+- **Roles** (above) gate *actions* — who can operate vs read vs self-serve.
+- **Visibility groups** (Settings → Visibility groups) gate *library
+  resources*: a resource tagged with groups is visible only to members of
+  those groups (officers+ always see everything; an untagged resource is
+  visible to all members). Hidden means *invisible* — a filtered-out member
+  gets the same 404 as for a nonexistent document.
+- **Ownership scoping** protects records like member details and dues:
+  `restricted` users reach only their own.
+
+Litmus test after changing groups: log in as (or shoulder-surf) an affected
+member and confirm the resource list looks right. Deleting a group **widens**
+visibility — resources restricted only by it become visible to all members;
+the UI warns, believe it.
+
+---
+
+## Backup management (the routine)
+
+Everything is automated; your job is a monthly two-minute audit that the
+automation is real:
+
+| What | When | Prove it happened |
+|---|---|---|
+| Encrypted dump to `backups/` | daily 02:00 | `make backup-list` shows today |
+| Sync to S3 | daily (cron) | S3 console shows today's file |
+| Restore-verify into scratch DB | Sun 03:00 | `journalctl -u quorum-backup-verify -n 20` says OK |
+| Audit-chain verify | daily 04:00 | `journalctl -u quorum-verify-audit -n 5` |
+| Prune old local dumps | with each backup | list stays ≤ retention count |
+
+Monthly, run one manual `make backup-verify` and watch it succeed with your
+own eyes. Quarterly, confirm the backup passphrase copy outside the server
+still exists (password manager + offline copy). An encrypted backup without
+the passphrase is a paperweight — this is the single most important line in
+this runbook.
+
+---
+
+## Disaster recovery: the machine is gone
+
+**When:** the instance is unrecoverable (deleted, region incident, corrupted).
+Full detail: [BACKUP.md](BACKUP.md). The shape, so future-you doesn't panic:
+
+1. Launch a fresh instance per [DEPLOY-EC2.md](DEPLOY-EC2.md), through the
+   database step.
+2. Pull the newest dump from S3: `aws s3 cp s3://YOUR-BUCKET/quorum-backups/<newest> backups/`.
+3. `QUORUM_BACKUP_PASSPHRASE=... scripts/backup.sh restore backups/<file>` —
+   decrypts and restores.
+4. Verify integrity of the restored history: `./quorum -verify-audit` and
+   compare the chain head against the manifest.
+5. Start the app, point DNS at the new Elastic IP, wait for Caddy to fetch a
+   certificate. Log in; check the audit log's most recent entries look sane.
+
+What you need for this to work, none of it on the dead server: the S3 bucket,
+the backup passphrase, your domain's DNS control, and this repository.
+Practice once before you need it — a DR drill on a throwaway instance turns a
+crisis into a checklist.
+
+---
+
+## Suspected breach: forensics & response
+
+**When:** something smells wrong — an unexpected admin action, a member
+reports activity they didn't do, an export nobody remembers.
+
+**First, preserve; don't reboot, don't "clean up":**
+
+1. Snapshot the EBS volume (Console → EC2 → Volumes → Create snapshot) —
+   frozen evidence, timestamped.
+2. Export the audit evidence now, before anything else changes:
+   `/audit/export.csv` from the UI (Audit page), or copy `backups/` +
+   the newest dump off-box.
+
+**Read the record — this is what the audit chain is for:**
+
+3. Verify the chain: Audit page → Verify, or `./quorum -verify-audit`.
+   *Intact* means the log itself is trustworthy; *broken* tells you where
+   history was altered — everything before the break is still evidence.
+4. Hunt in the Audit page (admins): filter `DENIED` (repeated 401/403 =
+   someone probing), `EXPORT` (what left, who, when — PDFs carry their
+   SHA-256 in the entry), `auth.` events (logins, resets, 2FA changes,
+   session revocations), and any writes by the suspect account.
+5. Correlate with transport logs: `journalctl -u quorum` (structured, with
+   request IDs and client IPs — X-Real-IP is trustworthy because the proxy
+   strips inbound forgeries) and `journalctl -u caddy` for the raw HTTP line.
+
+**Contain:**
+
+6. Lock the suspect account (see "Lock out or offboard", above).
+7. Rotate `QUORUM_JWT_SECRET` (see its section) — this instantly voids every
+   token in existence; all users re-login. Rotate the DB password and backup
+   passphrase if server compromise is plausible, not just account compromise.
+8. Review **Settings → Users** for accounts you didn't create, and the
+   member list for records you don't recognize.
+
+**Afterwards:** write down the timeline while it's fresh; the evidence CSV +
+`ops/verify-audit-export.py` lets a third party verify your record without
+trusting your server.
+
+---
+
+## Litmus tests: is everything actually fine?
+
+**The 30-second daily glance** (or whenever you're curious):
+
+```sh
+systemctl is-active quorum quorum-postgres caddy   # three lines of "active"
+curl -s localhost:8080/readyz                       # {"status":"ready"}
+```
+
+**The 5-minute weekly pass:**
+
+```sh
+make backup-list                                    # newest dump is < 25h old
+journalctl -u quorum-backup-verify -n 3 --no-pager  # last Sunday: success
+journalctl -u quorum-verify-audit -n 3 --no-pager   # chain: intact
+journalctl -u quorum --since -7d | grep -ci panic   # 0
+sudo dnf needs-restarting -r; echo "reboot-needed: $?"  # 1 = reboot when convenient
+```
+
+Plus, from a browser *off* the server: the login page loads with a valid
+padlock (Caddy renews certificates ~30 days early; a padlock warning means
+renewal has been failing for weeks — check `journalctl -u caddy`).
+
+**The quarterly hour:** DR drill on a throwaway instance (above), passphrase
+custody check, user list review, and skim `PRODUCTION_READINESS.md` for
+anything newly relevant.

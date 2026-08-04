@@ -25,3 +25,6 @@ coverage.*
 
 # Python bytecode (ops/ verifier)
 __pycache__/
+
+# Instance-specific operator notes (real domain/IP/bucket) — never publish
+MY-DEPLOYMENT.md
