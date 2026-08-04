@@ -57,6 +57,10 @@ backup-verify:
 backups-install:
 	ops/install-backup-timers.sh
 
+# Render USER_MANUAL.md to quorum-manual.pdf (pandoc + LaTeX, or Chrome fallback).
+manual-pdf:
+	scripts/manual-pdf.sh
+
 # Point git at the tracked hooks (pre-commit: gofmt+vet, pre-push: lint+tests).
 hooks-install:
 	chmod +x scripts/git-hooks/*
@@ -148,6 +152,8 @@ help:
 	@echo "  restore         Restore a dump into the live DB (FILE=... , destructive)"
 	@echo "  backups-install Install nightly backup/verify systemd timers for this checkout"
 	@echo "  lint            Run golangci-lint"
+	@echo "  vulncheck       Scan for reachable known vulnerabilities"
+	@echo "  manual-pdf      Export USER_MANUAL.md as quorum-manual.pdf"
 	@echo ""
 	@echo "  local           Start the local stack with plain Podman (no compose needed)"
 	@echo "  local-down      Stop the local stack (keeps the database volume)"

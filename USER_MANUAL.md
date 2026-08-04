@@ -2,7 +2,7 @@
 title: "Quorum — User & Operations Manual"
 subtitle: "Self-hosted membership, dues, meetings, and planning management"
 author: "Quorum Project"
-date: "Version 1.0 — July 2026"
+date: "Version 1.1 — August 2026"
 toc: true
 toc-depth: 3
 numbersections: false
@@ -64,7 +64,17 @@ Quorum is **institutional memory plus light operations** for an organization:
 - **Action items.** Tasks assigned to members, optionally tied to a meeting or a
   plan.
 - **Contacts & resources.** A directory of outside people/organizations and a
-  library of links and reference material.
+  library of links and reference material, with per-resource **visibility
+  groups** when some material should reach only some members.
+- **Governance.** Formal **motions** (with seconds, discussion, and votes), a
+  Robert's-Rules **minutes journal** that can be finalized into an immutable
+  record, live meeting quorum tracking, and asynchronous email **ballots**
+  with proxies.
+- **Boards.** A **sprint board** and a **kanban board** for scoping, assigning,
+  and tracking work.
+- **Reports & accountability.** Watermarked, integrity-sealed **PDF reports**;
+  every export — and every change to anything — lands in a tamper-evident,
+  hash-chained **audit log**.
 
 Quorum is deliberately **not** a general-purpose CRM, a full accounting package,
 or a project-management suite. It aims to be operable by a single administrator
@@ -187,6 +197,13 @@ uses a `#/…` fragment (for example `#/members`); you can bookmark these.
   signed in. After the refresh window expires you must sign in again.
 - Select **Sign out** to end your session immediately. This revokes your refresh
   token on the server.
+- **Idle timeout.** After roughly **30 minutes of inactivity** you are signed
+  out automatically (a warning appears about a minute before). The server
+  enforces this — walking away from an unlocked screen has a deadline.
+- **The faint watermark.** Signed-in pages carry a barely-visible diagonal
+  tiling of *your own email address*. It is deliberate: screenshots and photos
+  of the screen become attributable to the account that took them. It does not
+  appear in any exported document's content (those get their own stamp, 5.10).
 
 > **Tip.** Changing your password (2.4) signs out **all your other sessions** —
 > useful if you think someone else has access.
@@ -207,10 +224,52 @@ All of your *other* active sessions are terminated; your current one continues.
   Re-check both.
 - **Too many attempts.** Sign-in is rate-limited (about 10 attempts per minute
   from one location). Wait a minute and try again.
-- **Forgot your password.** Quorum has **no self-service password reset**. Contact
-  your administrator. Because administrators cannot directly reset a password
-  either (see 6.6), recovery generally means an administrator re-creates your
-  account — so choose and store your password carefully.
+- **Forgot your password.** Use **Forgot your password?** on the sign-in page:
+  enter your email, and follow the single-use link Quorum sends you (it expires
+  quickly; the page shows the same message whether or not the email exists, on
+  purpose). If your organization has not configured outgoing email, ask an
+  administrator — they can set you a temporary password from **Settings →
+  Users** (6.6).
+- **Lost your second factor.** If you enabled 2FA and lost the authenticator,
+  sign in with one of your **recovery codes** (2.6). Lost those too? The
+  server operator can clear your 2FA from the command line — deliberately the
+  last resort (see `RUNBOOK.md`).
+
+## 2.6 Two-factor authentication (2FA)
+
+A second factor means a stolen password alone cannot open your account.
+Quorum uses standard **TOTP** — the six-digit codes from any authenticator app
+(Aegis, Google Authenticator, 1Password, …).
+
+**Enable it (recommended for everyone, expected of officers and above):**
+
+1. Open your account/security settings and choose **Two-factor
+   authentication → Set up**.
+2. Re-enter your **password** (enrolling a second factor is itself a sensitive
+   action).
+3. Scan the QR code with your authenticator app and type the six-digit code it
+   shows to confirm.
+4. Quorum displays your **recovery codes — once**. Store them in a password
+   manager or print them. Each works exactly one time, and they are the only
+   self-service way back in if you lose the authenticator.
+
+**Signing in with 2FA:** password first, then the six-digit code. Repeated
+wrong codes lock 2FA attempts briefly (per account) — wait a minute.
+
+**Lost device:** sign in with a recovery code, then disable and re-enroll 2FA
+with the new device. You can regenerate a fresh set of recovery codes (this
+invalidates the old set) from the same settings area — password required.
+
+## 2.7 Your active sessions
+
+Your account settings list every device currently signed in as you — with
+approximate location/address and last-used time. If anything looks unfamiliar:
+
+1. Select **Sign out other sessions** — every session except your current one
+   is revoked within moments.
+2. Change your password (2.4), which does the same thing as a side effect.
+3. If you suspect more than a stray login, tell an administrator — the audit
+   log (6.8) shows exactly what the account did.
 
 \newpage
 
@@ -390,6 +449,14 @@ To forgive an invoice, change its status to **waived** (a confirmation is
 requested because it changes the invoice's financial state). Waived and paid
 invoices are not re-aged to overdue.
 
+### 5.2.7 Recurring dues schedules
+
+For dues billed on a rhythm (annual, quarterly, monthly), create a **dues
+schedule** instead of remembering to bulk-invoice: choose the members, amount,
+currency, and cadence, and the nightly cycle generates each period's invoices
+automatically — exactly once per member per period, even across restarts.
+Pause or edit the schedule any time; already-issued invoices are unaffected.
+
 ## 5.3 Meetings
 
 ### 5.3.1 Create a meeting
@@ -400,8 +467,14 @@ invoices are not re-aged to overdue.
 3. Select **Save**. New meetings start with status **scheduled**.
 
 > **Note — times.** Enter the date and time in your **local** time; Quorum stores
-> it consistently and displays it back in local time. Text fields (agenda,
-> minutes) are stored as plain text — formatting is not rendered.
+> it consistently and displays it back in local time. A meeting may also have an
+> **end time** (used by the calendar and the calendar-file export). Text fields
+> (agenda, minutes) are stored as plain text — formatting is not rendered.
+
+> **Tip — the calendar.** The Meetings page includes a **month-grid calendar**;
+> select any day to schedule a meeting on it. Every meeting offers an **.ics
+> download** — the standard calendar file that Google/Apple/Outlook calendars
+> import, complete with start and end times.
 
 ### 5.3.2 Record attendance
 
@@ -427,6 +500,30 @@ meeting, its attendance, and its decisions remain the organization's record.
 > **Warning — deletion.** Permanently deleting a meeting removes its attendance
 > and decision records with it and is reserved for super-administrators (Part 7).
 > Prefer marking a meeting `cancelled` over deleting it.
+
+### 5.3.5 The recording secretary: minutes journal & motions
+
+For organizations that run on Robert's Rules, each meeting has a **Minutes**
+section that acts as a recording secretary:
+
+- **Journal entries.** Append typed entries as the meeting proceeds — kinds:
+  `call_to_order`, `previous_minutes`, `report`, `old_business`,
+  `new_business`, `discussion`, `point_of_order`, `recess`, `adjournment`,
+  and free-form `note`. Entries keep their chronological order.
+- **Motions.** Record each motion with its title and detail, whether it is
+  **new or old business**, its **second**, linked discussion entries, the
+  **vote counts**, and the result. Motions appear in the generated minutes
+  alongside the journal.
+- **Generate the minutes document.** One action produces the formal minutes —
+  attendance, proceedings, motions with votes, decisions — as both a Markdown
+  document and a PDF (watermarked and integrity-sealed like every export, 5.10).
+- **Finalize.** When the body approves the minutes, **finalize** them. This is
+  enforced *in the database*: a finalized journal rejects all further inserts,
+  edits, and deletions — even from direct SQL — and finalization itself is
+  one-way. Finalize only after approval; there is no unfinalize.
+- **Preview as a heat map.** The 🔥 button renders the minutes as a
+  word-frequency heat map (5.7) — a fast gist of a long meeting, entirely
+  in your browser. A preview is not an export: nothing is downloaded or logged.
 
 ## 5.4 Plans & initiatives
 
@@ -465,6 +562,24 @@ organization, email, phone, address, **category** (e.g. `vendor`, `legal`),
 Maintain links and reference material under **Resources**: title, description,
 **URL**, **category**, and **tags**. Only `http`/`https` links are accepted.
 
+**Visibility groups (who can see a resource).** When adding or editing a
+resource, officers can tick one or more **visibility groups** (created by an
+administrator, 6.7):
+
+- **No groups ticked** → the resource is visible to all members (the default).
+- **Groups ticked** → only members belonging to at least one of those groups
+  can see it; to everyone else the resource simply *does not exist* — it is
+  absent from lists and returns "not found" if addressed directly.
+- **Officers and above always see everything**, with a 🔒 badge listing each
+  restricted resource's groups.
+
+**Heat-map previews.** The 🔥 button on a document renders it as a
+**word-frequency heat map**: the meaningful words as tiles, colored cold
+(rare) to hot (frequent) and sized by count, stopwords removed. It is a
+skim-reading aid computed in your browser from data you are already authorized
+to see — permissions are inherited automatically, and previewing is never
+recorded as an export.
+
 ## 5.8 What officers can and cannot remove
 
 - **Can:** edit any record; remove individual **decisions** and adjust
@@ -472,6 +587,56 @@ Maintain links and reference material under **Resources**: title, description,
 - **Cannot:** permanently delete meetings, plans, contacts, resources, action
   items, or user accounts (super-administrator only, Part 7); deactivate members
   (administrator only, 6.5).
+
+## 5.9 Boards: sprint & kanban
+
+The **Board** page tracks work two ways over the same cards:
+
+- **Kanban** — columns by status; drag work forward as it progresses.
+- **Sprint board** — group cards into **sprints** (status `planned`,
+  `active`, `completed`), each with a goal and dates, for time-boxed planning.
+
+Create a card with a title, optional description, an **assignee** (a member),
+and a sprint (or none — it sits in the backlog). Officers create and move
+cards; members can view the boards.
+
+## 5.10 Reports & PDF exports
+
+The **Reports** page (officer and above) produces formal PDF documents: the
+**member roster**, **dues & receivables**, any meeting's **minutes**, and (for
+administrators) a recent **audit log** report.
+
+Three properties make these exports evidence-grade rather than mere printouts:
+
+1. **Watermark.** Every page carries a light diagonal stamp and footer:
+   *who* exported it and *when* (UTC). A leaked paper copy names its source.
+2. **Integrity seal.** Each PDF embeds its own **SHA-256 digest**. Anyone can
+   later verify the file was not altered — the repository ships
+   `ops/verify-pdf-export.py`, which checks a PDF offline in seconds.
+3. **Audit trail.** The moment you download, an `EXPORT` entry lands in the
+   tamper-evident audit log (6.8): who, what, when, and the document's digest.
+   A document is authentic only if its embedded digest **matches the audit
+   entry** — a forged PDF fails this cross-check even if internally consistent.
+
+> **Note.** Browser printing of app pages is deliberately blocked (you get a
+> policy notice instead) — the watermarked PDF export *is* the sanctioned way
+> to put records on paper. Heat-map previews (5.7) remain available to
+> everyone with access, because a preview exports nothing.
+
+## 5.11 Governance, budgets & analytics (a quick tour)
+
+Three more areas, each self-explanatory in the app once you know they exist:
+
+- **Governance & voting.** Live quorum tracking during meetings; formal
+  motions and votes (5.3.5); **asynchronous ballots** sent by email with
+  single-use voting links, including **proxy** support — for decisions taken
+  between meetings. Ballot casting is atomic: a vote counts exactly once.
+- **Budgets.** Scenario planning: draft a budget, **clone** it into a what-if
+  variant, adjust, and **compare** side by side before adopting one.
+- **Analytics.** Dashboard charts of membership and receivables over time.
+  Multi-currency organizations: totals are per-currency — mixed currencies
+  are **flagged, never silently summed** — with explicit FX conversion where
+  configured.
 
 \newpage
 
@@ -541,26 +706,62 @@ member is "theirs."
 
 To reactivate, edit the member and set **status** back to `active`.
 
-## 6.6 Password resets & account recovery (a known limitation)
+## 6.6 Password resets & account recovery
 
-Quorum intentionally keeps its authentication surface small, which has one
-consequence to plan around:
+Three layers, from least to most privileged:
 
-- There is **no self-service "forgot password"** flow.
-- Administrators **cannot directly set another user's password**. The
-  `Change password` action requires the user's *current* password and works only
-  on your own account.
+1. **Self-service.** The **Forgot your password?** link on the sign-in page
+   emails a single-use, quickly-expiring reset link. Requires working SMTP
+   (see `EMAIL-SETUP.md`) — configure it; this should be the normal path.
+2. **Admin reset.** **Settings → Users → Reset PW** sets a temporary password
+   for the user (hand it over securely; they change it at next sign-in). The
+   reset revokes the user's other sessions. A super-administrator's password
+   can only be reset by another super-administrator.
+3. **2FA lockout.** A user with a lost authenticator signs in with a
+   **recovery code** (2.6). With no codes left, the *server operator* clears
+   their 2FA from the command line (`quorum -unlock-2fa <email>`, see
+   `RUNBOOK.md`) — shell access is deliberately the bar for bypassing a
+   second factor.
 
-**Practical recovery:** if a user is locked out, a super-administrator can delete
-the account and an administrator can re-create it with a fresh initial password
-(the member's *data* lives on the member record, which is separate from the
-login, so nothing is lost by recreating the login). Communicate the new password
-securely.
+> **Tip.** Keep **two** super-administrators (7.3). If your only superadmin is
+> locked out, recovery requires shell access to the server.
 
-> **Tip.** Because recovery is heavyweight, encourage users to store their
-> password in a password manager, and consider using organization-wide SSO at the
-> reverse proxy if that fits your environment (Quorum itself does not provide
-> SSO).
+## 6.7 Visibility groups (constrain what members can see)
+
+Create groups under **Settings → Visibility groups**, ticking the members that
+belong to each. Officers then tag library resources with groups (5.7); a
+tagged resource is invisible to members outside its groups.
+
+> **Warning — deleting a group widens visibility.** Resources restricted
+> *only* by a deleted group become visible to **all** members. The delete
+> confirmation says exactly this; read it as written.
+
+Groups constrain the **resource library**. Meetings, minutes, and the member
+directory remain readable by every `member`+ account by design — restricting
+those is a governance decision, not a checkbox.
+
+## 6.8 The audit log (who did what, when)
+
+**Audit log** (admin) records every mutating action — creates, edits,
+deletions, exports, sign-ins, denials — with the actor, the target, and the
+time. Filter by action, resource, or date. Three things worth knowing:
+
+- **It is tamper-evident.** Entries form a **hash chain** (each entry's
+  digest depends on all before it), computed inside the database. The
+  **Verify** button — or `quorum -verify-audit` on the server — proves the
+  chain intact; a break pinpoints where history was altered.
+- **Denials are recorded too.** Repeated `DENIED` entries or failed sign-ins
+  against real accounts are your early warning of probing.
+- **Evidence-grade export.** The **evidence CSV** download lets an outside
+  party re-verify the chain without trusting your server
+  (`ops/verify-audit-export.py`).
+
+## 6.9 Data portability & erasure
+
+- **Export my data** (available to every signed-in user, including
+  `restricted`): a JSON file of their account, profile, dues, and payments.
+- **Erasure** ("right to be forgotten") is a super-administrator action on
+  the *member record* — see 7.5.
 
 \newpage
 
@@ -615,6 +816,19 @@ prevents accidentally removing the last super-administrator by self-demotion.
 | A record was created by mistake and has no history | **Delete** (super-admin). |
 | A duplicate/spam contact or resource | **Delete** (super-admin). |
 | An employee/user should lose access | Change their **role** or delete the **user** (the member profile is separate). |
+
+## 7.5 Erase a member (right to be forgotten)
+
+Erasure strips a member's personal data **in place**: the name becomes an
+anonymous placeholder; email, phone, address, and notes are removed; any
+linked login is unlinked and its sessions revoked. Their invoices, payments,
+attendance, and votes are **kept** — the ledger and the minutes stay
+arithmetically and historically consistent, just no longer tied to a natural
+person.
+
+It is irreversible and type-to-confirm gated, and the audit log records who
+performed it. Prefer deactivation (6.5) unless someone has actually exercised
+their right to erasure.
 
 \newpage
 
@@ -732,10 +946,17 @@ The job runs around **2 AM local time** on the server.
 > *"As the operator, I need to deploy Quorum, configure it correctly and
 > securely, keep it backed up, and upgrade it safely."*
 
-This part is a practical operations guide. For the exhaustive, click-by-click
-Kubernetes/GitOps walkthrough, see the companion **`DEPLOYMENT.md`** in the
-repository; this chapter gives you a complete working understanding plus the
-gotchas that matter.
+This part is a practical operations guide; the repository carries deeper
+companions for each concern:
+
+| Companion | Covers |
+|---|---|
+| **`DEPLOY-EC2.md`** | The recommended single-server deployment, click by click |
+| **`RUNBOOK.md`** | Day-2 procedures: onboarding, lockouts, upgrades, backups, forensics |
+| **`ARCHITECTURE.md`** | Diagrams: components, data flow, network zones |
+| **`EMAIL-SETUP.md`** | SMTP from zero (relay choice, DNS records, testing) |
+| **`BACKUP.md`** | Backup/restore/verify tooling and disaster recovery |
+| **`DEPLOYMENT.md`** | Kubernetes/GitOps, for multi-node scale only |
 
 ## 10.1 Architecture overview
 
@@ -756,7 +977,7 @@ gotchas that matter.
 - **PostgreSQL 16** (managed or self-run).
 - A container runtime (**Podman** or **Docker**) for Compose deployments, or a
   **Kubernetes** cluster with an ingress controller for cluster deployments.
-- **Go 1.23+** only if you build from source; the container image needs no Go
+- **Go 1.25+** only if you build from source; the container image needs no Go
   toolchain at runtime.
 - Optionally: an **SMTP relay** (for email), and **Stripe/PayPal** accounts (for
   online payments).
@@ -902,6 +1123,10 @@ digest, and deletion notices. Quorum uses STARTTLS when the relay offers it; set
 encryption. With no SMTP host set, email is silently skipped (the nightly
 housekeeping still runs).
 
+> **Tip.** New to SMTP entirely? **`EMAIL-SETUP.md`** walks the whole thing
+> from zero — what a relay is, why unauthenticated mail lands in spam
+> (SPF/DKIM/DMARC), and a click-by-click Amazon SES setup.
+
 ## 10.10 Configuring payment webhooks
 
 - Set `QUORUM_STRIPE_WEBHOOK_SECRET` and/or `QUORUM_PAYPAL_WEBHOOK_ID` (Part 8).
@@ -934,9 +1159,13 @@ housekeeping still runs).
 - **Container self-check:** the binary supports `quorum -healthcheck`, which
   probes `/healthz` locally and exits `0`/`1` — used by the container
   `HEALTHCHECK` (the image is `FROM scratch` and has no shell/curl).
-- **Logs** go to stdout (structured request logging plus operational messages).
-  There is currently no built-in metrics endpoint; scrape logs or add a sidecar
-  if you need metrics.
+- **Logs** go to stdout (structured, with a **request ID** on every line —
+  quote it when reporting a problem and the operator can find the exact
+  request).
+- **Metrics:** `GET /metrics` serves Prometheus metrics when
+  `QUORUM_METRICS_TOKEN` is set (send it as a bearer token). Includes HTTP
+  rates/latencies, DB pool gauges, and `quorum_audit_chain_intact` — alert if
+  that gauge ever reads 0. Alert rules ship in `ops/prometheus-alerts.yml`.
 
 ## 10.13 Upgrades & rollbacks
 
@@ -1023,6 +1252,17 @@ Ladder: `restricted` (1) < `member` (2) < `officer` (3) < `admin` (4) <
 | Users: link to a member | | | | Yes | Yes |
 | Users: **permanent delete** | | | | | Yes |
 | Grant / revoke `superadmin` | | | | | Yes |
+| 2FA, recovery codes, sessions: manage own | Yes | Yes | Yes | Yes | Yes |
+| Export own data (JSON) | Yes | Yes | Yes | Yes | Yes |
+| Boards (sprint/kanban): view | | Yes | Yes | Yes | Yes |
+| Boards: create/move cards, manage sprints | | | Yes | Yes | Yes |
+| Minutes journal & motions: record, generate, finalize | | | Yes | Yes | Yes |
+| Resources: assign visibility groups | | | Yes | Yes | Yes |
+| Reports: export PDFs (audit report: admin) | | | Yes | Yes | Yes |
+| Visibility groups: create/edit/delete | | | | Yes | Yes |
+| Audit log: view / verify / evidence CSV | | | | Yes | Yes |
+| Users: reset another user's password | | | | Yes | Yes |
+| Member **erasure** (right to be forgotten) | | | | | Yes |
 
 > Permanent deletes additionally require a **type-to-confirm** step and generate
 > an audit entry and notifications (7.2).
@@ -1040,6 +1280,9 @@ Ladder: `restricted` (1) < `member` (2) < `officer` (3) < `admin` (4) <
 | Action item status | `open`, `in_progress`, `done`, `cancelled` |
 | Action item priority | `low`, `normal`, `high` |
 | Plan status | `draft`, `active`, `completed`, `archived` |
+| Minutes entry kind | `call_to_order`, `previous_minutes`, `report`, `old_business`, `new_business`, `discussion`, `point_of_order`, `recess`, `adjournment`, `note` |
+| Motion business | `new`, `old` |
+| Sprint status | `planned`, `active`, `completed` |
 
 ## Appendix C — Currency & money reference
 
@@ -1091,34 +1334,42 @@ See 10.3 for the full table. Minimum to start: `QUORUM_DATABASE_URL` and
   name.
 - **Webhook** — a signed HTTP callback from Stripe/PayPal that tells Quorum a
   payment succeeded.
+- **Audit chain** — the hash linkage between audit entries that makes silent
+  tampering detectable (verify any time: 6.8).
+- **Recovery codes** — single-use codes, shown once at 2FA setup, that stand
+  in for a lost authenticator.
+- **Visibility group** — a named set of members; a resource tagged with groups
+  is visible only inside them (5.7, 6.7).
+- **Watermark** — on screen: a faint tiling of the viewer's email (2.3); on
+  exported PDFs: the exporter and timestamp on every page (5.10).
+- **Integrity seal** — the SHA-256 digest embedded in an exported PDF, also
+  recorded in its audit entry; the pair proves the file unaltered (5.10).
+- **Finalized minutes** — a meeting journal locked immutable in the database
+  after approval (5.3.5).
 
 ## Appendix G — Exporting this manual to PDF
 
-This document is plain Markdown with a Pandoc front-matter block, so it renders
-cleanly to a paginated PDF.
+One command, from the repository root:
 
-**With Pandoc (recommended — gives a title page, clickable TOC, and page
-numbers):**
 ```sh
-pandoc USER_MANUAL.md -o quorum-manual.pdf \
-  --toc --toc-depth=3 \
-  -V colorlinks=true -V geometry:margin=1in
+make manual-pdf        # writes quorum-manual.pdf
 ```
-This works with a standard TeX distribution (TeX Live / MacTeX) using the default
-engine — it produces roughly a 27-page document. The `\newpage` markers between
-Parts start each major section on a fresh page. For custom fonts (or if you add
-non-Latin text), use `--pdf-engine=xelatex -V mainfont="DejaVu Sans"`.
 
-**Other options:**
+The script (`scripts/manual-pdf.sh`) picks the best tool it finds:
 
-- **VS Code** — the *Markdown PDF* extension: open this file and run
-  *"Markdown PDF: Export (pdf)"*.
-- **`md-to-pdf`** (Node) — `npx md-to-pdf USER_MANUAL.md`.
-- **Browser** — open a rendered HTML version and use *Print -> Save as PDF*.
+1. **pandoc + LaTeX** (xelatex or pdflatex) — a title page, clickable table
+   of contents with page numbers, and each Part starting on a fresh page.
+   Install on Fedora: `sudo dnf install pandoc texlive-scheme-small`.
+2. **pandoc + Chrome/Chromium** — used automatically when no LaTeX exists:
+   styled HTML printed headlessly to PDF.
 
-> **Tip.** For a cover logo or custom fonts with Pandoc, add
-> `-V mainfont="…"` and a title-page template; the front-matter `title`,
-> `subtitle`, `author`, and `date` fields above populate the default title page.
+If neither combination exists, the script says exactly what to install.
+Alternatives that also work: the VS Code *Markdown PDF* extension, or opening
+a rendered preview and printing to PDF from the browser.
+
+> **Tip.** The front-matter block at the top of this file (`title`,
+> `subtitle`, `date`, `geometry`) drives the title page and layout — bump the
+> version line there when you edit the manual.
 
 ## Appendix H — Support, licensing & contributing
 

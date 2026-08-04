@@ -28,3 +28,4 @@ __pycache__/
 
 # Instance-specific operator notes (real domain/IP/bucket) — never publish
 MY-DEPLOYMENT.md
+quorum-manual.pdf
