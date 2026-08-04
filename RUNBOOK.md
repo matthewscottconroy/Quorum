@@ -84,11 +84,19 @@ all, the bootstrap endpoint is only open while the users table is empty — see
 **When:** deploying a new version of the code to the systemd deployment
 described in [DEPLOY-EC2.md](DEPLOY-EC2.md).
 
-From your dev machine or CI, on the branch you want to ship:
+**On the server** (the usual path — pulls from GitHub, no local Go needed):
+
+```sh
+sudo ops/upgrade.sh                    # newest origin/main; or: sudo ops/upgrade.sh <tag|sha>
+```
+
+**Or from a dev machine / CI** with Go installed, shipping your local checkout:
 
 ```sh
 ops/deploy.sh deploy@app-host          # remote dir defaults to /opt/quorum
 ```
+
+Full walkthrough with expected output: [UPGRADING.md](UPGRADING.md).
 
 This builds the static binary, uploads it, swaps it atomically (keeping the
 previous binary as `quorum.prev`), restarts `quorum.service`, and polls

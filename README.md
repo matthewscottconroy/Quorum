@@ -416,6 +416,7 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | Document | Covers |
 |---|---|
 | **[RUNBOOK.md](RUNBOOK.md)** | Day-2 operations: user onboarding/offboarding, access restriction, secret rotation, locked-out admin recovery, upgrades, migration rollback, backup management, disaster recovery, breach forensics, health litmus tests |
+| **[UPGRADING.md](UPGRADING.md)** | Moving production to newer code: on-server `ops/upgrade.sh` (backup, build, swap, auto-rollback), workstation deploys, version rollback |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | Diagrams: system architecture, request/backup data flow, network zones and trust boundaries |
 | **[EMAIL-SETUP.md](EMAIL-SETUP.md)** | SMTP from zero: what a relay is, why mail gets spam-blocked (SPF/DKIM/DMARC), Amazon SES walkthrough, Gmail stopgap |
 | **[BACKUP.md](BACKUP.md)** | Backup/restore/verify tooling, scheduling, retention, full recovery from scratch, RPO/RTO |
