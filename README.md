@@ -451,6 +451,8 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | Document | Covers |
 |---|---|
 | **[RUNBOOK.md](RUNBOOK.md)** | Day-2 operations: user onboarding/offboarding, access restriction, secret rotation, locked-out admin recovery, upgrades, migration rollback, backup management, disaster recovery, breach forensics, health litmus tests |
+| **[PAYMENTS-SETUP.md](PAYMENTS-SETUP.md)** | Wiring Stripe/PayPal webhooks from zero: signing secrets, invoice-linking metadata, fail-closed verification checklist |
+| **[DOWNGRADING.md](DOWNGRADING.md)** | Walking back a successful-but-unwanted upgrade: binary vs schema vs data layers, migrate-down vs restore, rehearsal |
 | **[UPGRADING.md](UPGRADING.md)** | Moving production to newer code: on-server `ops/upgrade.sh` (backup, build, swap, auto-rollback), workstation deploys, version rollback |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | Diagrams: system architecture, request/backup data flow, network zones and trust boundaries |
 | **[EMAIL-SETUP.md](EMAIL-SETUP.md)** | SMTP from zero: what a relay is, why mail gets spam-blocked (SPF/DKIM/DMARC), Amazon SES walkthrough, Gmail stopgap |
@@ -459,6 +461,9 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | **[SECURITY.md](SECURITY.md)** | Security model and reporting |
 | **[DEPLOY-EC2.md](DEPLOY-EC2.md)** | Single-instance EC2 deployment: OS choice (Amazon Linux / Rocky / Ubuntu, podman notes), reverse-proxy configs in ops/, install walkthrough, upgrades via `ops/deploy.sh`, self-hosted CI/CD without GitHub |
 | **[COMPLIANCE.md](COMPLIANCE.md)** | Why Quorum's records are evidence-grade: the audit hash chain, the append-only ledger, and the third-party verification procedure |
+
+The `roadmap/` directory holds design plans under discussion (payment
+providers, CPA-grade accounting) — plans, not shipped features.
 
 The `ops/` directory ships deployment collateral: Prometheus alert rules,
 systemd units for nightly backups / weekly restore-verification / daily
