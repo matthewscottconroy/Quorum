@@ -487,7 +487,8 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | **[COMPLIANCE.md](COMPLIANCE.md)** | Why Quorum's records are evidence-grade: the audit hash chain, the append-only ledger, and the third-party verification procedure |
 
 The `roadmap/` directory holds design plans under discussion (payment
-providers, CPA-grade accounting) — plans, not shipped features.
+providers, CPA-grade accounting, organizational continuity) — plans, not
+shipped features.
 
 The `ops/` directory ships deployment collateral: Prometheus alert rules,
 systemd units for nightly backups / weekly restore-verification / daily
