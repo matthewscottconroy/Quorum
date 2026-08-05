@@ -168,6 +168,7 @@ func main() {
 	sprintReportH := handler.NewSprintReportHandler(cardLinksRepo, actionItemsRepo, sprintsRepo, auditRepo, authRepo)
 	channelsH := handler.NewChannelsHandler(repo.NewChannelsRepo(pool), resourcesRepo)
 	accountingH := handler.NewAccountingHandler(repo.NewGLRepo(pool))
+	fundsH := handler.NewFundsHandler(repo.NewFundsRepo(pool), repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
@@ -496,6 +497,21 @@ func main() {
 			// General ledger (read-only surface; postings happen in DB
 			// triggers - see migration 0031 and roadmap/cpa-accounting.md).
 			r.With(mw.RequireRole("officer")).Get("/accounting/trial-balance", accountingH.TrialBalance)
+
+			// Restricted funds + multi-signature purchases (Phase B).
+			// Reads are member-visible (transparency); approving is gated
+			// in-handler (officer or named signer, password re-entry).
+			r.With(mw.RequireRole("member")).Get("/funds", fundsH.ListFunds)
+			r.With(mw.RequireRole("admin")).Post("/funds", fundsH.CreateFund)
+			r.With(mw.RequireRole("admin")).Patch("/funds/{id}", fundsH.UpdateFund)
+			r.With(mw.RequireRole("admin")).Post("/funds/{id}/transfers", fundsH.Transfer)
+			r.With(mw.RequireRole("member")).Get("/purchases", fundsH.ListPurchases)
+			r.With(mw.RequireRole("officer")).Post("/purchases", fundsH.CreatePurchase)
+			r.With(mw.RequireRole("member")).Get("/purchases/{id}", fundsH.GetPurchase)
+			r.With(mw.RequireRole("member")).Post("/purchases/{id}/approve", fundsH.Approve)
+			r.With(mw.RequireRole("officer")).Post("/purchases/{id}/reject", fundsH.Reject)
+			r.With(mw.RequireRole("member")).Post("/purchases/{id}/cancel", fundsH.Cancel)
+			r.With(mw.RequireRole("officer")).Post("/purchases/{id}/complete", fundsH.Complete)
 
 			// Discussions: Slack-style channels. Any member creates channels
 			// and adds people; reading/posting needs membership (admins may

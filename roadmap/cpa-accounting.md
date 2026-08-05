@@ -4,7 +4,12 @@ Status: **Phase A core shipped** (migration 0031: chart of accounts,
 append-only balanced journal, DB-trigger auto-posting for invoices/
 payments/waivers with the same-currency rule, backfill, gl_reconcile_ar
 invariant, trial-balance API). Remaining in A: nightly reconcile alert.
-Phases B–D as planned below. Goal: books a CPA can test, rely on, and use to prepare the org's
+**Phase B core shipped** (migration 0032: funds with dedicated GL cash
+accounts, N-of-M + named-signer policies, password-confirmed recorded
+approvals with IP evidence, transfers and completion posting in-transaction,
+overdraft guards, frozen terminal requests, policy changes voiding in-flight
+approvals). Deviation from plan: overspend has NO quorum override — it hard
+refuses; revisit if a real need appears. Phases C–D as planned below. Goal: books a CPA can test, rely on, and use to prepare the org's
 government filings — plus purpose-restricted accounts whose spending
 requires multi-person sign-off, with every completed purchase landing on
 the books automatically, verifiably, and audit-ready for tax purposes.

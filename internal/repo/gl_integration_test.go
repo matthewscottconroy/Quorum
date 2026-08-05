@@ -153,3 +153,127 @@ func TestIntegration_GeneralLedger(t *testing.T) {
 	}
 	var _ = []model.GLEntry{} // keep model import
 }
+
+func TestIntegration_FundsAndPurchases(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	fr := repo.NewFundsRepo(pool)
+	pr := repo.NewPurchasesRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	requester := newUser(t, ar)
+	signerA := newUser(t, ar)
+	signerB := newUser(t, ar)
+
+	// Fund with policy: 1 approval overall, but BOTH named signers required.
+	purpose := "scholarships only"
+	fund, err := fr.CreateFund(ctx, uniq("Scholarship"), &purpose, 1, []string{signerA, signerB}, requester)
+	if err != nil {
+		t.Fatalf("fund: %v", err)
+	}
+	if len(fund.Signers) != 2 || fund.CashAccountCode < "1500" {
+		t.Fatalf("fund shape: %+v", fund)
+	}
+
+	// Money in: operating cash needs funds first (GL smoke left some; add
+	// deterministic income via an unlinked transaction -> DR 1000/CR 4000).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO transactions (amount, currency, provider, recorded_by)
+		VALUES (100000, 'USD', 'manual', $1::uuid)`, requester); err != nil {
+		t.Fatalf("seed cash: %v", err)
+	}
+	if err := fr.Transfer(ctx, fund.ID, "in", 50000, "USD", "allocation"); err != nil {
+		t.Fatalf("transfer in: %v", err)
+	}
+	got, _ := fr.GetFund(ctx, fund.ID)
+	if len(got.Balances) != 1 || got.Balances[0].Balance != 50000 {
+		t.Fatalf("fund balance: %+v", got.Balances)
+	}
+	// Over-withdrawal refused.
+	if err := fr.Transfer(ctx, fund.ID, "out", 60000, "USD", "raid"); err == nil {
+		t.Fatal("overdraft transfer out must be refused")
+	}
+
+	// Purchase for 30000: one signer is not enough (named B missing).
+	req, err := pr.Create(ctx, &model.PurchaseRequest{
+		FundID: fund.ID, Amount: 30000, Currency: "USD", Payee: "Bookstore",
+	}, requester)
+	if err != nil {
+		t.Fatalf("purchase: %v", err)
+	}
+	afterA, err := pr.Approve(ctx, req.ID, signerA, "203.0.113.1")
+	if err != nil {
+		t.Fatalf("approve A: %v", err)
+	}
+	if afterA.Status != "pending" || len(afterA.MissingSigners) != 1 {
+		t.Fatalf("after A: status=%s missing=%v", afterA.Status, afterA.MissingSigners)
+	}
+	// Double-signing refused.
+	if _, err := pr.Approve(ctx, req.ID, signerA, "203.0.113.1"); err != repo.ErrAlreadyApproved {
+		t.Fatalf("double sign: got %v", err)
+	}
+	// Completing before approval refused.
+	if _, err := pr.Complete(ctx, req.ID); err == nil {
+		t.Fatal("complete before approval must be refused")
+	}
+	afterB, err := pr.Approve(ctx, req.ID, signerB, "203.0.113.2")
+	if err != nil {
+		t.Fatalf("approve B: %v", err)
+	}
+	if afterB.Status != "approved" {
+		t.Fatalf("after B: %s", afterB.Status)
+	}
+
+	// Completion posts to the books and freezes the request.
+	done, err := pr.Complete(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if done.Status != "completed" || done.JournalEntryID == nil {
+		t.Fatalf("done: %+v", done)
+	}
+	var entryLines int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM journal_lines WHERE entry_id = $1::uuid`, *done.JournalEntryID).Scan(&entryLines); err != nil || entryLines != 2 {
+		t.Fatalf("journal entry lines: %d err=%v", entryLines, err)
+	}
+	got, _ = fr.GetFund(ctx, fund.ID)
+	if got.Balances[0].Balance != 20000 {
+		t.Fatalf("fund after purchase: %+v", got.Balances)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE purchase_requests SET payee = 'tampered' WHERE id = $1::uuid`, req.ID); err == nil {
+		t.Fatal("completed request must be frozen")
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM purchase_requests WHERE id = $1::uuid`, req.ID); err == nil {
+		t.Fatal("requests must never delete")
+	}
+
+	// Overspend guard: 25000 > remaining 20000 refuses at completion.
+	big, _ := pr.Create(ctx, &model.PurchaseRequest{FundID: fund.ID, Amount: 25000, Currency: "USD", Payee: "Too Big"}, requester)
+	if _, err := pr.Approve(ctx, big.ID, signerA, ""); err != nil {
+		t.Fatalf("approve big A: %v", err)
+	}
+	if _, err := pr.Approve(ctx, big.ID, signerB, ""); err != nil {
+		t.Fatalf("approve big B: %v", err)
+	}
+	if _, err := pr.Complete(ctx, big.ID); err == nil {
+		t.Fatal("overspend completion must be refused")
+	}
+
+	// Policy change voids in-flight approvals on pending requests.
+	small, _ := pr.Create(ctx, &model.PurchaseRequest{FundID: fund.ID, Amount: 1000, Currency: "USD", Payee: "Pens"}, requester)
+	if _, err := pr.Approve(ctx, small.ID, signerA, ""); err != nil {
+		t.Fatalf("approve small: %v", err)
+	}
+	three := 3
+	voided, err := fr.UpdatePolicy(ctx, fund.ID, nil, &three, nil)
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	if voided < 1 {
+		t.Fatalf("expected voided approvals, got %d", voided)
+	}
+	fresh, _ := pr.Get(ctx, small.ID)
+	if len(fresh.Approvals) != 0 {
+		t.Fatalf("approvals must be voided: %+v", fresh.Approvals)
+	}
+}

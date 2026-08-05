@@ -293,7 +293,7 @@ func TestIntegration_NestedFoldersAndDownloadLedger(t *testing.T) {
 	}
 
 	// Download ledger: insert + lookup by hash, and originals resolve too.
-	payload := []byte("stamped output bytes")
+	payload := []byte(uniq("stamped output bytes"))
 	sum := sha256.Sum256(payload)
 	sha := hex.EncodeToString(sum[:])
 	id, err := repo.NewDownloadID()

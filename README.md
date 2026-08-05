@@ -221,6 +221,17 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 |--------|------|----------|-------------|
 | `GET` | `/accounting/trial-balance` | officer | Per-account/per-currency balances, AR reconciliation status, recent postings. Postings happen via DB triggers (migration 0031). |
 
+### Funds & purchases (accounting Phase B)
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/funds` | member | Funds with GL-derived balances, policies, signers |
+| `POST` / `PATCH` | `/funds[/:id]` | admin | Create (auto GL cash account) / edit policy (voids in-flight approvals) |
+| `POST` | `/funds/:id/transfers` | admin | Move money operating↔fund (posts to books; overdraft refused) |
+| `GET` / `POST` | `/purchases` | member / officer | List (`?fund_id=&status=`) / file a request |
+| `POST` | `/purchases/:id/approve` | member | Sign: password re-entry required; requester and non-signers refused; records who/when/IP |
+| `POST` | `/purchases/:id/reject` \| `/cancel` \| `/complete` | officer / requester / officer | Reject; withdraw; execute — completion posts DR Expenses / CR fund-cash in the same transaction |
+
 ### Discussions
 
 | Method | Path | Min role | Description |

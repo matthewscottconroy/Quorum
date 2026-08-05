@@ -749,3 +749,60 @@ type GLLine struct {
 	Debit       int64  `json:"debit"`
 	Credit      int64  `json:"credit"`
 }
+
+// Fund is a purpose-restricted pot with its own GL cash account; balances
+// are derived from the ledger, never stored.
+type Fund struct {
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	Purpose           *string       `json:"purpose,omitempty"`
+	CashAccountCode   string        `json:"cash_account_code"`
+	ApprovalsRequired int           `json:"approvals_required"`
+	Active            bool          `json:"active"`
+	CreatedAt         time.Time     `json:"created_at"`
+	OpenRequests      int           `json:"open_requests"`
+	Signers           []FundSigner  `json:"signers,omitempty"`
+	Balances          []FundBalance `json:"balances,omitempty"`
+}
+
+// FundSigner is a named required approver.
+type FundSigner struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
+// FundBalance is a fund's derived balance in one currency.
+type FundBalance struct {
+	Currency string `json:"currency"`
+	Balance  int64  `json:"balance"`
+}
+
+// PurchaseRequest is one spend of fund money, with its approval evidence.
+type PurchaseRequest struct {
+	ID                string             `json:"id"`
+	FundID            string             `json:"fund_id"`
+	FundName          string             `json:"fund_name"`
+	RequesterID       *string            `json:"requester_id,omitempty"`
+	RequesterName     *string            `json:"requester_name,omitempty"`
+	Amount            int64              `json:"amount_minor"`
+	Currency          string             `json:"currency"`
+	Payee             string             `json:"payee"`
+	Memo              *string            `json:"memo,omitempty"`
+	ResourceID        *string            `json:"resource_id,omitempty"`
+	Status            string             `json:"status"`
+	JournalEntryID    *string            `json:"journal_entry_id,omitempty"`
+	DecidedAt         *time.Time         `json:"decided_at,omitempty"`
+	CompletedAt       *time.Time         `json:"completed_at,omitempty"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ApprovalsRequired int                `json:"approvals_required"`
+	Approvals         []PurchaseApproval `json:"approvals"`
+	MissingSigners    []string           `json:"missing_signers,omitempty"`
+}
+
+// PurchaseApproval is one recorded signature: who, when, from where.
+type PurchaseApproval struct {
+	ApproverID   *string   `json:"approver_id,omitempty"`
+	ApproverName string    `json:"approver_name"`
+	IP           string    `json:"ip"`
+	ApprovedAt   time.Time `json:"approved_at"`
+}

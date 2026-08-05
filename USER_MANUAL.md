@@ -822,6 +822,30 @@ Three layers, from least to most privileged:
 > **Tip.** Keep **two** super-administrators (7.3). If your only superadmin is
 > locked out, recovery requires shell access to the server.
 
+## 6.6a Funds: restricted money with multi-person sign-off
+
+**Funds** (sidebar) are purpose-restricted pots — each with its own general-
+ledger cash account, so a fund's balance is always *derived from the books*,
+never a number someone typed. Admins create funds and set the **spending
+policy**: how many approvals a purchase needs (1–10), plus optionally
+**named signers who must each sign**. Admins move money in or out with
+Transfers (posted to the books; overdrafts refused).
+
+Spending walks a fixed ceremony:
+
+1. An officer **files a purchase request** (fund, amount, payee, memo).
+2. Eligible people **sign** — officers or the fund's named signers, never
+   the requester. Signing requires re-entering your password, and each
+   signature permanently records who, when, and from which network address.
+3. When the count is met AND every named signer has signed, the request is
+   **approved**; an officer then **completes** it, which posts
+   `DR Expenses / CR fund cash` to the general ledger in the same
+   transaction — a purchase cannot complete without hitting the books, and
+   cannot overdraw the fund.
+4. Completed (and rejected/cancelled) requests are **frozen forever** — the
+   database refuses edits — and changing a fund's policy voids in-flight
+   approvals so signatures always reflect the current rules.
+
 ## 6.7 Visibility groups (constrain what members can see)
 
 Create groups under **Settings → Visibility groups**, ticking the members that

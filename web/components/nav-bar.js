@@ -10,6 +10,7 @@ const LINKS = [
   { hash: '#/dashboard',  label: 'Dashboard',  icon: '⊞',  minRole: 'member' },
   { hash: '#/members',    label: 'Members',    icon: '👥', minRole: 'member' },
   { hash: '#/dues',       label: 'Dues',       icon: '💳', minRole: 'officer' },
+  { hash: '#/funds',      label: 'Funds',      icon: '🏦', minRole: 'member' },
   { hash: '#/budget',     label: 'Budget',     icon: '📊', minRole: 'officer' },
   { hash: '#/analytics',  label: 'Analytics',  icon: '📈', minRole: 'officer' },
   { hash: '#/currencies', label: 'Currencies', icon: '💱', minRole: 'officer' },
