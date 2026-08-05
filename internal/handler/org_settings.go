@@ -16,15 +16,30 @@ type orgSettingsRepo interface {
 // Allowlisted settings; anything else is refused. Values are free text with
 // per-key validation. Org-agnostic by design: these are the only knobs that
 // assume nothing about the org.
-var orgSettingKeys = map[string]func(string) bool{
-	// 1-12; drives fiscal-year defaults and labels only, never math.
-	"fiscal_year_start_month": func(v string) bool {
+type orgSetting struct {
+	validate  func(string) bool
+	adminOnly bool
+}
+
+func intRange(lo, hi int) func(string) bool {
+	return func(v string) bool {
 		n, err := strconv.Atoi(v)
-		return err == nil && n >= 1 && n <= 12
-	},
+		return err == nil && n >= lo && n <= hi
+	}
+}
+
+var orgSettingKeys = map[string]orgSetting{
+	// 1-12; drives fiscal-year defaults and labels only, never math.
+	"fiscal_year_start_month": {validate: intRange(1, 12)},
 	// Free text shown to members on My Account ("how to pay": Zelle address,
 	// Venmo handle, checks payable to...).
-	"how_to_pay": func(v string) bool { return len(v) <= 4000 },
+	"how_to_pay": {validate: func(v string) bool { return len(v) <= 4000 }},
+	// Continuity (roadmap E1-E3); admin-only visibility - these describe
+	// where the org's keys live and who gets the bus-factor alarm.
+	"infrastructure_facts":   {validate: func(v string) bool { return len(v) <= 4000 }, adminOnly: true},
+	"continuity_watch_days":  {validate: intRange(0, 365), adminOnly: true},
+	"continuity_contacts":    {validate: func(v string) bool { return len(v) <= 2000 }, adminOnly: true},
+	"continuity_attest_days": {validate: intRange(7, 365), adminOnly: true},
 }
 
 // OrgSettingsHandler manages the small allowlisted org configuration.
@@ -44,8 +59,12 @@ func (h *OrgSettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 		return
 	}
+	admin := roleAtLeast(roleFromCtx(r), "admin")
 	out := map[string]string{}
-	for k := range orgSettingKeys {
+	for k, spec := range orgSettingKeys {
+		if spec.adminOnly && !admin {
+			continue
+		}
 		if v, ok := all[k]; ok {
 			out[k] = v
 		}
@@ -61,12 +80,12 @@ func (h *OrgSettingsHandler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range body {
-		validate, ok := orgSettingKeys[k]
+		spec, ok := orgSettingKeys[k]
 		if !ok {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+k, "bad_request")
 			return
 		}
-		if !validate(strings.TrimSpace(v)) {
+		if !spec.validate(strings.TrimSpace(v)) {
 			writeError(w, http.StatusBadRequest, "invalid value for "+k, "bad_request")
 			return
 		}

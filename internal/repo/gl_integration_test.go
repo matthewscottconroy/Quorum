@@ -437,3 +437,95 @@ func TestIntegration_PostingRulesReroute(t *testing.T) {
 		t.Fatalf("cash-basis statement missing income row: %+v", cash)
 	}
 }
+
+func TestIntegration_Continuity(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	cr := repo.NewContinuityRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	// Custody CRUD + attestation.
+	name := uniq("backup passphrase")
+	if err := cr.CreateCustody(ctx, name, "Org vault + safe deposit", "Treasurer"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rows, _ := cr.ListCustody(ctx)
+	var id string
+	for _, r0 := range rows {
+		if r0.Name == name {
+			id = r0.ID
+			if r0.LastVerifiedAt != nil {
+				t.Fatal("new row must be unverified")
+			}
+		}
+	}
+	if id == "" {
+		t.Fatal("row not listed")
+	}
+	if err := cr.Attest(ctx, id, uid); err != nil {
+		t.Fatalf("attest: %v", err)
+	}
+	rows, _ = cr.ListCustody(ctx)
+	for _, r0 := range rows {
+		if r0.ID == id && r0.LastVerifiedAt == nil {
+			t.Fatal("attestation not recorded")
+		}
+	}
+	// Editing resets verification (a different copy).
+	if err := cr.UpdateCustody(ctx, id, name, "New vault", "Secretary"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	rows, _ = cr.ListCustody(ctx)
+	for _, r0 := range rows {
+		if r0.ID == id && r0.LastVerifiedAt != nil {
+			t.Fatal("edit must reset verification")
+		}
+	}
+
+	// Watchdog: unconfigured => silent; configured + stale superadmin => send;
+	// MarkNotified suppresses.
+	set := func(k, v string) {
+		if _, err := pool.Exec(ctx, `INSERT INTO org_settings (key, value) VALUES ($1, $2)
+			ON CONFLICT (key) DO UPDATE SET value = $2`, k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+	if send, _, _, _ := cr.WatchdogEvaluate(ctx); send {
+		t.Fatal("unconfigured watchdog must not send")
+	}
+	set("continuity_watch_days", "7")
+	set("continuity_contacts", "president@example.org, secretary@example.org")
+	if _, err := pool.Exec(ctx, `DELETE FROM org_settings WHERE key = 'continuity_last_notice'`); err != nil {
+		t.Fatalf("clear notice: %v", err)
+	}
+	// Ensure a stale superadmin exists (the throwaway DB has none by default).
+	if _, err := pool.Exec(ctx, `UPDATE users SET role = 'superadmin',
+		last_login_at = now() - interval '30 days' WHERE id = $1::uuid`, uid); err != nil {
+		t.Fatalf("make stale superadmin: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET last_login_at = now() - interval '30 days' WHERE role = 'superadmin'`); err != nil {
+		t.Fatalf("age superadmins: %v", err)
+	}
+	send, contacts, silent, err := cr.WatchdogEvaluate(ctx)
+	if err != nil || !send || len(contacts) != 2 || silent < 29 {
+		t.Fatalf("watchdog: send=%v contacts=%v silent=%d err=%v", send, contacts, silent, err)
+	}
+	if err := cr.WatchdogMarkNotified(ctx); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if send, _, _, _ := cr.WatchdogEvaluate(ctx); send {
+		t.Fatal("notice must be suppressed for 7 days after sending")
+	}
+	// Cleanup so other tests/runs aren't affected.
+	set("continuity_watch_days", "0")
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET last_login_at = now() WHERE role = 'superadmin'`); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET role = 'member' WHERE id = $1::uuid`, uid); err != nil {
+		t.Fatalf("demote: %v", err)
+	}
+}

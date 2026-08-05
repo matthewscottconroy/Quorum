@@ -854,6 +854,26 @@ Spending walks a fixed ceremony:
    database refuses edits — and changing a fund's policy voids in-flight
    approvals so signatures always reflect the current rules.
 
+## 6.6b Continuity: surviving the loss of your operator
+
+Settings → Organization settings carries the org's **bus-factor kit**:
+
+- **Secret custody registry** — one row per critical credential (backup
+  passphrase, cloud account, registrar…): where it lives and who holds it.
+  Values never enter Quorum. Click **✓ attest** periodically ("I verified
+  this copy exists"); editing a row resets verification, because a moved
+  copy is an unverified copy. Health checks flag staleness, a lone
+  superadmin, and impending TLS expiry.
+- **Inactivity watchdog** — if no superadmin signs in for N days, the
+  designated continuity contacts get an email pointing at the succession
+  procedure. It notifies; it never grants access (that bar stays where it
+  belongs: custody of the real keys).
+- **Continuity pack** (superadmin) — a sealed ZIP that is your successor's
+  map: a generated "you have inherited this system" README, the
+  infrastructure facts you maintain, the full org configuration snapshot,
+  and the custody registry. Regenerate and print after material changes;
+  store beside the offline backup-passphrase copy.
+
 ## 6.7 Visibility groups (constrain what members can see)
 
 Create groups under **Settings → Visibility groups**, ticking the members that

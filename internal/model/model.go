@@ -848,3 +848,24 @@ type PostingRule struct {
 	AccountCode string `json:"account_code"`
 	AccountName string `json:"account_name"`
 }
+
+// SecretCustody is one row of the continuity registry: WHERE a critical
+// secret lives and WHO holds it — never the secret itself.
+type SecretCustody struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Location       string     `json:"location"`
+	Holder         string     `json:"holder"`
+	LastVerifiedAt *time.Time `json:"last_verified_at,omitempty"`
+	LastVerifiedBy string     `json:"last_verified_by"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// ContinuityChecks is the org's bus-factor health picture.
+type ContinuityChecks struct {
+	Superadmins     int  `json:"superadmins"`
+	CustodyRows     int  `json:"custody_rows"`
+	CustodyStale    int  `json:"custody_stale"`
+	AttestDays      int  `json:"attest_days"`
+	WatchConfigured bool `json:"watch_configured"`
+}

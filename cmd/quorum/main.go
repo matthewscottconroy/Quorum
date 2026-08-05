@@ -172,7 +172,30 @@ func main() {
 	accountingH.SetPhaseC(glRepo)
 	fundsRepo := repo.NewFundsRepo(pool)
 	packH := handler.NewAccountingPackHandler(glRepo, glRepo, fundsRepo, auditRepo, auditRepo, authRepo)
-	orgSettingsH := handler.NewOrgSettingsHandler(repo.NewOrgSettingsRepo(pool))
+	orgSettingsRepo := repo.NewOrgSettingsRepo(pool)
+	orgSettingsH := handler.NewOrgSettingsHandler(orgSettingsRepo)
+	continuityRepo := repo.NewContinuityRepo(pool)
+	continuityH := handler.NewContinuityHandler(continuityRepo, handler.PackConfigSources{
+		Settings: orgSettingsRepo, GL: glRepo, Funds: fundsRepo,
+		Groups: groupsRepo, Users: authRepo,
+	}, auditRepo, authRepo, cfg.BaseURL,
+		cfg.SMTPHost != "", cfg.StripeWebhookSecret != "", cfg.PayPalWebhookID != "")
+	// E3 watchdog: piggybacks the nightly job's leader lock; notifies only,
+	// never grants (roadmap/continuity.md).
+	duesSvc.SetPostHook(func(ctx context.Context) {
+		send, contacts, silent, err := continuityRepo.WatchdogEvaluate(ctx)
+		if err != nil || !send {
+			return
+		}
+		body := fmt.Sprintf("No Quorum superadmin has signed in for %d days at %s.\n\n"+
+			"If this is unexpected, begin the succession procedure: locate the\n"+
+			"organization's continuity pack and follow SUCCESSOR-README.md.\n"+
+			"Server operators: see RUNBOOK.md, 'Recover a locked-out admin'.", silent, cfg.BaseURL)
+		if err := emailSvc.Send(contacts, "Continuity notice: superadmin inactivity", body); err == nil {
+			_ = continuityRepo.WatchdogMarkNotified(ctx)
+		}
+	})
+
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
@@ -513,6 +536,16 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/accounting/posting-rules", accountingH.PostingRules)
 			r.With(mw.RequireRole("admin")).Put("/accounting/posting-rules", accountingH.SetPostingRules)
 			r.With(mw.RequireRole("admin")).Get("/reports/accounting-pack.zip", packH.Zip)
+
+			// Continuity (roadmap E1-E2): custody registry, health checks,
+			// and the successor pack.
+			r.With(mw.RequireRole("admin")).Get("/continuity/custody", continuityH.Custody)
+			r.With(mw.RequireRole("admin")).Post("/continuity/custody", continuityH.CreateCustody)
+			r.With(mw.RequireRole("admin")).Patch("/continuity/custody/{id}", continuityH.UpdateCustody)
+			r.With(mw.RequireRole("admin")).Delete("/continuity/custody/{id}", continuityH.DeleteCustody)
+			r.With(mw.RequireRole("admin")).Post("/continuity/custody/{id}/attest", continuityH.AttestCustody)
+			r.With(mw.RequireRole("admin")).Get("/continuity/checks", continuityH.Checks)
+			r.With(mw.RequireRole("superadmin")).Get("/reports/continuity-pack.zip", continuityH.Pack)
 
 			// Org settings: allowlisted keys, member-readable, admin-writable.
 			r.With(mw.RequireRole("member")).Get("/settings/org", orgSettingsH.Get)

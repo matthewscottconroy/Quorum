@@ -1,6 +1,15 @@
 # Plan: Organizational Continuity (the Bus Factor)
 
-Status: **draft for discussion** — no code yet.
+Status: **E1–E3 shipped** (migration 0035): custody registry with
+attestations (edits reset verification — a moved copy is an unverified
+copy), continuity checks (superadmin count, custody staleness, watchdog
+config, TLS days-left) surfaced on Settings, admin-only org settings for
+infrastructure facts + watchdog config, the superadmin Continuity Pack
+(SUCCESSOR-README, infrastructure.md, org-configuration.json,
+custody.csv — sealed + audited), and the nightly inactivity watchdog
+(notifies contacts, never grants; 7-day re-notice suppression; requires
+SMTP). E4 drill mode and red-check emails remain; the organizational
+checklist below remains YOURS to do.
 
 ## The problem, stated honestly
 

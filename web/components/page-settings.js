@@ -100,7 +100,31 @@ class PageSettings extends HTMLElement {
           </div>
           <div class="form-group"><label for="og-pay">How to pay (shown to members)</label>
             <textarea id="og-pay" rows="3" placeholder="Zelle: treasurer@…  ·  Venmo: @org-handle  ·  Checks payable to …"></textarea></div>
+          <div class="form-group"><label for="og-infra">Infrastructure facts (admin-only; feeds the continuity pack)</label>
+            <textarea id="og-infra" rows="4" placeholder="Registrar: … · DNS: Route 53 · Cloud: AWS acct owner … · Server: … · Backup bucket: … · Password vault: …"></textarea></div>
+          <div class="form-row">
+            <div class="form-group" style="max-width:220px"><label for="og-watch">Inactivity watchdog (days, 0=off)</label>
+              <input id="og-watch" type="number" min="0" max="365" value="0"></div>
+            <div class="form-group"><label for="og-contacts">Continuity contacts (emails, comma-separated)</label>
+              <input id="og-contacts" placeholder="president@…, secretary@…"></div>
+          </div>
           <button class="btn-primary" id="og-save" style="font-size:.85rem">Save org settings</button>
+
+          <div id="cont-section" style="border-top:1px solid var(--color-border);margin-top:1rem;padding-top:.8rem">
+            <h3 style="font-size:.95rem;margin:0 0 .3rem">Continuity: secret custody & health</h3>
+            <div id="cont-checks" style="font-size:.82rem;margin-bottom:.6rem"></div>
+            <div id="cont-rows"></div>
+            <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
+              <input id="cu-name" placeholder="Secret (e.g. backup passphrase)" style="flex:1;min-width:150px">
+              <input id="cu-loc" placeholder="Where it lives" style="flex:1;min-width:150px">
+              <input id="cu-holder" placeholder="Who holds it" style="min-width:120px">
+              <button class="btn-secondary" id="cu-add" style="font-size:.8rem">Add</button>
+            </div>
+            <div style="display:flex;gap:.4rem;margin-top:.7rem;align-items:center">
+              <button class="btn-primary" id="cont-pack" style="font-size:.8rem">⬇ Continuity pack (superadmin)</button>
+              <span style="font-size:.72rem;color:var(--color-text-muted)">The successor's map — sealed & audited. Print after material changes.</span>
+            </div>
+          </div>
         </section>` : ''}
 
         ${isAdmin() ? `
@@ -679,21 +703,80 @@ customElements.define('page-settings', PageSettings);
     queueMicrotask(async () => {
       const { api } = await import('../app.js');
       const { toast } = await import('./toast-notification.js');
+      const { esc } = await import('../utils.js');
       try {
         const st = await api('GET', '/settings/org');
-        const fy = this.querySelector('#og-fy'), pay = this.querySelector('#og-pay');
-        if (fy && st.fiscal_year_start_month) fy.value = st.fiscal_year_start_month;
-        if (pay && st.how_to_pay) pay.value = st.how_to_pay;
+        const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
+        set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
+        set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
+        set('#og-contacts', st.continuity_contacts);
       } catch { /* defaults are fine */ }
       this.querySelector('#og-save')?.addEventListener('click', async () => {
         try {
           await api('PUT', '/settings/org', {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
             how_to_pay: this.querySelector('#og-pay').value,
+            infrastructure_facts: this.querySelector('#og-infra').value,
+            continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
+            continuity_contacts: this.querySelector('#og-contacts').value,
           });
           toast('Org settings saved', 'success');
         } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
       });
+
+      // Continuity: custody registry + checks.
+      const loadCont = async () => {
+        const box = this.querySelector('#cont-rows');
+        if (!box) return;
+        try {
+          const [rows, checks] = await Promise.all([
+            api('GET', '/continuity/custody'), api('GET', '/continuity/checks'),
+          ]);
+          const c = this.querySelector('#cont-checks');
+          const bad = [];
+          if (!checks.superadmins_ok) bad.push(`⚠ only ${checks.superadmins} superadmin — bus risk`);
+          if (checks.custody_rows === 0) bad.push('⚠ custody registry empty');
+          if (checks.custody_stale > 0) bad.push(`⚠ ${checks.custody_stale} custody item(s) unverified in ${checks.attest_days}d`);
+          if (!checks.watch_configured) bad.push('· inactivity watchdog off');
+          if (checks.tls_days_left != null && checks.tls_days_left < 21) bad.push(`⚠ TLS cert expires in ${checks.tls_days_left}d`);
+          c.innerHTML = bad.length
+            ? `<span style="color:var(--color-warning,#b45309)">${bad.map(esc).join(' &nbsp; ')}</span>`
+            : '<span style="color:var(--color-success,#137333)">✓ continuity checks green</span>';
+          box.innerHTML = (rows ?? []).map(r0 => `
+            <div style="display:flex;gap:.5rem;align-items:center;font-size:.82rem;padding:.15rem 0;border-bottom:1px solid var(--color-border)">
+              <b style="min-width:140px">${esc(r0.name)}</b>
+              <span style="flex:1;color:var(--color-text-muted)">${esc(r0.location)} — ${esc(r0.holder)}</span>
+              <span style="font-size:.72rem;color:var(--color-text-muted)">${r0.last_verified_at ? 'verified ' + esc(new Date(r0.last_verified_at).toLocaleDateString()) + ' by ' + esc(r0.last_verified_by) : 'never verified'}</span>
+              <button class="btn-ghost cu-attest" data-id="${esc(r0.id)}" title="I verified this copy exists today" style="font-size:.75rem">✓ attest</button>
+              <button class="btn-ghost cu-del" data-id="${esc(r0.id)}" style="color:var(--color-danger);padding:0 .3rem">✕</button>
+            </div>`).join('') || '<div style="font-size:.8rem;color:var(--color-text-muted)">Register where each critical secret lives (values never enter Quorum).</div>';
+          box.querySelectorAll('.cu-attest').forEach(b => b.addEventListener('click', async () => {
+            try { await api('POST', `/continuity/custody/${b.dataset.id}/attest`); loadCont(); }
+            catch (err) { toast(err.error ?? 'Attest failed', 'error'); }
+          }));
+          box.querySelectorAll('.cu-del').forEach(b => b.addEventListener('click', async () => {
+            try { await api('DELETE', `/continuity/custody/${b.dataset.id}`); loadCont(); }
+            catch (err) { toast(err.error ?? 'Delete failed', 'error'); }
+          }));
+        } catch { /* non-admin or transient */ }
+      };
+      this.querySelector('#cu-add')?.addEventListener('click', async () => {
+        try {
+          await api('POST', '/continuity/custody', {
+            Name: this.querySelector('#cu-name').value,
+            Location: this.querySelector('#cu-loc').value,
+            Holder: this.querySelector('#cu-holder').value,
+          });
+          ['#cu-name', '#cu-loc', '#cu-holder'].forEach(i => this.querySelector(i).value = '');
+          loadCont();
+        } catch (err) { toast(err.error ?? 'Add failed', 'error'); }
+      });
+      this.querySelector('#cont-pack')?.addEventListener('click', async () => {
+        const { apiDownload } = await import('../app.js');
+        apiDownload('/reports/continuity-pack.zip', 'quorum-continuity-pack.zip')
+          .catch(err => toast(err.error ?? 'Superadmin only', 'error'));
+      });
+      loadCont();
     });
   };
 })();

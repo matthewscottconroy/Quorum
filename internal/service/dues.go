@@ -81,7 +81,12 @@ type DuesService struct {
 	// data-retention schedule is a policy decision (and in some jurisdictions a
 	// legal one), so deployments can set it via QUORUM_AUDIT_RETENTION_DAYS.
 	auditRetention time.Duration
+	postHook       func(context.Context)
 }
+
+// SetPostHook attaches an optional step run at the end of each nightly job
+// under the same leader lock (used by the continuity watchdog).
+func (s *DuesService) SetPostHook(fn func(context.Context)) { s.postHook = fn }
 
 // SetAuditRetention overrides how long audit entries are kept. A non-positive
 // value keeps the default.
@@ -125,6 +130,10 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 
 	s.sendMemberReminders(ctx)
 	s.sendAdminDigest(ctx)
+
+	if s.postHook != nil {
+		s.postHook(ctx)
+	}
 }
 
 // generateRecurringDues materializes invoices for the current period of every
