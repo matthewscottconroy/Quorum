@@ -151,6 +151,7 @@ func main() {
 	plansH := handler.NewPlansHandler(plansRepo)
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
+	resourcesH.SetAudit(auditRepo)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
 	governanceH := handler.NewGovernanceHandler(governanceRepo, cfg)
 	budgetH := handler.NewBudgetHandler(budgetRepo)
@@ -159,6 +160,9 @@ func main() {
 	notificationsH := handler.NewNotificationsHandler(notifyRepo)
 	auditH := handler.NewAuditHandler(auditRepo)
 	sprintsH := handler.NewSprintsHandler(sprintsRepo)
+	boardColsH := handler.NewBoardColumnsHandler(repo.NewBoardColumnsRepo(pool))
+	cardCommentsH := handler.NewCardCommentsHandler(repo.NewCardCommentsRepo(pool), actionItemsRepo)
+	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
 	auditH.SetVerifier(auditRepo)
@@ -445,10 +449,21 @@ func main() {
 			r.With(mw.RequireRole("officer")).Patch("/sprints/{id}", sprintsH.Update)
 			r.With(mw.RequireRole("officer")).Delete("/sprints/{id}", sprintsH.Delete)
 
+			// Board columns: custom workflow lanes over the cards' statuses.
+			r.With(mw.RequireRole("member")).Get("/board/columns", boardColsH.List)
+			r.With(mw.RequireRole("officer")).Post("/board/columns", boardColsH.Create)
+			r.With(mw.RequireRole("officer")).Patch("/board/columns/{id}", boardColsH.Update)
+			r.With(mw.RequireRole("officer")).Delete("/board/columns/{id}", boardColsH.Delete)
+
 			r.With(mw.RequireRole("member")).Get("/action-items", actionItemsH.List)
 			r.With(mw.RequireRole("officer")).Post("/action-items", actionItemsH.Create)
 			r.With(mw.RequireRole("officer")).Patch("/action-items/{id}", actionItemsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/action-items/{id}", actionItemsH.Delete)
+			// Card conversations: any member can read and take part; deletion
+			// is author-or-admin (enforced in the handler).
+			r.With(mw.RequireRole("member")).Get("/action-items/{id}/comments", cardCommentsH.List)
+			r.With(mw.RequireRole("member")).Post("/action-items/{id}/comments", cardCommentsH.Create)
+			r.With(mw.RequireRole("member")).Delete("/action-items/{id}/comments/{cid}", cardCommentsH.Delete)
 
 			r.With(mw.RequireRole("member")).Get("/plans", plansH.List)
 			r.With(mw.RequireRole("officer")).Post("/plans", plansH.Create)
@@ -478,6 +493,14 @@ func main() {
 
 			r.With(mw.RequireRole("member")).Get("/resources", resourcesH.List)
 			r.With(mw.RequireRole("officer")).Post("/resources", resourcesH.Create)
+			r.With(mw.RequireRole("officer")).Post("/resources/{id}/file", resourcesH.UploadFile)
+			r.With(mw.RequireRole("member")).Get("/resources/{id}/file", resourcesH.DownloadFile)
+
+			// Folders organize the library; visibility stays on the resources.
+			r.With(mw.RequireRole("member")).Get("/folders", foldersH.List)
+			r.With(mw.RequireRole("officer")).Post("/folders", foldersH.Create)
+			r.With(mw.RequireRole("officer")).Patch("/folders/{id}", foldersH.Update)
+			r.With(mw.RequireRole("officer")).Delete("/folders/{id}", foldersH.Delete)
 			r.With(mw.RequireRole("member")).Get("/resources/{id}", resourcesH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/resources/{id}", resourcesH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/resources/{id}", resourcesH.Delete)

@@ -462,10 +462,15 @@ func decodeJSON(r *http.Request, dst any) error {
 	return json.NewDecoder(r.Body).Decode(dst)
 }
 
-// MaxRequestBody limits every request body to 1 MiB.
+// MaxRequestBody limits every request body to 1 MiB. Document uploads
+// (POST .../file) are the one legitimately large body and get 25 MiB.
 func MaxRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		limit := int64(1 << 20)
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/file") {
+			limit = maxUploadBytes
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
 }

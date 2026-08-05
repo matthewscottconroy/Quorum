@@ -29,6 +29,8 @@ type ResourceFilter struct {
 	Search   string
 	Category string
 	Tag      string
+	// FolderID filters by folder; "none" selects resources outside any folder.
+	FolderID string
 	Limit    int
 	Offset   int
 
@@ -78,6 +80,13 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 		args = append(args, f.Tag)
 		idx++
 	}
+	if f.FolderID == "none" {
+		conds = append(conds, "r.folder_id IS NULL")
+	} else if f.FolderID != "" {
+		conds = append(conds, fmt.Sprintf("r.folder_id = $%d::uuid", idx))
+		args = append(args, f.FolderID)
+		idx++
+	}
 
 	if vc := visibilityCond(f, &args, &idx); vc != "" {
 		conds = append(conds, vc)
@@ -95,12 +104,14 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
-		       id::text, title, description, url, category, tags,
+		       r.id::text, r.title, r.description, r.url, r.category, r.tags,
 		       coalesce((SELECT array_agg(g.name ORDER BY g.name)
 		                 FROM resource_groups rg JOIN groups g ON g.id = rg.group_id
 		                 WHERE rg.resource_id = r.id), '{}'),
-		       added_by::text, created_at, updated_at
+		       r.folder_id::text, fo.name, r.file_name, r.file_size, r.file_sha256,
+		       r.added_by::text, r.created_at, r.updated_at
 		FROM resources r
+		LEFT JOIN folders fo ON fo.id = r.folder_id
 		%s
 		ORDER BY r.title
 		LIMIT $%d OFFSET $%d`, where, idx, idx+1)
@@ -117,7 +128,9 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	for rows.Next() {
 		var res model.Resource
 		if err := rows.Scan(&total, &res.ID, &res.Title, &res.Description, &res.URL,
-			&res.Category, &res.Tags, &res.GroupNames, &res.AddedBy, &res.CreatedAt, &res.UpdatedAt); err != nil {
+			&res.Category, &res.Tags, &res.GroupNames,
+			&res.FolderID, &res.FolderName, &res.FileName, &res.FileSize, &res.FileSHA256,
+			&res.AddedBy, &res.CreatedAt, &res.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		if res.Tags == nil {
@@ -138,14 +151,15 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	return resources, total, nil
 }
 
+const resourceCols = `id::text, title, description, url, category, tags,
+	       folder_id::text, file_name, file_size, file_sha256,
+	       added_by::text, created_at, updated_at`
+
 // Get returns the resource with the given id, or pgx.ErrNoRows if none exists.
 // Visibility is NOT applied here — use GetVisible for viewer-facing reads;
 // Get serves the officer-gated edit/delete paths.
 func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, error) {
-	row := r.db.QueryRow(ctx, `
-		SELECT id::text, title, description, url, category, tags,
-		       added_by::text, created_at, updated_at
-		FROM resources WHERE id = $1::uuid`, id)
+	row := r.db.QueryRow(ctx, `SELECT `+resourceCols+` FROM resources WHERE id = $1::uuid`, id)
 	res, err := scanResource(row)
 	if err != nil {
 		return nil, err
@@ -161,10 +175,7 @@ func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll
 	idx := 2
 	f := ResourceFilter{ViewerSeesAll: viewerSeesAll, ViewerMemberID: viewerMemberID}
 	vis := visibilityCond(f, &args, &idx)
-	q := `
-		SELECT id::text, title, description, url, category, tags,
-		       added_by::text, created_at, updated_at
-		FROM resources r WHERE id = $1::uuid`
+	q := `SELECT ` + resourceCols + ` FROM resources r WHERE id = $1::uuid`
 	if vis != "" {
 		q += " AND " + vis
 	}
@@ -178,10 +189,10 @@ func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll
 // Create inserts a new resource and returns the stored row.
 func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error) {
 	row := r.db.QueryRow(ctx, `
-		INSERT INTO resources (title, description, url, category, tags, added_by)
-		VALUES ($1, $2, $3, $4, $5, $6::uuid)
-		RETURNING id::text, title, description, url, category, tags, added_by::text, created_at, updated_at`,
-		res.Title, res.Description, res.URL, res.Category, res.Tags, addedBy)
+		INSERT INTO resources (title, description, url, category, tags, folder_id, added_by)
+		VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid)
+		RETURNING `+resourceCols,
+		res.Title, res.Description, res.URL, res.Category, res.Tags, res.FolderID, addedBy)
 	created, err := scanResource(row)
 	if err != nil {
 		return nil, err
@@ -191,7 +202,10 @@ func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy
 
 var resourceAllowedFields = map[string]bool{
 	"title": true, "description": true, "url": true, "category": true, "tags": true,
+	"folder_id": true,
 }
+
+var resourceUUIDFields = map[string]bool{"folder_id": true}
 
 // Update sets only the given fields, preserving PATCH semantics.
 func (r *ResourcesRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error) {
@@ -202,7 +216,11 @@ func (r *ResourcesRepo) Update(ctx context.Context, id string, fields map[string
 		if !resourceAllowedFields[k] {
 			continue
 		}
-		sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		if resourceUUIDFields[k] {
+			sets = append(sets, fmt.Sprintf("%s = $%d::uuid", k, idx))
+		} else {
+			sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		}
 		args = append(args, v)
 		idx++
 	}
@@ -211,8 +229,7 @@ func (r *ResourcesRepo) Update(ctx context.Context, id string, fields map[string
 
 	query := fmt.Sprintf(`
 		UPDATE resources SET %s WHERE id = $%d::uuid
-		RETURNING id::text, title, description, url, category, tags, added_by::text, created_at, updated_at`,
-		strings.Join(sets, ", "), idx)
+		RETURNING `+resourceCols, strings.Join(sets, ", "), idx)
 
 	updated, err := scanResource(r.db.QueryRow(ctx, query, args...))
 	if err != nil {
@@ -235,10 +252,48 @@ func (r *ResourcesRepo) Delete(ctx context.Context, id string) error {
 
 func scanResource(row scannable) (model.Resource, error) {
 	var res model.Resource
-	err := row.Scan(&res.ID, &res.Title, &res.Description, &res.URL, &res.Category,
-		&res.Tags, &res.AddedBy, &res.CreatedAt, &res.UpdatedAt)
+	err := row.Scan(&res.ID, &res.Title, &res.Description, &res.URL, &res.Category, &res.Tags,
+		&res.FolderID, &res.FileName, &res.FileSize, &res.FileSHA256,
+		&res.AddedBy, &res.CreatedAt, &res.UpdatedAt)
 	if res.Tags == nil {
 		res.Tags = []string{}
 	}
 	return res, err
+}
+
+// SetFile attaches (or replaces) a resource's uploaded document: metadata on
+// the resources row, bytes in resource_files, atomically.
+func (r *ResourcesRepo) SetFile(ctx context.Context, id, fileName string, size int64, sha256Hex, contentType string, data []byte) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE resources SET file_name = $1, file_size = $2, file_sha256 = $3, updated_at = now()
+		WHERE id = $4::uuid`, fileName, size, sha256Hex, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO resource_files (resource_id, content_type, data)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (resource_id) DO UPDATE SET content_type = $2, data = $3`,
+		id, contentType, data); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// GetFile returns the stored bytes and content type for a resource's
+// document. Callers MUST have already authorized the read via GetVisible.
+func (r *ResourcesRepo) GetFile(ctx context.Context, id string) (contentType string, data []byte, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT content_type, data FROM resource_files WHERE resource_id = $1::uuid`, id).
+		Scan(&contentType, &data)
+	return contentType, data, err
 }

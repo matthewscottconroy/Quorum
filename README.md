@@ -207,6 +207,22 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/resources/:id` | member | Get |
 | `PATCH` | `/resources/:id` | officer | Update |
 | `DELETE` | `/resources/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
+| `POST` | `/resources/:id/file` | officer | Upload/replace the document (multipart `file`, 25 MiB max) |
+| `GET` | `/resources/:id/file` | member | Download the document (group-visibility enforced; audited as EXPORT) |
+| `GET` | `/folders` | member | List folders |
+| `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / delete (delete requires `?confirm=<name>`; documents return to the root) |
+
+### Board
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/board/columns` | member | Columns in board order |
+| `POST` | `/board/columns` | officer | Add a column (`maps_to_status` optional: set = advances card status on drop) |
+| `PATCH` | `/board/columns/:id` | officer | Rename / reposition |
+| `DELETE` | `/board/columns/:id` | officer | Delete — requires `?confirm=<name>`; cards fall back to their status lane |
+| `GET` | `/action-items/:id/comments` | member | A card's conversation, oldest first |
+| `POST` | `/action-items/:id/comments` | member | Add a comment |
+| `DELETE` | `/action-items/:id/comments/:cid` | member | Author deletes own; admin moderates |
 
 ### Dashboard
 

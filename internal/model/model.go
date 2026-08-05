@@ -144,6 +144,8 @@ type ActionItem struct {
 	Priority     string     `json:"priority"`
 	SprintID     *string    `json:"sprint_id,omitempty"`
 	SprintName   *string    `json:"sprint_name,omitempty"`
+	ColumnID     *string    `json:"column_id,omitempty"`
+	CommentCount int        `json:"comment_count"`
 	CreatedBy    string     `json:"created_by"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -487,7 +489,14 @@ type Resource struct {
 	Tags        []string `json:"tags"`
 	// GroupNames are the visibility groups restricting who sees this resource;
 	// empty means visible to all members.
-	GroupNames []string  `json:"group_names,omitempty"`
+	GroupNames []string `json:"group_names,omitempty"`
+	// Folder/file fields: a resource with FileName set is an uploaded
+	// document; URL remains for link resources.
+	FolderID   *string   `json:"folder_id,omitempty"`
+	FolderName *string   `json:"folder_name,omitempty"`
+	FileName   *string   `json:"file_name,omitempty"`
+	FileSize   *int64    `json:"file_size,omitempty"`
+	FileSHA256 *string   `json:"file_sha256,omitempty"`
 	AddedBy    string    `json:"added_by"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -571,4 +580,36 @@ type AuditEntry struct {
 	CreatedAt  time.Time `json:"created_at"`
 	PrevHash   string    `json:"prev_hash,omitempty"`
 	EntryHash  string    `json:"entry_hash,omitempty"`
+}
+
+// BoardColumn is a kanban lane on the work board. When MapsToStatus is set,
+// moving a card into the column also sets the card's status, keeping the
+// canonical reporting field truthful; unmapped columns ("Blocked",
+// "Reviewing") move cards without touching status.
+type BoardColumn struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Position     int       `json:"position"`
+	MapsToStatus *string   `json:"maps_to_status,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// CardComment is one message in a work card's conversation thread. AuthorName
+// resolves to the author's linked member name, falling back to their email;
+// a deleted author leaves AuthorID nil (rendered as "former user").
+type CardComment struct {
+	ID           string    `json:"id"`
+	ActionItemID string    `json:"action_item_id"`
+	AuthorID     *string   `json:"author_id,omitempty"`
+	AuthorName   *string   `json:"author_name,omitempty"`
+	Body         string    `json:"body"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Folder groups documents in the resource library (flat, one level).
+type Folder struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	ResourceCount int       `json:"resource_count"`
+	CreatedAt     time.Time `json:"created_at"`
 }

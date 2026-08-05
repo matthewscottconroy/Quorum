@@ -151,6 +151,30 @@ export async function api(method, path, body) {
  * @param {string} filename - Suggested download filename.
  * @throws {object} `{error, code}` when the request fails.
  */
+/** Uploads a file as multipart form data (field "file"). Returns parsed JSON. */
+export async function apiUpload(path, file) {
+  if (_token && _tokenExpiresAt > 0 && Date.now() >= _tokenExpiresAt) {
+    const ok = await silentRefresh();
+    if (!ok) { clearAuth(); navigate('#/login'); throw { error: 'Session expired', code: 'unauthorized' }; }
+  }
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  // No Content-Type header: the browser sets the multipart boundary itself.
+  const doFetch = () => fetch('/api/v1' + path, {
+    method: 'POST',
+    headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+    body: fd,
+  });
+  let res = await doFetch();
+  if (res.status === 401) {
+    if (await silentRefresh()) res = await doFetch();
+    else { clearAuth(); navigate('#/login'); throw { error: 'Session expired', code: 'unauthorized' }; }
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw (data && data.error) ? data : { error: res.statusText || 'Upload failed' };
+  return data;
+}
+
 export async function apiDownload(path, filename) {
   const doFetch = () => fetch('/api/v1' + path, {
     headers: _token ? { Authorization: `Bearer ${_token}` } : {},

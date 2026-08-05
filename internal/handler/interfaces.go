@@ -122,6 +122,8 @@ type resourcesRepo interface {
 	Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
 	Delete(ctx context.Context, id string) error
+	SetFile(ctx context.Context, id, fileName string, size int64, sha256Hex, contentType string, data []byte) error
+	GetFile(ctx context.Context, id string) (contentType string, data []byte, err error)
 }
 
 // actionItemsRepo is satisfied by *repo.ActionItemsRepo.

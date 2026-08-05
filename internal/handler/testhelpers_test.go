@@ -476,6 +476,12 @@ func (m *mockResourcesRepo) Update(ctx context.Context, id string, fields map[st
 func (m *mockResourcesRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
 }
+func (m *mockResourcesRepo) SetFile(ctx context.Context, id, fileName string, size int64, sha256Hex, contentType string, data []byte) error {
+	return nil
+}
+func (m *mockResourcesRepo) GetFile(ctx context.Context, id string) (string, []byte, error) {
+	return "", nil, nil
+}
 
 // ---- mockAuditRepo ----
 

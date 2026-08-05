@@ -83,9 +83,10 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		SELECT COUNT(*) OVER() AS total_count,
 		       ai.id::text, ai.title, ai.description, ai.assignee_id::text,
 		       ai.meeting_id::text, ai.plan_id::text, ai.due_date,
-		       ai.status, ai.priority, ai.sprint_id::text, sp.name,
+		       ai.status, ai.priority, ai.sprint_id::text, sp.name, ai.column_id::text,
 		       ai.created_by::text, ai.created_at, ai.updated_at,
-		       m.display_name
+		       m.display_name,
+		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
@@ -109,9 +110,9 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		if err := rows.Scan(&total,
 			&item.ID, &item.Title, &item.Description, &item.AssigneeID,
 			&item.MeetingID, &item.PlanID, &item.DueDate,
-			&item.Status, &item.Priority, &item.SprintID, &item.SprintName,
+			&item.Status, &item.Priority, &item.SprintID, &item.SprintName, &item.ColumnID,
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-			&item.AssigneeName,
+			&item.AssigneeName, &item.CommentCount,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -135,9 +136,10 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 	row := r.db.QueryRow(ctx, `
 		SELECT ai.id::text, ai.title, ai.description, ai.assignee_id::text,
 		       ai.meeting_id::text, ai.plan_id::text, ai.due_date,
-		       ai.status, ai.priority, ai.sprint_id::text, sp.name,
+		       ai.status, ai.priority, ai.sprint_id::text, sp.name, ai.column_id::text,
 		       ai.created_by::text, ai.created_at, ai.updated_at,
-		       m.display_name
+		       m.display_name,
+		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
@@ -157,8 +159,8 @@ func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, cr
 		VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10::uuid)
 		RETURNING id::text, title, description, assignee_id::text,
 		          meeting_id::text, plan_id::text, due_date,
-		          status, priority, sprint_id::text, NULL::text,
-		          created_by::text, created_at, updated_at, NULL::text`,
+		          status, priority, sprint_id::text, NULL::text, column_id::text,
+		          created_by::text, created_at, updated_at, NULL::text, 0`,
 		item.Title, item.Description, item.AssigneeID, item.MeetingID, item.PlanID,
 		item.DueDate, item.Status, item.Priority, item.SprintID, createdBy)
 	created, err := scanActionItem(row)
@@ -177,9 +179,9 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 	allowed := map[string]bool{
 		"title": true, "description": true, "assignee_id": true,
 		"meeting_id": true, "plan_id": true, "sprint_id": true,
-		"due_date": true, "status": true, "priority": true,
+		"due_date": true, "status": true, "priority": true, "column_id": true,
 	}
-	uuidField := map[string]bool{"assignee_id": true, "meeting_id": true, "plan_id": true, "sprint_id": true}
+	uuidField := map[string]bool{"assignee_id": true, "meeting_id": true, "plan_id": true, "sprint_id": true, "column_id": true}
 	for k, v := range fields {
 		if !allowed[k] {
 			continue
@@ -235,9 +237,9 @@ func scanActionItem(row scannable) (model.ActionItem, error) {
 	err := row.Scan(
 		&item.ID, &item.Title, &item.Description, &item.AssigneeID,
 		&item.MeetingID, &item.PlanID, &item.DueDate,
-		&item.Status, &item.Priority, &item.SprintID, &item.SprintName,
+		&item.Status, &item.Priority, &item.SprintID, &item.SprintName, &item.ColumnID,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
-		&item.AssigneeName,
+		&item.AssigneeName, &item.CommentCount,
 	)
 	return item, err
 }

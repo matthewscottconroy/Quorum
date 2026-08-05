@@ -573,6 +573,16 @@ administrator, 6.7):
 - **Officers and above always see everything**, with a 🔒 badge listing each
   restricted resource's groups.
 
+**Uploaded documents & folders.** A resource can carry an actual file, not
+just a link: in the add/edit dialog, choose a **document** (up to 25 MB) and
+optionally a **folder**. Documents live inside Quorum's database, so the
+nightly encrypted backups and disaster recovery cover them automatically.
+Downloads respect the resource's visibility groups exactly — to a member
+outside the groups, the document does not exist — and **every download is
+recorded in the audit log** with the file's SHA-256, like any export.
+**Folders** (the *Folders* button) organize the library and never affect
+visibility; deleting one returns its documents to the root.
+
 **Heat-map previews.** The 🔥 button on a document renders it as a
 **word-frequency heat map**: the meaningful words as tiles, colored cold
 (rare) to hot (frequent) and sized by count, stopwords removed. It is a
@@ -592,13 +602,27 @@ recorded as an export.
 
 The **Board** page tracks work two ways over the same cards:
 
-- **Kanban** — columns by status; drag work forward as it progresses.
+- **Kanban** — columns as workflow lanes; drag work forward as it progresses.
 - **Sprint board** — group cards into **sprints** (status `planned`,
   `active`, `completed`), each with a goal and dates, for time-boxed planning.
 
 Create a card with a title, optional description, an **assignee** (a member),
 and a sprint (or none — it sits in the backlog). Officers create and move
-cards; members can view the boards.
+cards; members can view the boards and take part in card conversations.
+
+**Custom columns.** Officers shape the lanes via the **Columns** button: add
+columns like *Blocked*, *Prioritized*, or *Reviewing*, rename, reorder, or
+remove them. A column may carry a **status mapping** — dropping a card into a
+mapped column (e.g. *Done*) also advances the card's status, which keeps
+dashboards and sprint progress truthful; unmapped columns move cards without
+touching status. Deleting a column never deletes cards: they fall back to the
+lane matching their status.
+
+**Card conversations.** Every card has a comment thread — open the card and
+write in the *Conversation* box (Ctrl+Enter sends). Each message is tagged
+with its author and time; authors can delete their own messages, and admins
+can moderate. Any member can read and comment — assignees are often plain
+members — and cards show a 💬 count on the board.
 
 ## 5.10 Reports & PDF exports
 
@@ -1255,7 +1279,10 @@ Ladder: `restricted` (1) < `member` (2) < `officer` (3) < `admin` (4) <
 | 2FA, recovery codes, sessions: manage own | Yes | Yes | Yes | Yes | Yes |
 | Export own data (JSON) | Yes | Yes | Yes | Yes | Yes |
 | Boards (sprint/kanban): view | | Yes | Yes | Yes | Yes |
-| Boards: create/move cards, manage sprints | | | Yes | Yes | Yes |
+| Boards: create/move cards, manage sprints, manage columns | | | Yes | Yes | Yes |
+| Card conversations: read, write (delete: own; admin any) | | Yes | Yes | Yes | Yes |
+| Resources: upload documents, manage folders | | | Yes | Yes | Yes |
+| Documents: download (within visibility; audited) | | Yes | Yes | Yes | Yes |
 | Minutes journal & motions: record, generate, finalize | | | Yes | Yes | Yes |
 | Resources: assign visibility groups | | | Yes | Yes | Yes |
 | Reports: export PDFs (audit report: admin) | | | Yes | Yes | Yes |
