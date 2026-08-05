@@ -641,6 +641,27 @@ dashboards and sprint progress truthful; unmapped columns move cards without
 touching status. Deleting a column never deletes cards: they fall back to the
 lane matching their status.
 
+**Card types, points & hierarchy.** Cards carry a **type** — `epic`,
+`story`, `task`, `sub-task`, or `spike` — and optional **story points**
+(0–100). Types nest the way you'd expect, and the *database* enforces it:
+sub-tasks belong to a task, story, or spike; stories, tasks, and spikes may
+belong to an epic; epics stand alone. The card dialog's *Belongs to* picker
+only offers legal parents, and a type change that would strand children is
+refused.
+
+**Relationships.** Link cards as **depends on**, **blocked by**, or
+**related to** (card dialog → *Relationships*). Links read correctly from
+both sides ("blocked by" on one card shows as "blocks" on the other), and a
+card whose blocker or dependency isn't done counts as **blocked** in
+analytics.
+
+**Sprint analytics & report.** With a sprint selected, **📊 Analytics**
+shows points committed vs done, completion %, blocked and unpointed counts,
+and breakdowns by type, assignee, and status. Officers can export the same
+picture as a **PDF report** (also on the Reports page) with the standard
+export controls: exporter watermark, embedded SHA-256 integrity seal, and
+an EXPORT audit entry.
+
 **Card conversations.** Every card has a comment thread — open the card and
 write in the *Conversation* box (Ctrl+Enter sends). Each message is tagged
 with its author and time; authors can delete their own messages, and admins
@@ -1351,6 +1372,8 @@ Ladder: `restricted` (1) < `member` (2) < `officer` (3) < `admin` (4) <
 | Minutes entry kind | `call_to_order`, `previous_minutes`, `report`, `old_business`, `new_business`, `discussion`, `point_of_order`, `recess`, `adjournment`, `note` |
 | Motion business | `new`, `old` |
 | Sprint status | `planned`, `active`, `completed` |
+| Card type | `epic`, `story`, `task`, `sub_task`, `spike` |
+| Card link kind | `depends_on`, `blocked_by`, `related_to` |
 
 ## Appendix C — Currency & money reference
 

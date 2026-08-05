@@ -13,6 +13,8 @@ var validActionItemStatuses = map[string]bool{
 	"open": true, "in_progress": true, "done": true, "cancelled": true,
 }
 
+var validCardTypes = map[string]bool{"epic": true, "story": true, "task": true, "sub_task": true, "spike": true}
+
 var validActionItemPriorities = map[string]bool{
 	"low": true, "normal": true, "high": true,
 }
@@ -82,6 +84,9 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SprintID    *string `json:"sprint_id"`
 		DueDate     *string `json:"due_date"`
 		Priority    string  `json:"priority"`
+		StoryPoints *int    `json:"story_points"`
+		CardType    string  `json:"card_type"`
+		ParentID    *string `json:"parent_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -99,9 +104,20 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid priority: must be low, normal, or high", "bad_request")
 		return
 	}
+	if body.CardType == "" {
+		body.CardType = "task"
+	}
+	if !validCardTypes[body.CardType] {
+		writeError(w, 400, "card_type must be one of epic, story, task, sub_task, spike", "bad_request")
+		return
+	}
+	if body.StoryPoints != nil && (*body.StoryPoints < 0 || *body.StoryPoints > 100) {
+		writeError(w, 400, "story_points must be between 0 and 100", "bad_request")
+		return
+	}
 	for name, v := range map[string]*string{
 		"assignee_id": body.AssigneeID, "meeting_id": body.MeetingID, "plan_id": body.PlanID,
-		"sprint_id": body.SprintID,
+		"sprint_id": body.SprintID, "parent_id": body.ParentID,
 	} {
 		if v != nil && !isValidUUID(*v) {
 			writeError(w, 400, name+" must be a UUID", "bad_request")
@@ -118,6 +134,9 @@ func (h *ActionItemsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SprintID:    body.SprintID,
 		Status:      "open",
 		Priority:    priority,
+		StoryPoints: body.StoryPoints,
+		CardType:    body.CardType,
+		ParentID:    body.ParentID,
 	}
 	if body.DueDate != nil {
 		t, err := time.Parse("2006-01-02", *body.DueDate)
@@ -171,13 +190,27 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "sprint_id"} {
+	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "sprint_id", "parent_id"} {
 		if v, present := body[p]; present && v != nil {
 			s, ok := v.(string)
 			if !ok || !isValidUUID(s) {
 				writeError(w, 400, p+" must be a UUID", "bad_request")
 				return
 			}
+		}
+	}
+	if v, present := body["card_type"]; present {
+		s, ok := v.(string)
+		if !ok || !validCardTypes[s] {
+			writeError(w, 400, "card_type must be one of epic, story, task, sub_task, spike", "bad_request")
+			return
+		}
+	}
+	if v, present := body["story_points"]; present && v != nil {
+		f, ok := v.(float64)
+		if !ok || f != float64(int(f)) || f < 0 || f > 100 {
+			writeError(w, 400, "story_points must be an integer between 0 and 100", "bad_request")
+			return
 		}
 	}
 	if v, present := body["due_date"]; present && v != nil {

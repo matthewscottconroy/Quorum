@@ -226,6 +226,11 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/action-items/:id/comments` | member | A card's conversation, oldest first |
 | `POST` | `/action-items/:id/comments` | member | Add a comment |
 | `DELETE` | `/action-items/:id/comments/:cid` | member | Author deletes own; admin moderates |
+| `GET` | `/action-items/:id/links` | member | Relationships touching the card (both directions) |
+| `POST` | `/action-items/:id/links` | officer | Link cards: `{to_id, kind: depends_on\|blocked_by\|related_to}` |
+| `DELETE` | `/action-items/:id/links/:lid` | officer | Unlink |
+| `GET` | `/sprints/:id/analytics` | member | Sprint health: cards/points totals, done %, blocked, by type/status/assignee |
+| `GET` | `/reports/sprints/:id.pdf` | officer | Sprint report PDF (watermarked, integrity-sealed, audited) |
 
 ### Dashboard
 

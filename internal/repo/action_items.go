@@ -86,10 +86,12 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		       ai.status, ai.priority, ai.sprint_id::text, sp.name, ai.column_id::text,
 		       ai.created_by::text, ai.created_at, ai.updated_at,
 		       m.display_name,
-		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int
+		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
+		       ai.story_points, ai.card_type, ai.parent_id::text, par.title
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
+		LEFT JOIN action_items par ON par.id = ai.parent_id
 		%s
 		ORDER BY
 			CASE ai.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
@@ -113,6 +115,7 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 			&item.Status, &item.Priority, &item.SprintID, &item.SprintName, &item.ColumnID,
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&item.AssigneeName, &item.CommentCount,
+			&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -139,10 +142,12 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 		       ai.status, ai.priority, ai.sprint_id::text, sp.name, ai.column_id::text,
 		       ai.created_by::text, ai.created_at, ai.updated_at,
 		       m.display_name,
-		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int
+		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
+		       ai.story_points, ai.card_type, ai.parent_id::text, par.title
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
+		LEFT JOIN action_items par ON par.id = ai.parent_id
 		WHERE ai.id = $1::uuid`, id)
 	item, err := scanActionItem(row)
 	if err != nil {
@@ -153,16 +158,22 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 
 // Create inserts a new action item and returns the stored row.
 func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, createdBy string) (*model.ActionItem, error) {
+	if item.CardType == "" {
+		item.CardType = "task"
+	}
 	row := r.db.QueryRow(ctx, `
 		INSERT INTO action_items
-		    (title, description, assignee_id, meeting_id, plan_id, due_date, status, priority, sprint_id, created_by)
-		VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10::uuid)
+		    (title, description, assignee_id, meeting_id, plan_id, due_date, status, priority, sprint_id,
+		     story_points, card_type, parent_id, created_by)
+		VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10, $11, $12::uuid, $13::uuid)
 		RETURNING id::text, title, description, assignee_id::text,
 		          meeting_id::text, plan_id::text, due_date,
 		          status, priority, sprint_id::text, NULL::text, column_id::text,
-		          created_by::text, created_at, updated_at, NULL::text, 0`,
+		          created_by::text, created_at, updated_at, NULL::text, 0,
+		          story_points, card_type, parent_id::text, NULL::text`,
 		item.Title, item.Description, item.AssigneeID, item.MeetingID, item.PlanID,
-		item.DueDate, item.Status, item.Priority, item.SprintID, createdBy)
+		item.DueDate, item.Status, item.Priority, item.SprintID,
+		item.StoryPoints, item.CardType, item.ParentID, createdBy)
 	created, err := scanActionItem(row)
 	if err != nil {
 		return nil, err
@@ -180,8 +191,9 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 		"title": true, "description": true, "assignee_id": true,
 		"meeting_id": true, "plan_id": true, "sprint_id": true,
 		"due_date": true, "status": true, "priority": true, "column_id": true,
+		"story_points": true, "card_type": true, "parent_id": true,
 	}
-	uuidField := map[string]bool{"assignee_id": true, "meeting_id": true, "plan_id": true, "sprint_id": true, "column_id": true}
+	uuidField := map[string]bool{"assignee_id": true, "meeting_id": true, "plan_id": true, "sprint_id": true, "column_id": true, "parent_id": true}
 	for k, v := range fields {
 		if !allowed[k] {
 			continue
@@ -240,6 +252,7 @@ func scanActionItem(row scannable) (model.ActionItem, error) {
 		&item.Status, &item.Priority, &item.SprintID, &item.SprintName, &item.ColumnID,
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 		&item.AssigneeName, &item.CommentCount,
+		&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
 	)
 	return item, err
 }

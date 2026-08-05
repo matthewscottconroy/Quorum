@@ -320,3 +320,111 @@ func TestIntegration_NestedFoldersAndDownloadLedger(t *testing.T) {
 		t.Fatal("unknown hash must not match")
 	}
 }
+
+func TestIntegration_AgileHierarchyLinksAnalytics(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	ai := repo.NewActionItemsRepo(pool)
+	cl := repo.NewCardLinksRepo(pool)
+	sr := repo.NewSprintsRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	uid := newUser(t, ar)
+
+	sprint, err := sr.Create(ctx, &model.Sprint{Name: uniq("S"), StartsOn: "2026-08-01", EndsOn: "2026-08-14", Status: "active"}, uid)
+	if err != nil {
+		t.Fatalf("sprint: %v", err)
+	}
+	sid := sprint.ID
+	mk := func(title, typ string, pts *int, parent *string, status string) *model.ActionItem {
+		it, err := ai.Create(ctx, &model.ActionItem{
+			Title: uniq(title), CardType: typ, StoryPoints: pts, ParentID: parent,
+			SprintID: &sid, Status: status, Priority: "normal",
+		}, uid)
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		return it
+	}
+	p3, p5, p8 := 3, 5, 8
+
+	epic := mk("epic", "epic", nil, nil, "open")
+	story := mk("story", "story", &p5, &epic.ID, "open")
+	task := mk("task", "task", &p3, &epic.ID, "done")
+	sub := mk("sub", "sub_task", &p3, &task.ID, "open")
+	spike := mk("spike", "spike", &p8, nil, "in_progress")
+
+	// Hierarchy violations are rejected by the database trigger.
+	if _, err := ai.Create(ctx, &model.ActionItem{Title: uniq("bad"), CardType: "sub_task", ParentID: &epic.ID, SprintID: &sid, Status: "open", Priority: "normal"}, uid); err == nil {
+		t.Fatal("sub_task under epic must be rejected")
+	}
+	if _, err := ai.Create(ctx, &model.ActionItem{Title: uniq("bad"), CardType: "epic", ParentID: &epic.ID, SprintID: &sid, Status: "open", Priority: "normal"}, uid); err == nil {
+		t.Fatal("epic under epic must be rejected")
+	}
+	if _, err := ai.Create(ctx, &model.ActionItem{Title: uniq("bad"), CardType: "story", ParentID: &task.ID, SprintID: &sid, Status: "open", Priority: "normal"}, uid); err == nil {
+		t.Fatal("story under task must be rejected")
+	}
+	// Type change that would strand children is rejected.
+	if _, err := ai.Update(ctx, task.ID, map[string]any{"card_type": "sub_task"}); err == nil {
+		t.Fatal("task->sub_task with a sub-task child must be rejected")
+	}
+	// Parent title resolves on reads.
+	got, _ := ai.Get(ctx, sub.ID)
+	if got.ParentTitle == nil || *got.ParentTitle != task.Title {
+		t.Fatalf("parent title: %+v", got.ParentTitle)
+	}
+
+	// Links: create, no self, no dup, both-side listing.
+	if _, err := cl.Create(ctx, story.ID, spike.ID, "blocked_by", uid); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if _, err := cl.Create(ctx, story.ID, spike.ID, "blocked_by", uid); err == nil {
+		t.Fatal("duplicate link must be rejected")
+	}
+	if _, err := cl.Create(ctx, story.ID, story.ID, "related_to", uid); err == nil {
+		t.Fatal("self link must be rejected")
+	}
+	fromSide, _ := cl.ListForCard(ctx, story.ID)
+	toSide, _ := cl.ListForCard(ctx, spike.ID)
+	if len(fromSide) != 1 || len(toSide) != 1 {
+		t.Fatalf("link visibility: from=%d to=%d", len(fromSide), len(toSide))
+	}
+
+	// Analytics: story(5,open) task(3,done) sub(3,open) spike(8,in_progress) epic(0,open)
+	member := newMember(t, mr, uniq("tier"), "active")
+	if _, err := ai.Update(ctx, spike.ID, map[string]any{"assignee_id": member}); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	a, err := cl.SprintAnalytics(ctx, sid)
+	if err != nil {
+		t.Fatalf("analytics: %v", err)
+	}
+	if a.Cards != 5 || a.Points != 19 || a.DoneCards != 1 || a.DonePoints != 3 {
+		t.Fatalf("totals: %+v", a)
+	}
+	if a.BlockedCards != 1 { // story blocked by in-progress spike
+		t.Fatalf("blocked: %d", a.BlockedCards)
+	}
+	if a.UnpointedCards != 1 { // the epic
+		t.Fatalf("unpointed: %d", a.UnpointedCards)
+	}
+	var epicBucket *model.SprintBucket
+	for i := range a.ByType {
+		if a.ByType[i].Key == "epic" {
+			epicBucket = &a.ByType[i]
+		}
+	}
+	if epicBucket == nil || epicBucket.Cards != 1 {
+		t.Fatalf("by_type epic bucket: %+v", a.ByType)
+	}
+
+	// Done blocker unblocks.
+	if _, err := ai.Update(ctx, spike.ID, map[string]any{"status": "done"}); err != nil {
+		t.Fatalf("finish spike: %v", err)
+	}
+	a2, _ := cl.SprintAnalytics(ctx, sid)
+	if a2.BlockedCards != 0 {
+		t.Fatalf("blocked after done: %d", a2.BlockedCards)
+	}
+	_ = p3
+}

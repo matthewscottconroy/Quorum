@@ -10,6 +10,7 @@ class PageReports extends HTMLElement {
   connectedCallback() {
     this.render();
     this.loadMeetings();
+    this.loadSprints();
   }
 
   render() {
@@ -48,6 +49,14 @@ class PageReports extends HTMLElement {
           </div>
         </div>
 
+        <div class="card" style="padding:1.1rem">
+          <h3 style="margin:0 0 .3rem;font-size:1rem">Sprint report</h3>
+          <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .8rem">
+            Sprint analytics: points committed vs done, breakdowns by type, assignee, and status, blocked work, and the card inventory.</p>
+          <select id="sp-sel" style="width:100%;margin-bottom:.6rem"><option>Loading…</option></select>
+          <button class="btn-primary" id="sp-pdf">Download PDF</button>
+        </div>
+
         ${isAdmin() ? `
         <div class="card" style="padding:1.1rem">
           <h3 style="margin:0 0 .3rem;font-size:1rem">Audit log</h3>
@@ -80,11 +89,26 @@ class PageReports extends HTMLElement {
         openHeatmapModal(mt.title, assembleMinutesText(mt, entries, motions));
       } catch { toast('Failed to load the meeting', 'error'); }
     });
+    this.querySelector('#sp-pdf').addEventListener('click', () => {
+      const id = this.querySelector('#sp-sel').value;
+      if (!id) { toast('Choose a sprint', 'error'); return; }
+      apiDownload(`/reports/sprints/${id}.pdf`, 'sprint-report.pdf').catch(() => toast('Download failed', 'error'));
+    });
     this.querySelector('#mt-md').addEventListener('click', () => {
       const id = this.querySelector('#mt-sel').value;
       if (!id) { toast('Choose a meeting', 'error'); return; }
       apiDownload(`/meetings/${id}/minutes.md`, 'minutes.md').catch(() => toast('Download failed', 'error'));
     });
+  }
+
+  async loadSprints() {
+    const sel = this.querySelector('#sp-sel');
+    try {
+      const sprints = await api('GET', '/sprints') ?? [];
+      sel.innerHTML = sprints.length
+        ? sprints.map(s => `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.status)})</option>`).join('')
+        : '<option value="">No sprints yet</option>';
+    } catch { sel.innerHTML = '<option value="">Failed to load sprints</option>'; }
   }
 
   async loadMeetings() {

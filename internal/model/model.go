@@ -146,6 +146,10 @@ type ActionItem struct {
 	SprintName   *string    `json:"sprint_name,omitempty"`
 	ColumnID     *string    `json:"column_id,omitempty"`
 	CommentCount int        `json:"comment_count"`
+	StoryPoints  *int       `json:"story_points,omitempty"`
+	CardType     string     `json:"card_type"`
+	ParentID     *string    `json:"parent_id,omitempty"`
+	ParentTitle  *string    `json:"parent_title,omitempty"`
 	CreatedBy    string     `json:"created_by"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
@@ -630,4 +634,41 @@ type DownloadRecord struct {
 	SHA256       string    `json:"sha256"`
 	IP           string    `json:"ip"`
 	DownloadedAt time.Time `json:"downloaded_at"`
+}
+
+// CardLink is a typed relationship between two cards. Directed: read
+// naturally from the "from" card (A depends_on B), inverted from the other
+// side (B "is dependency of" A); related_to is symmetric.
+type CardLink struct {
+	ID        string    `json:"id"`
+	FromID    string    `json:"from_id"`
+	ToID      string    `json:"to_id"`
+	Kind      string    `json:"kind"`
+	FromTitle string    `json:"from_title"`
+	ToTitle   string    `json:"to_title"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SprintAnalytics is the computed health picture of one sprint.
+type SprintAnalytics struct {
+	Sprint         Sprint         `json:"sprint"`
+	Cards          int            `json:"cards"`
+	Points         int            `json:"points"`
+	DoneCards      int            `json:"done_cards"`
+	DonePoints     int            `json:"done_points"`
+	CancelledCards int            `json:"cancelled_cards"`
+	UnpointedCards int            `json:"unpointed_cards"`
+	BlockedCards   int            `json:"blocked_cards"`
+	ByType         []SprintBucket `json:"by_type"`
+	ByStatus       []SprintBucket `json:"by_status"`
+	ByAssignee     []SprintBucket `json:"by_assignee"`
+}
+
+// SprintBucket is one aggregation row (a type, status, or assignee).
+type SprintBucket struct {
+	Key        string `json:"key"`
+	Cards      int    `json:"cards"`
+	Points     int    `json:"points"`
+	DoneCards  int    `json:"done_cards"`
+	DonePoints int    `json:"done_points"`
 }

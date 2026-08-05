@@ -163,6 +163,9 @@ func main() {
 	sprintsH := handler.NewSprintsHandler(sprintsRepo)
 	boardColsH := handler.NewBoardColumnsHandler(repo.NewBoardColumnsRepo(pool))
 	cardCommentsH := handler.NewCardCommentsHandler(repo.NewCardCommentsRepo(pool), actionItemsRepo)
+	cardLinksRepo := repo.NewCardLinksRepo(pool)
+	cardLinksH := handler.NewCardLinksHandler(cardLinksRepo, actionItemsRepo, sprintsRepo)
+	sprintReportH := handler.NewSprintReportHandler(cardLinksRepo, actionItemsRepo, sprintsRepo, auditRepo, authRepo)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
@@ -462,6 +465,13 @@ func main() {
 			r.With(mw.RequireRole("superadmin")).Delete("/action-items/{id}", actionItemsH.Delete)
 			// Card conversations: any member can read and take part; deletion
 			// is author-or-admin (enforced in the handler).
+			// Typed card relationships + the sprint analytics they power.
+			r.With(mw.RequireRole("member")).Get("/action-items/{id}/links", cardLinksH.List)
+			r.With(mw.RequireRole("officer")).Post("/action-items/{id}/links", cardLinksH.Create)
+			r.With(mw.RequireRole("officer")).Delete("/action-items/{id}/links/{lid}", cardLinksH.Delete)
+			r.With(mw.RequireRole("member")).Get("/sprints/{id}/analytics", cardLinksH.Analytics)
+			r.With(mw.RequireRole("officer")).Get("/reports/sprints/{id}.pdf", sprintReportH.PDF)
+
 			r.With(mw.RequireRole("member")).Get("/action-items/{id}/comments", cardCommentsH.List)
 			r.With(mw.RequireRole("member")).Post("/action-items/{id}/comments", cardCommentsH.Create)
 			r.With(mw.RequireRole("member")).Delete("/action-items/{id}/comments/{cid}", cardCommentsH.Delete)

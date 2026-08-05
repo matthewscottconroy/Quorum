@@ -52,20 +52,51 @@ below makes the relay generate those records and you click them into DNS.
 
 ## 4. The walkthrough: Amazon SES (~20 minutes + one wait)
 
-### Part A — prove you own the domain
+AWS reshuffles this console regularly — currently it's a **setup wizard**
+that asks everything in one flow. So instead of click-by-click, here is the
+*shape* of what you're answering; every wizard layout asks these same five
+questions, whatever order it puts them in. Keep the region shown top-right
+the same as your server's, and stay in it.
 
-1. AWS Console → search **SES** → open it. Check the region shown top-right
-   — pick the same region as your server and **stay in it** for every step.
-2. Left sidebar → **Identities** → **Create identity**.
-3. Identity type: **Domain**. Enter your domain (e.g.
-   `chuposkamountain.com`). Leave **Easy DKIM** enabled. Click **Create
-   identity**.
-4. SES now lists three CNAME records it wants in your DNS. Because your DNS
-   is in Route 53, there's a button: **Publish records to Route 53** (or
-   they're added automatically). Click it. That's SPF/DKIM handled — no
-   copy-paste.
-5. Wait. The identity page's status flips from *Pending* to **Verified**,
-   usually within minutes (up to an hour). Coffee break.
+### Part A — the wizard, question by question
+
+**Q1 — "Email address" or "Sending domain"?** Choose **domain**, and enter
+yours (e.g. `chuposkamountain.com`). Verifying a whole domain lets you send
+from any address at it and is what makes DKIM possible.
+
+**Q2 — MAIL FROM domain (it may suggest one, or ask).** Say **yes**, and
+accept the suggested subdomain (`mail.chuposkamountain.com`) or type that
+yourself. What this is: every email has *two* senders — the one humans see
+(`quorum@chuposkamountain.com`, the "From:" header) and a hidden
+envelope/bounce address that mail servers actually talk to (also called
+Return-Path). Without a custom MAIL FROM, the envelope says
+`...amazonses.com` — technically fine, but the two senders don't match your
+domain, which weakens your DMARC alignment and looks less legitimate.
+Setting it means both senders are yours. It requires two extra DNS records
+(an MX and an SPF TXT on the subdomain) — the wizard creates them for you
+in Route 53.
+
+**Q3 — "Behavior on MX failure."** Choose **Use default MAIL FROM domain**
+(the fallback option; the alternative is *Reject message*). Translation: if
+the DNS records for your MAIL FROM subdomain ever break or go missing,
+should SES (a) fall back to sending with its own `amazonses.com` envelope —
+mail keeps flowing, alignment temporarily degrades — or (b) refuse to send
+anything at all? For an org whose email is password resets and meeting
+notices, silent non-delivery is the worse failure. Take the fallback.
+
+**Q4 — DKIM (usually pre-checked as "Easy DKIM").** Leave it **enabled**,
+RSA 2048. This is the cryptographic signature that receivers verify against
+your DNS; it's the single biggest spam-folder antidote. The wizard produces
+three CNAME records.
+
+**Q5 — publish the DNS records.** Because your DNS lives in Route 53, the
+wizard offers a **publish/create records in Route 53** button covering all
+of it (DKIM CNAMEs + the MAIL FROM MX and SPF). Click it — no copy-paste.
+If you ever *don't* see the button, each record is listed with name/type/
+value and goes into Route 53 → your hosted zone → Create record.
+
+Then wait: the identity's status flips from *Pending* to **Verified**,
+usually within minutes (up to an hour). Coffee break.
 
 ### Part B — get out of the sandbox
 
@@ -145,7 +176,23 @@ Restart, test as in Part D. Caveats: mail comes "from" your personal Gmail,
 daily caps apply, and Google occasionally blocks "suspicious" server logins.
 Migrate to SES when it matters.
 
-## 6. FAQ
+## 6. Decoder ring: the terms on AWS's forms
+
+| Term | Plain meaning |
+|---|---|
+| **Identity** | A domain or address you've proven you control and may send as. |
+| **MAIL FROM domain** | The hidden *envelope* sender (a.k.a. Return-Path / bounce address) — where bounces go and what SPF actually checks. Custom = a subdomain of yours (`mail.…`) instead of amazonses.com. |
+| **Behavior on MX failure** | What SES does if your MAIL FROM subdomain's DNS breaks: fall back to amazonses.com (mail still flows — pick this) or reject (nothing sends). |
+| **MX record** | DNS entry saying "mail for this (sub)domain is handled by that server." The MAIL FROM subdomain needs one so bounces have somewhere to land. |
+| **SPF** | DNS TXT record listing servers allowed to send for a domain. Receivers check it against the *envelope* sender — which is why the custom MAIL FROM matters. |
+| **DKIM** | Per-message cryptographic signature, verified via your DNS. "Easy DKIM" = SES manages the keys, you host three CNAMEs. |
+| **DMARC** | Your published policy on what receivers should do when SPF/DKIM fail, plus where to send reports. `p=none` = observe only. |
+| **Alignment** | DMARC's core test: do the visible From domain and the SPF/DKIM domains *match*? Custom MAIL FROM + DKIM on your domain = aligned. |
+| **Sandbox / production access** | New SES accounts can only mail verified addresses until you request production access (a short form, ~a day). |
+| **Configuration set** | Optional per-stream settings/metrics bundle. You can leave it empty/default — Quorum doesn't need one. |
+| **Bounce / complaint rate** | The metrics AWS watches; keep them low by mailing only real members (Quorum only mails your member list, so this takes care of itself). |
+
+## 6a. FAQ
 
 - **Is this receiving email too?** No. Quorum only sends. Nothing here
   creates inboxes; replies to a nonexistent From address just bounce.

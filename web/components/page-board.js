@@ -1,8 +1,19 @@
-import { api, canWrite, isAdmin, getUser } from '../app.js';
+import { api, apiDownload, canWrite, isAdmin, getUser } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 
 const PRIORITY_COLOR = { high: 'var(--color-danger,#dc2626)', normal: 'var(--color-primary,#2563eb)', low: 'var(--color-text-muted,#9ca3af)' };
+const CARD_TYPES = ['epic', 'story', 'task', 'sub_task', 'spike'];
+const TYPE_BADGE = {
+  epic:     ['E',  '#7c3aed'], story: ['S', '#16a34a'], task: ['T', '#2563eb'],
+  sub_task: ['ST', '#6b7280'], spike: ['SP', '#ea580c'],
+};
+// Containment rules mirrored client-side for the parent picker (the database
+// enforces them regardless): sub-tasks live in tasks/stories/spikes; those
+// live in epics; epics stand alone.
+const PARENT_TYPES = { sub_task: ['task', 'story', 'spike'], story: ['epic'], task: ['epic'], spike: ['epic'], epic: [] };
+const LINK_KINDS = [['depends_on', 'depends on'], ['blocked_by', 'blocked by'], ['related_to', 'related to']];
+const LINK_INVERSE = { depends_on: 'is dependency of', blocked_by: 'blocks', related_to: 'related to' };
 
 // Sprint + kanban board over action items: columns are the workflow states,
 // the sprint selector scopes the board (Backlog = items with no sprint), and
@@ -171,10 +182,16 @@ class PageBoard extends HTMLElement {
   cardHTML(i, officer) {
     const due = i.due_date ? new Date(i.due_date) : null;
     const overdue = due && i.status !== 'done' && due < new Date();
+    const [tb, tc] = TYPE_BADGE[i.card_type] ?? TYPE_BADGE.task;
     return `
       <div class="board-card ${officer ? 'board-card-edit' : ''}" data-id="${esc(i.id)}"
            style="border-left:3px solid ${PRIORITY_COLOR[i.priority] ?? PRIORITY_COLOR.normal}">
-        <div class="board-card-title">${esc(i.title)}</div>
+        <div class="board-card-title">
+          <span class="board-type" style="background:${tc}" title="${esc(i.card_type.replace('_', '-'))}">${tb}</span>
+          ${esc(i.title)}
+          ${i.story_points != null ? `<span class="board-pts">${i.story_points}</span>` : ''}
+        </div>
+        ${i.parent_title ? `<div class="board-card-sprint">◳ ${esc(i.parent_title)}</div>` : ''}
         <div class="board-card-meta">
           ${i.assignee_name ? `<span>👤 ${esc(i.assignee_name)}</span>` : '<span style="opacity:.6">unassigned</span>'}
           ${due ? `<span style="${overdue ? 'color:var(--color-danger,#dc2626);font-weight:700' : ''}">📅 ${esc(due.toLocaleDateString())}</span>` : ''}
@@ -300,12 +317,14 @@ class PageBoard extends HTMLElement {
           <div style="height:8px;border-radius:999px;background:var(--color-bg);overflow:hidden">
             <div style="height:100%;width:${pct}%;background:var(--color-success,#137333)"></div></div>
         </div>
-        ${canWrite() ? `
-          <div style="display:flex;gap:.4rem">
+        <div style="display:flex;gap:.4rem">
+          <button class="btn-secondary" id="sprint-stats" style="font-size:.8rem">📊 Analytics</button>
+          ${canWrite() ? `
             <button class="btn-secondary" id="sprint-edit" style="font-size:.8rem">Edit</button>
-            <button class="btn-ghost" id="sprint-del" style="font-size:.8rem;color:var(--color-danger)">Delete</button>
-          </div>` : ''}
+            <button class="btn-ghost" id="sprint-del" style="font-size:.8rem;color:var(--color-danger)">Delete</button>` : ''}
+        </div>
       </div>`;
+    bar.querySelector('#sprint-stats')?.addEventListener('click', () => this.openAnalyticsModal(sp));
     bar.querySelector('#sprint-edit')?.addEventListener('click', () => this.openSprintModal(sp));
     bar.querySelector('#sprint-del')?.addEventListener('click', () => {
       confirmDelete({
@@ -381,6 +400,14 @@ class PageBoard extends HTMLElement {
       body: `
         <div class="modal-body">
           <div class="form-group"><label for="c-title">Title *</label><input id="c-title" value="${esc(item.title)}"></div>
+          <div class="form-row">
+            <div class="form-group"><label for="c-type">Type</label>
+              <select id="c-type">${CARD_TYPES.map(v => `<option value="${v}" ${item.card_type === v ? 'selected' : ''}>${v.replace('_', '-')}</option>`).join('')}</select></div>
+            <div class="form-group"><label for="c-points">Story points</label>
+              <input id="c-points" type="number" min="0" max="100" value="${item.story_points ?? ''}" placeholder="—"></div>
+            <div class="form-group"><label for="c-parent">Belongs to</label>
+              <select id="c-parent"></select></div>
+          </div>
           <div class="form-group"><label for="c-desc">Description</label><textarea id="c-desc" rows="3">${esc(item.description ?? '')}</textarea></div>
           <div class="form-row">
             <div class="form-group"><label for="c-assignee">Assignee</label><select id="c-assignee">${memberOpts(item.assignee_id)}</select></div>
@@ -393,6 +420,7 @@ class PageBoard extends HTMLElement {
             <div class="form-group"><label for="c-status">Status</label>
               <select id="c-status">${['open', 'in_progress', 'done', 'cancelled'].map(v => `<option value="${v}" ${item.status === v ? 'selected' : ''}>${v.replace('_', ' ')}</option>`).join('')}</select></div>
           </div>
+          ${this.linksHTML()}
           ${this.commentsHTML()}
         </div>
         <div class="modal-footer">
@@ -400,6 +428,19 @@ class PageBoard extends HTMLElement {
           <button class="btn-primary" id="save-btn">Save</button>
         </div>`,
     });
+    // Parent options depend on the chosen type; refresh on change.
+    const parentSel = dialog.querySelector('#c-parent');
+    const typeSel = dialog.querySelector('#c-type');
+    const refreshParents = () => {
+      const allowed = PARENT_TYPES[typeSel.value] ?? [];
+      parentSel.innerHTML = `<option value="">— none —</option>` +
+        this._items.filter(x => allowed.includes(x.card_type) && x.id !== item.id)
+          .map(x => `<option value="${esc(x.id)}" ${item.parent_id === x.id ? 'selected' : ''}>[${esc(x.card_type)}] ${esc(x.title)}</option>`).join('');
+      parentSel.disabled = allowed.length === 0;
+    };
+    typeSel.addEventListener('change', refreshParents);
+    refreshParents();
+    this.wireLinks(dialog, item, true);
     this.wireComments(dialog, item);
     dialog.querySelector('#cancel-btn').addEventListener('click', close);
     const saveBtn = dialog.querySelector('#save-btn');
@@ -407,6 +448,7 @@ class PageBoard extends HTMLElement {
       const title = dialog.querySelector('#c-title').value.trim();
       if (!title) { toast('Title is required', 'error'); return; }
       try {
+        const ptsRaw = dialog.querySelector('#c-points').value.trim();
         await api('PATCH', `/action-items/${item.id}`, {
           title,
           description: dialog.querySelector('#c-desc').value.trim() || null,
@@ -415,6 +457,9 @@ class PageBoard extends HTMLElement {
           priority: dialog.querySelector('#c-priority').value,
           due_date: dialog.querySelector('#c-due').value || null,
           status: dialog.querySelector('#c-status').value,
+          card_type: dialog.querySelector('#c-type').value,
+          story_points: ptsRaw === '' ? null : Number(ptsRaw),
+          parent_id: dialog.querySelector('#c-parent').value || null,
         });
         toast('Saved', 'success');
         close();
@@ -431,17 +476,127 @@ class PageBoard extends HTMLElement {
         <div class="modal-body">
           ${item.description ? `<p style="white-space:pre-wrap;margin-top:0">${esc(item.description)}</p>` : ''}
           <div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:.85rem;color:var(--color-text-muted)">
+            <span>${esc(item.card_type.replace('_', '-'))}${item.story_points != null ? ` · ${item.story_points} pts` : ''}</span>
             <span>👤 ${esc(item.assignee_name ?? 'unassigned')}</span>
             <span>Status: ${esc(item.status.replace('_', ' '))}</span>
             ${item.due_date ? `<span>📅 ${esc(new Date(item.due_date).toLocaleDateString())}</span>` : ''}
             ${item.sprint_name ? `<span>🏁 ${esc(item.sprint_name)}</span>` : ''}
+            ${item.parent_title ? `<span>◳ ${esc(item.parent_title)}</span>` : ''}
           </div>
+          ${this.linksHTML()}
           ${this.commentsHTML()}
         </div>
         <div class="modal-footer"><button class="btn-secondary" id="close-btn">Close</button></div>`,
     });
     dialog.querySelector('#close-btn').addEventListener('click', close);
+    this.wireLinks(dialog, item, false);
     this.wireComments(dialog, item);
+  }
+
+  linksHTML() {
+    return `
+      <div style="border-top:1px solid var(--color-border);margin-top:1rem;padding-top:.7rem">
+        <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-muted)">Relationships</div>
+        <div id="lk-list" style="display:flex;flex-direction:column;gap:.3rem;margin:.5rem 0"><span class="spinner"></span></div>
+        <div id="lk-add" style="display:none;gap:.4rem;align-items:center;flex-wrap:wrap">
+          <select id="lk-kind" style="max-width:140px">${LINK_KINDS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+          <select id="lk-target" style="flex:1;min-width:180px"></select>
+          <button class="btn-secondary" id="lk-save">Link</button>
+        </div>
+      </div>`;
+  }
+
+  /** Loads and wires the relationship list inside a card dialog. */
+  wireLinks(dialog, item, officer) {
+    const list = dialog.querySelector('#lk-list');
+    const renderLinks = (links) => {
+      list.innerHTML = links.length ? links.map(l => {
+        const outgoing = l.from_id === item.id;
+        const label = outgoing ? LINK_KINDS.find(([v]) => v === l.kind)[1] : LINK_INVERSE[l.kind];
+        const other = outgoing ? l.to_title : l.from_title;
+        return `
+          <div style="display:flex;align-items:center;gap:.45rem;font-size:.85rem">
+            <span class="badge badge-none" style="font-size:.68rem;min-width:92px;text-align:center">${esc(label)}</span>
+            <span style="flex:1">${esc(other)}</span>
+            ${officer ? `<button class="btn-ghost lk-del" data-id="${esc(l.id)}" style="padding:0 .3rem;color:var(--color-danger)">✕</button>` : ''}
+          </div>`;
+      }).join('') : '<div style="font-size:.8rem;color:var(--color-text-muted)">No relationships.</div>';
+      list.querySelectorAll('.lk-del').forEach(btn => btn.addEventListener('click', async () => {
+        try { await api('DELETE', `/action-items/${item.id}/links/${btn.dataset.id}`); loadLinks(); }
+        catch (err) { toast(err.error ?? 'Unlink failed', 'error'); }
+      }));
+    };
+    const loadLinks = async () => {
+      try { renderLinks(await api('GET', `/action-items/${item.id}/links`) ?? []); }
+      catch { list.innerHTML = '<div style="font-size:.8rem;color:var(--color-text-muted)">Failed to load.</div>'; }
+    };
+    if (officer) {
+      const add = dialog.querySelector('#lk-add');
+      add.style.display = 'flex';
+      dialog.querySelector('#lk-target').innerHTML = this._items
+        .filter(x => x.id !== item.id)
+        .map(x => `<option value="${esc(x.id)}">[${esc(x.card_type)}] ${esc(x.title)}</option>`).join('');
+      dialog.querySelector('#lk-save').addEventListener('click', async () => {
+        const to_id = dialog.querySelector('#lk-target').value;
+        if (!to_id) return;
+        try {
+          await api('POST', `/action-items/${item.id}/links`, { to_id, kind: dialog.querySelector('#lk-kind').value });
+          loadLinks();
+        } catch (err) { toast(err.error ?? 'Link failed', 'error'); }
+      });
+    }
+    loadLinks();
+  }
+
+  /** Sprint analytics: totals, completion, and per-type/assignee breakdowns. */
+  async openAnalyticsModal(sp) {
+    let a;
+    try { a = await api('GET', `/sprints/${sp.id}/analytics`); }
+    catch (err) { toast(err.error ?? 'Failed to load analytics', 'error'); return; }
+    const pct = a.points > 0 ? Math.round(a.done_points * 100 / a.points)
+      : (a.cards > 0 ? Math.round(a.done_cards * 100 / a.cards) : 0);
+    const bar = (n, d) => {
+      const w = d > 0 ? Math.round(n * 100 / d) : 0;
+      return `<div style="height:7px;border-radius:999px;background:var(--color-bg);overflow:hidden;min-width:90px">
+        <div style="height:100%;width:${w}%;background:var(--color-success,#137333)"></div></div>`;
+    };
+    const bucketTable = (title, rows) => `
+      <h4 style="margin:1rem 0 .3rem">${title}</h4>
+      ${(rows ?? []).map(b => `
+        <div style="display:grid;grid-template-columns:1fr auto auto 100px;gap:.6rem;align-items:center;font-size:.84rem;padding:.15rem 0">
+          <span>${esc(b.key.replace('_', '-'))}</span>
+          <span style="color:var(--color-text-muted)">${b.done_cards}/${b.cards} cards</span>
+          <span style="color:var(--color-text-muted)">${b.done_points}/${b.points} pts</span>
+          ${bar(b.points ? b.done_points : b.done_cards, b.points ? b.points : b.cards)}
+        </div>`).join('') || '<div style="font-size:.8rem;color:var(--color-text-muted)">Nothing here.</div>'}`;
+    const { dialog, close } = openModal({
+      title: `Sprint analytics — ${sp.name}`,
+      maxWidth: '640px',
+      body: `
+        <div class="modal-body">
+          <div style="display:flex;gap:1.2rem;flex-wrap:wrap;font-size:.9rem">
+            <span><b>${a.cards}</b> cards</span>
+            <span><b>${a.points}</b> pts committed</span>
+            <span><b>${a.done_points}</b> pts done</span>
+            <span><b>${pct}%</b> complete</span>
+            ${a.blocked_cards ? `<span style="color:var(--color-danger)">⛔ <b>${a.blocked_cards}</b> blocked</span>` : ''}
+            ${a.unpointed_cards ? `<span style="color:var(--color-text-muted)">${a.unpointed_cards} unpointed</span>` : ''}
+            ${a.cancelled_cards ? `<span style="color:var(--color-text-muted)">${a.cancelled_cards} cancelled</span>` : ''}
+          </div>
+          ${bucketTable('By type', a.by_type)}
+          ${bucketTable('By assignee', a.by_assignee)}
+          ${bucketTable('By status', a.by_status)}
+        </div>
+        <div class="modal-footer">
+          ${canWrite() ? '<button class="btn-secondary" id="an-pdf">Export PDF (audited)</button>' : ''}
+          <button class="btn-secondary" id="an-close">Close</button>
+        </div>`,
+    });
+    dialog.querySelector('#an-close').addEventListener('click', close);
+    dialog.querySelector('#an-pdf')?.addEventListener('click', () => {
+      apiDownload(`/reports/sprints/${sp.id}.pdf`, `sprint-${sp.name.replaceAll(' ', '-')}.pdf`)
+        .catch(err => toast(err.error ?? 'Export failed', 'error'));
+    });
   }
 
   commentsHTML() {
@@ -527,6 +682,10 @@ class PageBoard extends HTMLElement {
       .board-card-edit:hover { border-color:var(--color-primary,#2563eb); }
       .board-card.dragging { opacity:.4; }
       .board-card-title { font-size:.88rem; font-weight:600; }
+      .board-type { display:inline-block; color:#fff; font-size:.6rem; font-weight:800; border-radius:3px;
+        padding:.05rem .28rem; vertical-align:middle; margin-right:.15rem; letter-spacing:.02em; }
+      .board-pts { display:inline-block; background:var(--color-bg); border:1px solid var(--color-border);
+        border-radius:999px; font-size:.68rem; padding:0 .4rem; margin-left:.25rem; color:var(--color-text-muted); }
       .board-card-meta { display:flex; gap:.7rem; flex-wrap:wrap; font-size:.75rem; color:var(--color-text-muted); margin-top:.25rem; }
       .board-card-sprint { font-size:.72rem; color:var(--color-text-muted); margin-top:.2rem; }
       .board-empty { font-size:.8rem; color:var(--color-text-muted); text-align:center; padding:1rem 0; }`;
