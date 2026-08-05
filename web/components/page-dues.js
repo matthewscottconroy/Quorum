@@ -345,16 +345,20 @@ class PageDues extends HTMLElement {
               <label for="f-provider">Provider</label>
               <select id="f-provider">
                 <option value="manual">manual</option>
-                <option value="stripe">stripe</option>
-                <option value="paypal">paypal</option>
-                <option value="check">check</option>
                 <option value="cash">cash</option>
+                <option value="check">check</option>
+                <option value="wire">wire / bank transfer</option>
+                <option value="zelle">zelle</option>
+                <option value="venmo">venmo</option>
+                <option value="stripe">stripe (manual entry)</option>
+                <option value="paypal">paypal (manual entry)</option>
+                <option value="other">other</option>
               </select>
             </div>
           </div>
           <div class="form-group">
             <label for="f-ref">Reference ID</label>
-            <input id="f-ref" placeholder="Optional provider reference">
+            <input id="f-ref" placeholder="e.g. Zelle confirmation #, Venmo transaction ID, check number">
           </div>
           <div class="form-group">
             <label for="f-notes">Notes</label>

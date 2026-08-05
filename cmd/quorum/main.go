@@ -167,6 +167,7 @@ func main() {
 	cardLinksH := handler.NewCardLinksHandler(cardLinksRepo, actionItemsRepo, sprintsRepo)
 	sprintReportH := handler.NewSprintReportHandler(cardLinksRepo, actionItemsRepo, sprintsRepo, auditRepo, authRepo)
 	channelsH := handler.NewChannelsHandler(repo.NewChannelsRepo(pool), resourcesRepo)
+	accountingH := handler.NewAccountingHandler(repo.NewGLRepo(pool))
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
@@ -491,6 +492,10 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/contacts/{id}", contactsH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/contacts/{id}", contactsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/contacts/{id}", contactsH.Delete)
+
+			// General ledger (read-only surface; postings happen in DB
+			// triggers - see migration 0031 and roadmap/cpa-accounting.md).
+			r.With(mw.RequireRole("officer")).Get("/accounting/trial-balance", accountingH.TrialBalance)
 
 			// Discussions: Slack-style channels. Any member creates channels
 			// and adds people; reading/posting needs membership (admins may

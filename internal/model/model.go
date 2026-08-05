@@ -710,3 +710,42 @@ type ChannelMessage struct {
 	CreatedAt  time.Time `json:"created_at"`
 	ReplyCount int       `json:"reply_count"`
 }
+
+// GLBalance is one trial-balance row: an account's totals in one currency.
+type GLBalance struct {
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Currency string `json:"currency"`
+	Debits   int64  `json:"debits"`
+	Credits  int64  `json:"credits"`
+	Balance  int64  `json:"balance"`
+}
+
+// GLReconcileRow is a per-currency mismatch between the GL's Accounts
+// Receivable and the dues subledger. None existing means the books reconcile.
+type GLReconcileRow struct {
+	Currency    string `json:"currency"`
+	GLAR        int64  `json:"gl_ar"`
+	SubledgerAR int64  `json:"subledger_ar"`
+}
+
+// GLEntry is one journal entry with its lines (read-only surface).
+type GLEntry struct {
+	ID         string    `json:"id"`
+	Seq        int64     `json:"seq"`
+	EntryDate  time.Time `json:"entry_date"`
+	Memo       string    `json:"memo"`
+	SourceType string    `json:"source_type"`
+	CreatedAt  time.Time `json:"created_at"`
+	Lines      []GLLine  `json:"lines"`
+}
+
+// GLLine is one side of a posting.
+type GLLine struct {
+	AccountCode string `json:"account_code"`
+	AccountName string `json:"account_name"`
+	Currency    string `json:"currency"`
+	Debit       int64  `json:"debit"`
+	Credit      int64  `json:"credit"`
+}

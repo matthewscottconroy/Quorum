@@ -215,6 +215,12 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/folders` | member | List folders (nested via `parent_id`) |
 | `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / move / delete (cycle-safe; delete requires `?confirm=<name>`; contents return to the root) |
 
+### Accounting (general ledger — Phase A)
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/accounting/trial-balance` | officer | Per-account/per-currency balances, AR reconciliation status, recent postings. Postings happen via DB triggers (migration 0031). |
+
 ### Discussions
 
 | Method | Path | Min role | Description |

@@ -1,7 +1,10 @@
 # Plan: CPA-Grade Accounting
 
-Status: **draft for discussion** — the largest feature Quorum would ever
-take on. Goal: books a CPA can test, rely on, and use to prepare the org's
+Status: **Phase A core shipped** (migration 0031: chart of accounts,
+append-only balanced journal, DB-trigger auto-posting for invoices/
+payments/waivers with the same-currency rule, backfill, gl_reconcile_ar
+invariant, trial-balance API). Remaining in A: nightly reconcile alert.
+Phases B–D as planned below. Goal: books a CPA can test, rely on, and use to prepare the org's
 government filings — plus purpose-restricted accounts whose spending
 requires multi-person sign-off, with every completed purchase landing on
 the books automatically, verifiably, and audit-ready for tax purposes.

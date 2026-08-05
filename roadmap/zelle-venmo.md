@@ -1,6 +1,8 @@
 # Plan: Zelle & Venmo Support
 
-Status: **draft for discussion** — no code yet.
+Status: **Phase 1 shipped** (provider dropdown + reference hints; the
+member-facing "how to pay" panel awaits org-settings storage). Phases 2–3
+remain design.
 
 ## The constraint that shapes everything
 
