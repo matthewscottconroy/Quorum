@@ -167,8 +167,13 @@ func main() {
 	cardLinksH := handler.NewCardLinksHandler(cardLinksRepo, actionItemsRepo, sprintsRepo)
 	sprintReportH := handler.NewSprintReportHandler(cardLinksRepo, actionItemsRepo, sprintsRepo, auditRepo, authRepo)
 	channelsH := handler.NewChannelsHandler(repo.NewChannelsRepo(pool), resourcesRepo)
-	accountingH := handler.NewAccountingHandler(repo.NewGLRepo(pool))
-	fundsH := handler.NewFundsHandler(repo.NewFundsRepo(pool), repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
+	glRepo := repo.NewGLRepo(pool)
+	accountingH := handler.NewAccountingHandler(glRepo)
+	accountingH.SetPhaseC(glRepo)
+	fundsRepo := repo.NewFundsRepo(pool)
+	packH := handler.NewAccountingPackHandler(glRepo, glRepo, fundsRepo, auditRepo, auditRepo, authRepo)
+	orgSettingsH := handler.NewOrgSettingsHandler(repo.NewOrgSettingsRepo(pool))
+	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
@@ -497,6 +502,19 @@ func main() {
 			// General ledger (read-only surface; postings happen in DB
 			// triggers - see migration 0031 and roadmap/cpa-accounting.md).
 			r.With(mw.RequireRole("officer")).Get("/accounting/trial-balance", accountingH.TrialBalance)
+			r.With(mw.RequireRole("officer")).Get("/accounting/statements", accountingH.Statements)
+			r.With(mw.RequireRole("officer")).Get("/accounting/periods", accountingH.Periods)
+			r.With(mw.RequireRole("admin")).Post("/accounting/periods/close", accountingH.ClosePeriod)
+			r.With(mw.RequireRole("admin")).Post("/accounting/periods/reopen", accountingH.ReopenPeriod)
+			r.With(mw.RequireRole("officer")).Get("/accounting/accounts", accountingH.Accounts)
+			r.With(mw.RequireRole("admin")).Post("/accounting/accounts", accountingH.CreateAccount)
+			r.With(mw.RequireRole("admin")).Patch("/accounting/accounts/{id}", accountingH.UpdateAccount)
+			r.With(mw.RequireRole("admin")).Post("/accounting/entries", accountingH.ManualEntry)
+			r.With(mw.RequireRole("admin")).Get("/reports/accounting-pack.zip", packH.Zip)
+
+			// Org settings: allowlisted keys, member-readable, admin-writable.
+			r.With(mw.RequireRole("member")).Get("/settings/org", orgSettingsH.Get)
+			r.With(mw.RequireRole("admin")).Put("/settings/org", orgSettingsH.Put)
 
 			// Restricted funds + multi-signature purchases (Phase B).
 			// Reads are member-visible (transparency); approving is gated

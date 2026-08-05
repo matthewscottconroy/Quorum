@@ -220,12 +220,13 @@ func (h *FundsHandler) ListPurchases(w http.ResponseWriter, r *http.Request) {
 // CreatePurchase (officer+): files a pending request.
 func (h *FundsHandler) CreatePurchase(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		FundID      string  `json:"fund_id"`
-		AmountMinor int64   `json:"amount_minor"`
-		Currency    string  `json:"currency"`
-		Payee       string  `json:"payee"`
-		Memo        *string `json:"memo"`
-		ResourceID  *string `json:"resource_id"`
+		FundID           string  `json:"fund_id"`
+		AmountMinor      int64   `json:"amount_minor"`
+		Currency         string  `json:"currency"`
+		Payee            string  `json:"payee"`
+		Memo             *string `json:"memo"`
+		ResourceID       *string `json:"resource_id"`
+		ExpenseAccountID *string `json:"expense_account_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
@@ -253,9 +254,13 @@ func (h *FundsHandler) CreatePurchase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "fund not found", "not_found")
 		return
 	}
+	if body.ExpenseAccountID != nil && !isValidUUID(*body.ExpenseAccountID) {
+		writeError(w, http.StatusBadRequest, "expense_account_id must be a UUID", "bad_request")
+		return
+	}
 	created, err := h.purchases.Create(r.Context(), &model.PurchaseRequest{
 		FundID: body.FundID, Amount: body.AmountMinor, Currency: strings.ToUpper(body.Currency),
-		Payee: body.Payee, Memo: body.Memo, ResourceID: body.ResourceID,
+		Payee: body.Payee, Memo: body.Memo, ResourceID: body.ResourceID, ExpenseAccountID: body.ExpenseAccountID,
 	}, userIDFromCtx(r))
 	if err != nil {
 		writeRepoError(w, err, "fund not found", "create error")

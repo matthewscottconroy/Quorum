@@ -220,6 +220,12 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | Method | Path | Min role | Description |
 |--------|------|----------|-------------|
 | `GET` | `/accounting/trial-balance` | officer | Per-account/per-currency balances, AR reconciliation status, recent postings. Postings happen via DB triggers (migration 0031). |
+| `GET` | `/accounting/statements?from=&to=` | officer | Income statement (range), balance sheet + net income to date + AR aging (as of `to`), per currency |
+| `GET` / `POST close|reopen` | `/accounting/periods[...]` | officer / admin | Closed months; closing locks posting dates (DB trigger); reopen is audited |
+| `GET` / `POST` / `PATCH` | `/accounting/accounts[/:id]` | officer / admin | Chart of accounts; code+type freeze once posted (DB trigger) |
+| `POST` | `/accounting/entries` | admin | Adjusting journal entry (balanced per currency or the DB refuses) |
+| `GET` | `/reports/accounting-pack.zip?from=&to=` | admin | CPA export: sealed statements PDF + trial balance/GL/statements/funds/aging CSVs + evidence file; ZIP SHA-256 audited |
+| `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings: `fiscal_year_start_month`, `how_to_pay` |
 
 ### Funds & purchases (accounting Phase B)
 

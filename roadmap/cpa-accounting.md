@@ -9,7 +9,18 @@ accounts, N-of-M + named-signer policies, password-confirmed recorded
 approvals with IP evidence, transfers and completion posting in-transaction,
 overdraft guards, frozen terminal requests, policy changes voiding in-flight
 approvals). Deviation from plan: overspend has NO quorum override — it hard
-refuses; revisit if a real need appears. Phases C–D as planned below. Goal: books a CPA can test, rely on, and use to prepare the org's
+refuses; revisit if a real need appears.
+**Phases C–D core shipped** (migration 0033): org_settings (fiscal-year
+start + how-to-pay; org-agnostic — settings drive defaults/labels only,
+statements take arbitrary ranges), month period-close with DB posting
+guard and audited reopen, admin adjusting entries, editable chart with
+code/type frozen after postings, income statement + balance sheet +
+AR aging per currency, purchase expense-account categorization, and the
+CPA export pack (ZIP: sealed statements PDF + trial balance / GL /
+statements / funds / aging CSVs + EVIDENCE.txt with the audit-chain
+head). Remaining ideas parked: nightly reconcile alert, formal year-end
+closing entries (net income is computed live instead), functional-
+currency translation — all CPA-conversation items. Goal: books a CPA can test, rely on, and use to prepare the org's
 government filings — plus purpose-restricted accounts whose spending
 requires multi-person sign-off, with every completed purchase landing on
 the books automatically, verifiably, and audit-ready for tax purposes.

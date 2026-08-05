@@ -89,6 +89,21 @@ class PageSettings extends HTMLElement {
         </section>
 
         ${isAdmin() ? `
+        <section class="card" style="padding:1.25rem;grid-column:1 / -1">
+          <h2 style="font-size:1rem;margin:0 0 .35rem">Organization settings</h2>
+          <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .75rem">
+            Org-agnostic knobs: the fiscal-year start drives accounting defaults and labels only;
+            "How to pay" appears on every member's My Account page (Zelle address, Venmo handle, checks payable to…).</p>
+          <div class="form-row">
+            <div class="form-group" style="max-width:220px"><label for="og-fy">Fiscal year starts (month 1–12)</label>
+              <input id="og-fy" type="number" min="1" max="12" value="1"></div>
+          </div>
+          <div class="form-group"><label for="og-pay">How to pay (shown to members)</label>
+            <textarea id="og-pay" rows="3" placeholder="Zelle: treasurer@…  ·  Venmo: @org-handle  ·  Checks payable to …"></textarea></div>
+          <button class="btn-primary" id="og-save" style="font-size:.85rem">Save org settings</button>
+        </section>` : ''}
+
+        ${isAdmin() ? `
         <section class="card" style="padding:1.25rem;grid-column:1 / -1" id="groups-section">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.35rem">
             <h2 style="font-size:1rem;margin:0">Visibility groups</h2>
@@ -652,3 +667,33 @@ class PageSettings extends HTMLElement {
   }
 }
 customElements.define('page-settings', PageSettings);
+
+
+// Org settings card (admin): populate + save.
+(function () {
+  const proto = customElements.get('page-settings')?.prototype;
+  if (!proto) return;
+  const orig = proto.connectedCallback;
+  proto.connectedCallback = function () {
+    orig.call(this);
+    queueMicrotask(async () => {
+      const { api } = await import('../app.js');
+      const { toast } = await import('./toast-notification.js');
+      try {
+        const st = await api('GET', '/settings/org');
+        const fy = this.querySelector('#og-fy'), pay = this.querySelector('#og-pay');
+        if (fy && st.fiscal_year_start_month) fy.value = st.fiscal_year_start_month;
+        if (pay && st.how_to_pay) pay.value = st.how_to_pay;
+      } catch { /* defaults are fine */ }
+      this.querySelector('#og-save')?.addEventListener('click', async () => {
+        try {
+          await api('PUT', '/settings/org', {
+            fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
+            how_to_pay: this.querySelector('#og-pay').value,
+          });
+          toast('Org settings saved', 'success');
+        } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
+      });
+    });
+  };
+})();

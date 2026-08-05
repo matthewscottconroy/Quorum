@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
@@ -95,6 +96,207 @@ func (r *GLRepo) RecentEntries(ctx context.Context, limit int) ([]model.GLEntry,
 			cur = &out[len(out)-1]
 		}
 		cur.Lines = append(cur.Lines, ln)
+	}
+	return out, rows.Err()
+}
+
+// ---- Phase C: periods, manual entries, statements ----
+
+// Periods returns closed months, newest first.
+func (r *GLRepo) Periods(ctx context.Context) ([]model.AccountingPeriod, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT p.month, p.closed_at, coalesce(m.display_name, u.email, '')
+		FROM accounting_periods p
+		LEFT JOIN users u ON u.id = p.closed_by
+		LEFT JOIN members m ON m.id = u.member_id
+		ORDER BY p.month DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.AccountingPeriod
+	for rows.Next() {
+		var p model.AccountingPeriod
+		if err := rows.Scan(&p.Month, &p.ClosedAt, &p.ClosedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ClosePeriod locks a month (YYYY-MM-01) for posting.
+func (r *GLRepo) ClosePeriod(ctx context.Context, month string, closedBy string) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO accounting_periods (month, closed_by)
+		VALUES (date_trunc('month', $1::date)::date, $2::uuid)
+		ON CONFLICT (month) DO NOTHING`, month, closedBy)
+	return err
+}
+
+// ReopenPeriod unlocks a month (admin correction workflow; audited upstream).
+func (r *GLRepo) ReopenPeriod(ctx context.Context, month string) error {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM accounting_periods WHERE month = date_trunc('month', $1::date)::date`, month)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// ManualEntry posts an adjusting entry (admin). The database enforces
+// balance, append-only, and closed periods regardless.
+func (r *GLRepo) ManualEntry(ctx context.Context, entryDate, memo, createdBy string, lines []model.GLLineInput) (string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var eid string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO journal_entries (entry_date, memo, source_type, created_by)
+		VALUES ($1::date, $2, 'manual', $3::uuid) RETURNING id::text`,
+		entryDate, memo, createdBy).Scan(&eid); err != nil {
+		return "", err
+	}
+	for _, ln := range lines {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO journal_lines (entry_id, account_id, currency, debit, credit)
+			VALUES ($1::uuid, (SELECT id FROM accounts WHERE code = $2), $3, $4, $5)`,
+			eid, ln.AccountCode, ln.Currency, ln.Debit, ln.Credit); err != nil {
+			return "", err
+		}
+	}
+	return eid, tx.Commit(ctx)
+}
+
+// Statement returns per-account totals within a date range for the given
+// account types (income statement: income+expense over a range; balance
+// sheet: asset/liability/net_assets cumulative to a date).
+func (r *GLRepo) Statement(ctx context.Context, from, to string, types []string) ([]model.GLBalance, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT a.code, a.name, a.type, l.currency, sum(l.debit), sum(l.credit), sum(l.debit) - sum(l.credit)
+		FROM journal_lines l
+		JOIN journal_entries e ON e.id = l.entry_id
+		JOIN accounts a ON a.id = l.account_id
+		WHERE e.entry_date >= $1::date AND e.entry_date <= $2::date AND a.type = ANY($3)
+		GROUP BY a.code, a.name, a.type, l.currency
+		HAVING sum(l.debit) <> sum(l.credit) OR sum(l.debit) <> 0
+		ORDER BY a.code, l.currency`, from, to, types)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.GLBalance
+	for rows.Next() {
+		var b model.GLBalance
+		if err := rows.Scan(&b.Code, &b.Name, &b.Type, &b.Currency, &b.Debits, &b.Credits, &b.Balance); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ARAging buckets open receivables by days overdue as of a date.
+func (r *GLRepo) ARAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT i.currency,
+		       CASE WHEN i.due_date >= $1::date THEN 'current'
+		            WHEN i.due_date >= $1::date - 30 THEN '1-30'
+		            WHEN i.due_date >= $1::date - 60 THEN '31-60'
+		            WHEN i.due_date >= $1::date - 90 THEN '61-90'
+		            ELSE '90+' END AS bucket,
+		       count(*), sum(gl_invoice_remaining(i.id))
+		FROM dues_invoices i
+		WHERE i.status NOT IN ('paid', 'waived') AND gl_invoice_remaining(i.id) > 0
+		GROUP BY 1, 2 ORDER BY 1, 2`, asOf)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.ARAgingRow
+	for rows.Next() {
+		var a model.ARAgingRow
+		if err := rows.Scan(&a.Currency, &a.Bucket, &a.Invoices, &a.Amount); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// Accounts lists the chart; CreateAccount and UpdateAccount edit it (the
+// account_guard trigger freezes code/type once postings exist).
+func (r *GLRepo) Accounts(ctx context.Context) ([]model.GLAccount, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT a.id::text, a.code, a.name, a.type, a.active,
+		       EXISTS (SELECT 1 FROM journal_lines l WHERE l.account_id = a.id)
+		FROM accounts a ORDER BY a.code`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.GLAccount
+	for rows.Next() {
+		var a model.GLAccount
+		if err := rows.Scan(&a.ID, &a.Code, &a.Name, &a.Type, &a.Active, &a.HasPostings); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// CreateAccount adds a chart account.
+func (r *GLRepo) CreateAccount(ctx context.Context, code, name, typ string) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO accounts (code, name, type) VALUES ($1, $2, $3)`, code, name, typ)
+	return err
+}
+
+// UpdateAccount renames/toggles an account.
+func (r *GLRepo) UpdateAccount(ctx context.Context, id string, name *string, active *bool) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE accounts SET name = coalesce($1, name), active = coalesce($2, active)
+		WHERE id = $3::uuid`, name, active, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// LedgerCSVRows streams every entry+line in a range for the export pack.
+func (r *GLRepo) LedgerCSVRows(ctx context.Context, from, to string) ([][]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT e.seq::text, e.entry_date::text, e.source_type, coalesce(e.source_id::text, ''), e.memo,
+		       a.code, a.name, l.currency, l.debit::text, l.credit::text
+		FROM journal_entries e
+		JOIN journal_lines l ON l.entry_id = e.id
+		JOIN accounts a ON a.id = l.account_id
+		WHERE e.entry_date >= $1::date AND e.entry_date <= $2::date
+		ORDER BY e.seq, a.code`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := [][]string{{"seq", "date", "source_type", "source_id", "memo", "account_code", "account_name", "currency", "debit_minor", "credit_minor"}}
+	for rows.Next() {
+		rec := make([]string, 10)
+		ptrs := make([]any, 10)
+		for i := range rec {
+			ptrs[i] = &rec[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
 	}
 	return out, rows.Err()
 }

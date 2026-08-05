@@ -44,9 +44,9 @@ func scanPurchase(row scannable) (model.PurchaseRequest, error) {
 func (r *PurchasesRepo) Create(ctx context.Context, p *model.PurchaseRequest, requester string) (*model.PurchaseRequest, error) {
 	var id string
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO purchase_requests (fund_id, requester_id, amount, currency, payee, memo, resource_id)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid) RETURNING id::text`,
-		p.FundID, requester, p.Amount, p.Currency, p.Payee, p.Memo, p.ResourceID).Scan(&id)
+		INSERT INTO purchase_requests (fund_id, requester_id, amount, currency, payee, memo, resource_id, expense_account_id)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8::uuid) RETURNING id::text`,
+		p.FundID, requester, p.Amount, p.Currency, p.Payee, p.Memo, p.ResourceID, p.ExpenseAccountID).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +271,9 @@ func (r *PurchasesRepo) Complete(ctx context.Context, requestID string) (*model.
 	}
 	var entryID string
 	if err := tx.QueryRow(ctx, `
-		SELECT gl_post(current_date, $1, 'purchase', $2::uuid, gl_account('5000'), $3::uuid, $4, $5)::text`,
+		SELECT gl_post(current_date, $1, 'purchase', $2::uuid,
+		       coalesce((SELECT expense_account_id FROM purchase_requests WHERE id = $2::uuid), gl_account('5000')),
+		       $3::uuid, $4, $5)::text`,
 		"Purchase: "+payee, requestID, fundAcct, amount, currency).Scan(&entryID); err != nil {
 		return nil, err
 	}

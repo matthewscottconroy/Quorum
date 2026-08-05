@@ -11,6 +11,7 @@ import { esc, fmtDate, formatMoney } from '../utils.js';
  */
 class PageMyAccount extends HTMLElement {
   connectedCallback() {
+    this._loadHowToPay();
     this.render();
   }
 
@@ -116,4 +117,18 @@ class PageMyAccount extends HTMLElement {
     `;
   }
 }
+PageMyAccount.prototype._loadHowToPay = async function () {
+  try {
+    const st = await (await import('../app.js')).api('GET', '/settings/org');
+    if (!st?.how_to_pay) return;
+    const esc = (await import('../utils.js')).esc;
+    const box = document.createElement('div');
+    box.className = 'card';
+    box.style.cssText = 'padding:1rem;margin-top:1rem';
+    box.innerHTML = `<h3 style="margin:0 0 .4rem;font-size:.95rem">💳 How to pay</h3>
+      <div style="white-space:pre-wrap;font-size:.88rem">${esc(st.how_to_pay)}</div>`;
+    this.appendChild(box);
+  } catch { /* optional panel */ }
+};
+
 customElements.define('page-my-account', PageMyAccount);

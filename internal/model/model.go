@@ -789,6 +789,7 @@ type PurchaseRequest struct {
 	Payee             string             `json:"payee"`
 	Memo              *string            `json:"memo,omitempty"`
 	ResourceID        *string            `json:"resource_id,omitempty"`
+	ExpenseAccountID  *string            `json:"expense_account_id,omitempty"`
 	Status            string             `json:"status"`
 	JournalEntryID    *string            `json:"journal_entry_id,omitempty"`
 	DecidedAt         *time.Time         `json:"decided_at,omitempty"`
@@ -805,4 +806,37 @@ type PurchaseApproval struct {
 	ApproverName string    `json:"approver_name"`
 	IP           string    `json:"ip"`
 	ApprovedAt   time.Time `json:"approved_at"`
+}
+
+// AccountingPeriod is a closed month.
+type AccountingPeriod struct {
+	Month    time.Time `json:"month"`
+	ClosedAt time.Time `json:"closed_at"`
+	ClosedBy string    `json:"closed_by"`
+}
+
+// GLLineInput is one side of a manual (adjusting) entry.
+type GLLineInput struct {
+	AccountCode string `json:"account_code"`
+	Currency    string `json:"currency"`
+	Debit       int64  `json:"debit"`
+	Credit      int64  `json:"credit"`
+}
+
+// ARAgingRow is one currency+bucket of outstanding receivables.
+type ARAgingRow struct {
+	Currency string `json:"currency"`
+	Bucket   string `json:"bucket"`
+	Invoices int    `json:"invoices"`
+	Amount   int64  `json:"amount"`
+}
+
+// GLAccount is a chart-of-accounts row.
+type GLAccount struct {
+	ID          string `json:"id"`
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Active      bool   `json:"active"`
+	HasPostings bool   `json:"has_postings"`
 }

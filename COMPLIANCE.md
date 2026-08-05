@@ -172,3 +172,18 @@ the immutable log do not conflict. The erasure itself is an audited action.
 - Integrity mechanisms are tested in CI against real PostgreSQL
   (`internal/repo/audit_chain_integration_test.go`), including the
   triggers-disabled tamper scenario.
+
+## CPA engagement: the accounting export pack
+
+For financial statement review or tax preparation, an admin exports
+`/reports/accounting-pack.zip` for the engagement period. The pack contains
+the sealed statements PDF (self-verifying via ops/verify-pdf-export.py),
+machine-readable CSVs (trial balance, full general ledger, income statement,
+balance sheet, funds with signer policies, receivables aging), and
+EVIDENCE.txt carrying the audit-chain head at generation time. The ZIP's
+SHA-256 is stamped in the response header and recorded in the pack's own
+EXPORT audit entry — the CPA can verify that the files received are the
+files generated, that the statements PDF is unaltered, and (via the evidence
+CSV workflow above) that the underlying record was never rewritten. Books
+are double-entry with balance, append-only, and closed-period rules enforced
+inside PostgreSQL; corrections appear only as reversing or adjusting entries.

@@ -350,6 +350,7 @@ const routes = {
   '#/board':           '<page-board>',
   '#/discussions':     '<page-chat>',
   '#/funds':           '<page-funds>',
+  '#/accounting':      '<page-accounting>',
   '#/reports':         '<page-reports>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
@@ -406,6 +407,7 @@ import './components/page-calendar.js';
 import './components/page-board.js';
 import './components/page-chat.js';
 import './components/page-funds.js';
+import './components/page-accounting.js';
 import './components/page-reports.js';
 import './components/page-plans.js';
 import './components/page-contacts.js';

@@ -59,6 +59,19 @@ class PageReports extends HTMLElement {
 
         ${isAdmin() ? `
         <div class="card" style="padding:1.1rem">
+          <h3 style="margin:0 0 .3rem;font-size:1rem">CPA export pack</h3>
+          <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .8rem">
+            One ZIP for your accountant: sealed statements PDF, trial balance, general ledger,
+            income statement, balance sheet, funds, receivables aging, and the evidence file
+            (audit-chain head + verification instructions). CSVs are machine-readable.</p>
+          <div style="display:flex;gap:.4rem;margin-bottom:.6rem">
+            <input id="pk-from" type="date" style="flex:1">
+            <input id="pk-to" type="date" style="flex:1">
+          </div>
+          <button class="btn-primary" id="pk-dl">Download pack</button>
+        </div>
+
+        <div class="card" style="padding:1.1rem">
           <h3 style="margin:0 0 .3rem;font-size:1rem">Audit log</h3>
           <p style="font-size:.83rem;color:var(--color-text-muted);margin:0 0 .8rem">
             Recent audit entries with the hash-chain status stamped at generation time. For third-party
@@ -93,6 +106,12 @@ class PageReports extends HTMLElement {
       const id = this.querySelector('#sp-sel').value;
       if (!id) { toast('Choose a sprint', 'error'); return; }
       apiDownload(`/reports/sprints/${id}.pdf`, 'sprint-report.pdf').catch(() => toast('Download failed', 'error'));
+    });
+    this.querySelector('#pk-dl')?.addEventListener('click', () => {
+      const from = this.querySelector('#pk-from').value, to = this.querySelector('#pk-to').value;
+      if (!from || !to) { toast('Pick the date range', 'error'); return; }
+      apiDownload(`/reports/accounting-pack.zip?from=${from}&to=${to}`, `quorum-accounting-${from}-${to}.zip`)
+        .catch(err => toast(err.error ?? 'Download failed', 'error'));
     });
     this.querySelector('#mt-md').addEventListener('click', () => {
       const id = this.querySelector('#mt-sel').value;

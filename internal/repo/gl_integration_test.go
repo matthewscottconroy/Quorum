@@ -277,3 +277,96 @@ func TestIntegration_FundsAndPurchases(t *testing.T) {
 		t.Fatalf("approvals must be voided: %+v", fresh.Approvals)
 	}
 }
+
+func TestIntegration_PeriodsStatementsAccounts(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	gl := repo.NewGLRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	// Manual balanced entry posts; unknown code fails; DB still guards balance.
+	eid, err := gl.ManualEntry(ctx, "2026-07-15", "July insurance accrual", uid, []model.GLLineInput{
+		{AccountCode: "5000", Currency: "USD", Debit: 4200},
+		{AccountCode: "1000", Currency: "USD", Credit: 4200},
+	})
+	if err != nil || eid == "" {
+		t.Fatalf("manual entry: %v", err)
+	}
+	if _, err := gl.ManualEntry(ctx, "2026-07-15", "bad code", uid, []model.GLLineInput{
+		{AccountCode: "9999", Currency: "USD", Debit: 100},
+		{AccountCode: "1000", Currency: "USD", Credit: 100},
+	}); err == nil {
+		t.Fatal("unknown account code must fail")
+	}
+
+	// Close July; postings into it are refused; reopen lifts the lock.
+	if err := gl.ClosePeriod(ctx, "2026-07-01", uid); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := gl.ManualEntry(ctx, "2026-07-20", "late entry", uid, []model.GLLineInput{
+		{AccountCode: "5000", Currency: "USD", Debit: 1},
+		{AccountCode: "1000", Currency: "USD", Credit: 1},
+	}); err == nil {
+		t.Fatal("posting into a closed period must be refused")
+	}
+	if err := gl.ReopenPeriod(ctx, "2026-07-01"); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, err := gl.ManualEntry(ctx, "2026-07-20", "late entry ok now", uid, []model.GLLineInput{
+		{AccountCode: "5000", Currency: "USD", Debit: 1},
+		{AccountCode: "1000", Currency: "USD", Credit: 1},
+	}); err != nil {
+		t.Fatalf("post after reopen: %v", err)
+	}
+
+	// Statements: expense shows in range; balance sheet balances against
+	// income+expense (assets - liabilities - net_assets == net income).
+	ie, err := gl.Statement(ctx, "2026-07-01", "2026-07-31", []string{"income", "expense"})
+	if err != nil {
+		t.Fatalf("income stmt: %v", err)
+	}
+	foundExpense := false
+	for _, b := range ie {
+		if b.Code == "5000" && b.Currency == "USD" && b.Balance >= 4201 {
+			foundExpense = true
+		}
+	}
+	if !foundExpense {
+		t.Fatalf("expense missing from statement: %+v", ie)
+	}
+	pos, err := gl.Statement(ctx, "0001-01-01", "2026-12-31", []string{"asset", "liability", "net_assets"})
+	if err != nil {
+		t.Fatalf("balance sheet: %v", err)
+	}
+	allIE, _ := gl.Statement(ctx, "0001-01-01", "2026-12-31", []string{"income", "expense"})
+	sums := map[string]int64{}
+	for _, b := range pos {
+		sums[b.Currency] += b.Balance
+	}
+	for _, b := range allIE {
+		sums[b.Currency] += b.Balance
+	}
+	for cur, v := range sums {
+		if v != 0 {
+			t.Fatalf("accounting equation broken in %s: residual %d", cur, v)
+		}
+	}
+
+	// Chart guard: new account OK; type change frozen after postings.
+	if err := gl.CreateAccount(ctx, "6100", uniq("Events")[:10], "expense"); err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE accounts SET type = 'income' WHERE code = '5000'`); err == nil {
+		t.Fatal("type change on posted account must be refused")
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM accounts WHERE code = '6100'`); err == nil {
+		t.Fatal("account delete must be refused")
+	}
+	name := "Renamed Expenses"
+	var acctID string
+	_ = pool.QueryRow(ctx, `SELECT id::text FROM accounts WHERE code = '5000'`).Scan(&acctID)
+	if err := gl.UpdateAccount(ctx, acctID, &name, nil); err != nil {
+		t.Fatalf("rename posted account (allowed): %v", err)
+	}
+}
