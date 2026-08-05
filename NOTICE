@@ -12,3 +12,14 @@ PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>.
+
+## Vendored third-party frontend libraries (web/vendor/)
+
+Self-hosted for the in-app document viewer (the CSP allows no CDNs). Loaded
+lazily only when a matching document is previewed.
+
+| File | Project | Version | License | SHA-256 |
+|---|---|---|---|---|
+| mermaid.min.js | mermaid-js/mermaid | 11.12.1 | MIT | 198b19442f86f0b46a17e56d3abf744c3a28a3427e66fa8dada3b589a77babcc |
+| xlsx.full.min.js | SheetJS CE | 0.20.3 | Apache-2.0 | cc015130aa8521e7f088f88898eba949ccdcbfb38df0bd129b44b7273c3a6f41 |
+| mammoth.browser.min.js | mwilliamson/mammoth.js | 1.11.0 | BSD-2-Clause | 62773d3b21c7130342148e78abf7b97dbd3103463d3ffc5a68601a2a007e1cf1 |

@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -103,5 +105,55 @@ func TestCardCommentCreate_RejectsEmptyAndOversized(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("body %q: got %d, want 400", body, rr.Code)
 		}
+	}
+}
+
+// ---- document stamping & preview-only (resources) ----
+
+func TestStampDownload_FormatsAndFidelity(t *testing.T) {
+	base := []byte("hello world")
+	at := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		stamped bool
+		marker  string
+	}{
+		{"notes.txt", true, "-- Quorum provenance"},
+		{"doc.md", true, "<!-- Quorum provenance"},
+		{"diagram.mmd", true, "%% Quorum provenance"},
+		{"photo.png", false, ""},
+		{"book.pdf", false, ""},
+	} {
+		out, stamped := stampDownload(base, tc.name, "a@b.c", "198.51.100.7", "rec-1", at)
+		if stamped != tc.stamped {
+			t.Fatalf("%s: stamped=%v want %v", tc.name, stamped, tc.stamped)
+		}
+		if !stamped {
+			if string(out) != string(base) {
+				t.Fatalf("%s: unstamped bytes must be identical", tc.name)
+			}
+			continue
+		}
+		s := string(out)
+		if !strings.HasPrefix(s, "hello world") || !strings.Contains(s, tc.marker) ||
+			!strings.Contains(s, "a@b.c") || !strings.Contains(s, "198.51.100.7") || !strings.Contains(s, "rec-1") {
+			t.Fatalf("%s: stamp malformed: %q", tc.name, s)
+		}
+	}
+}
+
+func TestDownloadFile_PreviewOnlyRefused(t *testing.T) {
+	name := "secret.pdf"
+	repo := &mockResourcesRepo{
+		GetVisibleFn: func(_ context.Context, id string, _ bool, _ string) (*model.Resource, error) {
+			return &model.Resource{ID: id, Title: "Secret", FileName: &name, FilePreviewOnly: true, Tags: []string{}}, nil
+		},
+	}
+	h := NewResourcesHandler(repo)
+	req := reqWithParam("GET", "/resources/"+commentID+"/file", "", map[string]string{"id": commentID})
+	rr := httptest.NewRecorder()
+	h.DownloadFile(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("preview-only download: got %d, want 403 (%s)", rr.Code, rr.Body)
 	}
 }

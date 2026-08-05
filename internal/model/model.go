@@ -492,14 +492,16 @@ type Resource struct {
 	GroupNames []string `json:"group_names,omitempty"`
 	// Folder/file fields: a resource with FileName set is an uploaded
 	// document; URL remains for link resources.
-	FolderID   *string   `json:"folder_id,omitempty"`
-	FolderName *string   `json:"folder_name,omitempty"`
-	FileName   *string   `json:"file_name,omitempty"`
-	FileSize   *int64    `json:"file_size,omitempty"`
-	FileSHA256 *string   `json:"file_sha256,omitempty"`
-	AddedBy    string    `json:"added_by"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	FolderID   *string `json:"folder_id,omitempty"`
+	FolderName *string `json:"folder_name,omitempty"`
+	FileName   *string `json:"file_name,omitempty"`
+	FileSize   *int64  `json:"file_size,omitempty"`
+	FileSHA256 *string `json:"file_sha256,omitempty"`
+	// FilePreviewOnly documents render in the app but refuse download.
+	FilePreviewOnly bool      `json:"file_preview_only"`
+	AddedBy         string    `json:"added_by"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Group is a named set of members used to constrain resource visibility.
@@ -606,10 +608,26 @@ type CardComment struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
-// Folder groups documents in the resource library (flat, one level).
+// Folder groups documents in the resource library; folders nest via
+// ParentID (nil = root). Deleting a folder releases children and documents
+// to the root.
 type Folder struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
+	ParentID      *string   `json:"parent_id,omitempty"`
 	ResourceCount int       `json:"resource_count"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// DownloadRecord is one row of the forensic download ledger: the exact bytes
+// served (SHA256 is of the watermarked output when the format is stampable),
+// to whom, when, and from where.
+type DownloadRecord struct {
+	ID           string    `json:"id"`
+	ResourceID   *string   `json:"resource_id,omitempty"`
+	UserID       *string   `json:"user_id,omitempty"`
+	FileName     string    `json:"file_name"`
+	SHA256       string    `json:"sha256"`
+	IP           string    `json:"ip"`
+	DownloadedAt time.Time `json:"downloaded_at"`
 }

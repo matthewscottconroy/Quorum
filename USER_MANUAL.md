@@ -578,10 +578,33 @@ just a link: in the add/edit dialog, choose a **document** (up to 25 MB) and
 optionally a **folder**. Documents live inside Quorum's database, so the
 nightly encrypted backups and disaster recovery cover them automatically.
 Downloads respect the resource's visibility groups exactly — to a member
-outside the groups, the document does not exist — and **every download is
-recorded in the audit log** with the file's SHA-256, like any export.
-**Folders** (the *Folders* button) organize the library and never affect
-visibility; deleting one returns its documents to the root.
+outside the groups, the document does not exist.
+
+**Folders nest.** Build a tree (Legal → Contracts → 2026) via each folder's
+parent in the *Folders* dialog; the library page shows a collapsible tree —
+click a folder to filter, ▸/▾ to fold. Folders organize and never affect
+visibility. Deleting one releases its subfolders and documents to the root;
+moving a folder inside its own subtree is refused.
+
+**The in-app viewer.** The 👁 button renders documents directly in the app:
+images, SVG, PDF, sandboxed HTML, Markdown, CSV/TSV tables, plain text and
+code, Mermaid diagrams, XLSX workbooks, and DOCX documents (the last three
+via self-hosted libraries loaded on first use). Formats without a viewer
+offer download instead. Previews serve the original bytes and are recorded
+in the audit log as PREVIEW entries.
+
+**Preview-only documents.** Tick *Preview-only* on a resource and its
+document can be seen in the viewer but never downloaded — the server refuses,
+for officers too (untick the box first if you legitimately need the file).
+Like the screen watermark, this is deterrence with honest limits: a viewer
+can still photograph a screen; what they cannot get is a clean file.
+
+**The download ledger.** Every download is written to a permanent ledger —
+who, when, from which IP — and recorded as an EXPORT in the audit log.
+Text-family formats (txt, md, html, svg, mermaid, xml) are additionally
+**watermarked** with a provenance trailer naming the downloader, time,
+address, and ledger record. The ledger stores the SHA-256 of the *exact
+bytes served*, which makes provenance answerable later (see 6.10).
 
 **Heat-map previews.** The 🔥 button on a document renders it as a
 **word-frequency heat map**: the meaningful words as tiles, colored cold
@@ -780,7 +803,25 @@ time. Filter by action, resource, or date. Three things worth knowing:
   party re-verify the chain without trusting your server
   (`ops/verify-audit-export.py`).
 
-## 6.9 Data portability & erasure
+## 6.9 Verify a document's provenance
+
+**When:** a Quorum document surfaces somewhere it shouldn't have, or you need
+to prove a file is (or is not) authentic.
+
+Hash the file in question (`sha256sum thefile`) and ask the system (admins,
+via the API): `GET /api/v1/downloads/verify?sha256=<hash>`. Three possible
+answers:
+
+| Status | Meaning |
+|---|---|
+| `original` | Byte-identical to a stored document as uploaded. |
+| `download` | Matches the exact bytes of **one recorded download** — the response names who received it, when, and from which IP. This is what watermarked stamping buys: each download's bytes are unique. |
+| `unknown` | Altered after it left Quorum, or never came from it. |
+
+A document's full download history is also available to officers on the API
+(`GET /resources/{id}/downloads`).
+
+## 6.10 Data portability & erasure
 
 - **Export my data** (available to every signed-in user, including
   `restricted`): a JSON file of their account, profile, dues, and payments.

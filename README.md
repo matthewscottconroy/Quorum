@@ -208,9 +208,12 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `PATCH` | `/resources/:id` | officer | Update |
 | `DELETE` | `/resources/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
 | `POST` | `/resources/:id/file` | officer | Upload/replace the document (multipart `file`, 25 MiB max) |
-| `GET` | `/resources/:id/file` | member | Download the document (group-visibility enforced; audited as EXPORT) |
-| `GET` | `/folders` | member | List folders |
-| `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / delete (delete requires `?confirm=<name>`; documents return to the root) |
+| `GET` | `/resources/:id/file` | member | Download: refused for preview-only docs; watermarked where the format allows; ledgered (who/when/IP/sha) + audited as EXPORT |
+| `GET` | `/resources/:id/preview` | member | Original bytes for the in-app viewer (audited as PREVIEW) |
+| `GET` | `/resources/:id/downloads` | officer | The document's download ledger |
+| `GET` | `/downloads/verify?sha256=` | admin | Provenance: `original` / `download` (who, when, where) / `unknown` (altered or foreign) |
+| `GET` | `/folders` | member | List folders (nested via `parent_id`) |
+| `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / move / delete (cycle-safe; delete requires `?confirm=<name>`; contents return to the root) |
 
 ### Board
 

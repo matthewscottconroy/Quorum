@@ -175,6 +175,21 @@ export async function apiUpload(path, file) {
   return data;
 }
 
+/** Fetches a binary API response as a Blob (auth + silent refresh). */
+export async function apiBlob(path) {
+  const doFetch = () => fetch('/api/v1' + path, {
+    headers: _token ? { Authorization: `Bearer ${_token}` } : {},
+    credentials: 'same-origin',
+  });
+  let res = await doFetch();
+  if (res.status === 401) {
+    if (await silentRefresh()) res = await doFetch();
+    else { clearAuth(); navigate('#/login'); throw { error: 'Session expired', code: 'unauthorized' }; }
+  }
+  if (!res.ok) throw await res.json().catch(() => ({ error: res.statusText }));
+  return res.blob();
+}
+
 export async function apiDownload(path, filename) {
   const doFetch = () => fetch('/api/v1' + path, {
     headers: _token ? { Authorization: `Bearer ${_token}` } : {},

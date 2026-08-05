@@ -152,6 +152,7 @@ func main() {
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
 	resourcesH.SetAudit(auditRepo)
+	resourcesH.SetDownloadDeps(authRepo, repo.NewDocumentDownloadsRepo(pool), mw.ClientIP)
 	actionItemsH := handler.NewActionItemsHandler(actionItemsRepo)
 	governanceH := handler.NewGovernanceHandler(governanceRepo, cfg)
 	budgetH := handler.NewBudgetHandler(budgetRepo)
@@ -495,6 +496,11 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/resources", resourcesH.Create)
 			r.With(mw.RequireRole("officer")).Post("/resources/{id}/file", resourcesH.UploadFile)
 			r.With(mw.RequireRole("member")).Get("/resources/{id}/file", resourcesH.DownloadFile)
+			r.With(mw.RequireRole("member")).Get("/resources/{id}/preview", resourcesH.Preview)
+			r.With(mw.RequireRole("officer")).Get("/resources/{id}/downloads", resourcesH.ListDownloads)
+			// Provenance: does this hash match an original, a recorded
+			// download (who/when/where), or nothing Quorum ever served?
+			r.With(mw.RequireRole("admin")).Get("/downloads/verify", resourcesH.VerifyDownload)
 
 			// Folders organize the library; visibility stays on the resources.
 			r.With(mw.RequireRole("member")).Get("/folders", foldersH.List)

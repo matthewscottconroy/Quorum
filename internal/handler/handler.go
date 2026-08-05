@@ -196,6 +196,10 @@ func NewMiddleware(secret string, trustProxy bool) *Middleware {
 	}
 }
 
+// ClientIP exposes the middleware's client-address resolution (proxy-aware)
+// for handlers that record request origins, e.g. the download ledger.
+func (m *Middleware) ClientIP(r *http.Request) string { return m.clientIP(r) }
+
 // clientIP returns the key the rate limiter buckets on. When trustProxy is set
 // it prefers X-Real-IP (a single value set by the ingress), then the leftmost
 // X-Forwarded-For entry; otherwise it uses the raw socket address. Without
@@ -282,8 +286,12 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		// security-critical directive. style-src allows 'unsafe-inline' because
 		// the vanilla-JS components set element style="" attributes for layout;
 		// inline styles cannot execute code, so this does not weaken XSS defense.
+		// blob: entries exist for the in-app document viewer: previews are
+		// fetched with auth headers and rendered from object URLs (images,
+		// PDFs, sandboxed HTML frames). Scripts stay 'self'-only.
 		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data: blob:; frame-src 'self' blob:; object-src 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")

@@ -155,7 +155,7 @@ func TestIntegration_DocumentUploads(t *testing.T) {
 	ar := repo.NewAuthRepo(pool)
 	uid := newUser(t, ar)
 
-	folder, err := fr.Create(ctx, uniq("Bylaws"))
+	folder, err := fr.Create(ctx, uniq("Bylaws"), nil)
 	if err != nil {
 		t.Fatalf("folder: %v", err)
 	}
@@ -232,5 +232,91 @@ func TestIntegration_DocumentUploads(t *testing.T) {
 	}
 	if after.FileName == nil {
 		t.Error("document must survive folder deletion")
+	}
+}
+
+func TestIntegration_NestedFoldersAndDownloadLedger(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	fr := repo.NewFoldersRepo(pool)
+	rr := repo.NewResourcesRepo(pool)
+	dl := repo.NewDocumentDownloadsRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	// Nesting: root -> child -> grandchild.
+	root, err := fr.Create(ctx, uniq("Legal"), nil)
+	if err != nil {
+		t.Fatalf("root: %v", err)
+	}
+	child, err := fr.Create(ctx, uniq("Contracts"), &root.ID)
+	if err != nil {
+		t.Fatalf("child: %v", err)
+	}
+	grand, err := fr.Create(ctx, uniq("2026"), &child.ID)
+	if err != nil {
+		t.Fatalf("grandchild: %v", err)
+	}
+	if grand.ParentID == nil || *grand.ParentID != child.ID {
+		t.Fatal("parent linkage lost")
+	}
+
+	// Cycle prevention: root cannot move under its own grandchild (or itself).
+	if _, err := fr.Rename(ctx, root.ID, nil, &grand.ID, true); err != repo.ErrFolderCycle {
+		t.Fatalf("cycle move: got %v, want ErrFolderCycle", err)
+	}
+	if _, err := fr.Rename(ctx, root.ID, nil, &root.ID, true); err != repo.ErrFolderCycle {
+		t.Fatalf("self move: got %v, want ErrFolderCycle", err)
+	}
+	// Legal sideways move works.
+	if _, err := fr.Rename(ctx, grand.ID, nil, &root.ID, true); err != nil {
+		t.Fatalf("legal move: %v", err)
+	}
+
+	// Deleting the middle folder releases its children to the root.
+	if err := fr.Delete(ctx, child.ID); err != nil {
+		t.Fatalf("delete middle: %v", err)
+	}
+
+	// Preview-only flag round-trips.
+	res, err := rr.Create(ctx, &model.Resource{Title: uniq("policy"), Tags: []string{}}, uid)
+	if err != nil {
+		t.Fatalf("resource: %v", err)
+	}
+	if _, err := rr.Update(ctx, res.ID, map[string]any{"file_preview_only": true}); err != nil {
+		t.Fatalf("set preview-only: %v", err)
+	}
+	got, _ := rr.Get(ctx, res.ID)
+	if !got.FilePreviewOnly {
+		t.Fatal("file_preview_only did not persist")
+	}
+
+	// Download ledger: insert + lookup by hash, and originals resolve too.
+	payload := []byte("stamped output bytes")
+	sum := sha256.Sum256(payload)
+	sha := hex.EncodeToString(sum[:])
+	id, err := repo.NewDownloadID()
+	if err != nil {
+		t.Fatalf("id: %v", err)
+	}
+	rid := res.ID
+	rec := &model.DownloadRecord{ID: id, ResourceID: &rid, UserID: &uid, FileName: "policy.txt", SHA256: sha, IP: "203.0.113.9"}
+	if err := dl.Insert(ctx, rec); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	found, err := dl.FindBySHA(ctx, sha)
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if found.IP != "203.0.113.9" || found.FileName != "policy.txt" || found.UserID == nil || *found.UserID != uid {
+		t.Fatalf("ledger row mismatch: %+v", found)
+	}
+	hist, err := dl.ListByResource(ctx, res.ID, 10)
+	if err != nil || len(hist) != 1 {
+		t.Fatalf("history: %v len=%d", err, len(hist))
+	}
+	// An unknown hash is unknown.
+	if _, err := dl.FindBySHA(ctx, "0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
+		t.Fatal("unknown hash must not match")
 	}
 }
