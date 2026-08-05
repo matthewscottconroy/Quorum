@@ -502,10 +502,13 @@ type Resource struct {
 	FileSize   *int64  `json:"file_size,omitempty"`
 	FileSHA256 *string `json:"file_sha256,omitempty"`
 	// FilePreviewOnly documents render in the app but refuse download.
-	FilePreviewOnly bool      `json:"file_preview_only"`
-	AddedBy         string    `json:"added_by"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	FilePreviewOnly bool `json:"file_preview_only"`
+	// VisibleMinRole hides the resource from anyone below this role
+	// (nil = all members). Combines with visibility groups as AND.
+	VisibleMinRole *string   `json:"visible_min_role,omitempty"`
+	AddedBy        string    `json:"added_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Group is a named set of members used to constrain resource visibility.

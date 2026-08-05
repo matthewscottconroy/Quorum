@@ -76,10 +76,10 @@ func TestIntegration_ResourceVisibilityGroups(t *testing.T) {
 	}
 
 	// Direct fetch: hidden == missing.
-	if _, err := rr.GetVisible(ctx, secret.ID, false, outsider); err != pgx.ErrNoRows {
+	if _, err := rr.GetVisible(ctx, secret.ID, false, outsider, 2); err != pgx.ErrNoRows {
 		t.Fatalf("outsider GetVisible on restricted resource: got %v, want ErrNoRows", err)
 	}
-	if _, err := rr.GetVisible(ctx, secret.ID, false, insider); err != nil {
+	if _, err := rr.GetVisible(ctx, secret.ID, false, insider, 2); err != nil {
 		t.Fatalf("insider GetVisible: %v", err)
 	}
 

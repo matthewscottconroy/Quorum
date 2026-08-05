@@ -562,6 +562,14 @@ organization, email, phone, address, **category** (e.g. `vendor`, `legal`),
 Maintain links and reference material under **Resources**: title, description,
 **URL**, **category**, and **tags**. Only `http`/`https` links are accepted.
 
+**Minimum role (role-based visibility).** Each resource has a *Who can see
+this* section. Its **minimum role** hides the resource — and its document —
+from every account below the chosen bar: *All members* (default), *Officers
+and above*, or *Admins only*. Unlike groups, the bar applies to everyone:
+an admins-only resource is invisible to officers too. Hidden means missing
+(404), as always. Role and groups combine as AND — pass the role bar first,
+then the group check.
+
 **Visibility groups (who can see a resource).** When adding or editing a
 resource, officers can tick one or more **visibility groups** (created by an
 administrator, 6.7):

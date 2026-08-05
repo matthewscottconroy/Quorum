@@ -1,4 +1,4 @@
-import { api, apiUpload, apiDownload, canWrite, isSuperadmin } from '../app.js';
+import { api, apiUpload, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
 import { openDocPreview } from './doc-preview.js';
@@ -155,6 +155,7 @@ class PageResources extends HTMLElement {
         <td>
           <div style="font-weight:600">${esc(r.title)}
             ${(r.group_names??[]).length ? `<span class="badge" title="Visible only to: ${esc(r.group_names.join(', '))}" style="background:color-mix(in srgb, var(--color-warning,#b45309) 14%, transparent);color:var(--color-warning,#b45309);margin-left:.3rem">🔒 ${esc(r.group_names.join(', '))}</span>` : ''}
+            ${r.visible_min_role ? `<span class="badge" title="Hidden from everyone below this role" style="background:color-mix(in srgb, var(--color-danger,#dc2626) 12%, transparent);color:var(--color-danger,#dc2626);margin-left:.3rem">🛡 ${esc(r.visible_min_role)}+</span>` : ''}
           </div>
           ${r.description?`<div style="font-size:.8rem;color:var(--color-text-muted)">${esc(r.description.slice(0,80))}${r.description.length>80?'…':''}</div>`:''}
         </td>
@@ -223,19 +224,33 @@ class PageResources extends HTMLElement {
         checked = new Set(cur?.group_ids ?? []);
       }
     } catch { /* groups are optional; the picker just hides */ }
-    const groupPicker = groups.length ? `
-      <div class="form-group">
-        <label>Visible to</label>
-        <div style="font-size:.78rem;color:var(--color-text-muted);margin-bottom:.35rem">
-          No groups selected = visible to all members. Officers and admins always see everything.</div>
-        <div id="f-groups" style="display:flex;flex-wrap:wrap;gap:.4rem">
-          ${groups.map(g => `
-            <label style="display:inline-flex;align-items:center;gap:.3rem;margin:0;padding:.25rem .55rem;border:1px solid var(--color-border);border-radius:999px;cursor:pointer;text-transform:none;font-weight:500;letter-spacing:normal;font-size:.82rem;color:var(--color-text)">
-              <input type="checkbox" value="${esc(g.id)}" ${checked.has(g.id) ? 'checked' : ''} style="width:auto;margin:0">
-              ${esc(g.name)}
-            </label>`).join('')}
+    const MIN_ROLES = [['', 'All members (default)'], ['officer', 'Officers and above'], ['admin', 'Admins only']];
+    const groupPicker = `
+      <div class="form-group" style="border:1px solid var(--color-border);border-radius:8px;padding:.6rem .8rem">
+        <label style="margin-bottom:.35rem">Who can see this</label>
+        <div class="form-group" style="margin-bottom:.6rem">
+          <label for="f-minrole" style="font-size:.72rem">Minimum role</label>
+          <select id="f-minrole">
+            ${MIN_ROLES.map(([v, l]) => `<option value="${v}" ${(resource?.visible_min_role ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+          <div style="font-size:.72rem;color:var(--color-text-muted)">Above "All members", the resource is hidden from every account below the chosen role — including officers when set to admins-only.</div>
         </div>
-      </div>` : '';
+        <label style="font-size:.72rem">Visibility groups</label>
+        ${groups.length ? `
+          <div style="font-size:.78rem;color:var(--color-text-muted);margin-bottom:.35rem">
+            No groups selected = all members (who pass the role bar). Officers and admins always pass the group check.</div>
+          <div id="f-groups" style="display:flex;flex-wrap:wrap;gap:.4rem">
+            ${groups.map(g => `
+              <label style="display:inline-flex;align-items:center;gap:.3rem;margin:0;padding:.25rem .55rem;border:1px solid var(--color-border);border-radius:999px;cursor:pointer;text-transform:none;font-weight:500;letter-spacing:normal;font-size:.82rem;color:var(--color-text)">
+                <input type="checkbox" value="${esc(g.id)}" ${checked.has(g.id) ? 'checked' : ''} style="width:auto;margin:0">
+                ${esc(g.name)}
+              </label>`).join('')}
+          </div>` : `
+          <div style="font-size:.78rem;color:var(--color-text-muted)">
+            No visibility groups exist yet. ${isAdmin()
+              ? 'Create them under <a href="#/settings">Settings → Visibility groups</a>, then tick them here to limit a resource to specific members.'
+              : 'An admin can create them under Settings → Visibility groups.'}</div>`}
+      </div>`;
     const { dialog, close } = openModal({
       title: isNew ? 'Add resource' : 'Edit resource',
       body: `
@@ -284,6 +299,7 @@ class PageResources extends HTMLElement {
         tags:        dialog.querySelector('#f-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
         folder_id:   dialog.querySelector('#f-folder').value || null,
         file_preview_only: dialog.querySelector('#f-preview-only').checked,
+        visible_min_role: dialog.querySelector('#f-minrole').value || null,
       };
       const file = dialog.querySelector('#f-file').files[0] ?? null;
       if (file && file.size > 25 * 1024 * 1024) { toast('File is over the 25 MB limit', 'error'); return; }

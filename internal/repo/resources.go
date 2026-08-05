@@ -36,6 +36,19 @@ type ResourceFilter struct {
 
 	ViewerSeesAll  bool
 	ViewerMemberID string
+	// ViewerRoleRank gates visible_min_role: member=2, officer=3, admin=4,
+	// superadmin=5 (matches the handler's role ladder). Applies to every
+	// viewer — a min_role of admin hides the resource from officers too.
+	ViewerRoleRank int
+}
+
+// minRoleCond hides rows whose visible_min_role exceeds the viewer's rank.
+func minRoleCond(rank int, args *[]any, idx *int) string {
+	cond := fmt.Sprintf(`(r.visible_min_role IS NULL OR
+		CASE r.visible_min_role WHEN 'member' THEN 2 WHEN 'officer' THEN 3 WHEN 'admin' THEN 4 END <= $%d)`, *idx)
+	*args = append(*args, rank)
+	*idx++
+	return cond
 }
 
 // visibilityCond builds the group-visibility predicate for the viewer. It
@@ -91,6 +104,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 	if vc := visibilityCond(f, &args, &idx); vc != "" {
 		conds = append(conds, vc)
 	}
+	conds = append(conds, minRoleCond(f.ViewerRoleRank, &args, &idx))
 
 	where := ""
 	if len(conds) > 0 {
@@ -108,7 +122,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 		       coalesce((SELECT array_agg(g.name ORDER BY g.name)
 		                 FROM resource_groups rg JOIN groups g ON g.id = rg.group_id
 		                 WHERE rg.resource_id = r.id), '{}'),
-		       r.folder_id::text, fo.name, r.file_name, r.file_size, r.file_sha256, r.file_preview_only,
+		       r.folder_id::text, fo.name, r.file_name, r.file_size, r.file_sha256, r.file_preview_only, r.visible_min_role,
 		       r.added_by::text, r.created_at, r.updated_at
 		FROM resources r
 		LEFT JOIN folders fo ON fo.id = r.folder_id
@@ -129,7 +143,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 		var res model.Resource
 		if err := rows.Scan(&total, &res.ID, &res.Title, &res.Description, &res.URL,
 			&res.Category, &res.Tags, &res.GroupNames,
-			&res.FolderID, &res.FolderName, &res.FileName, &res.FileSize, &res.FileSHA256, &res.FilePreviewOnly,
+			&res.FolderID, &res.FolderName, &res.FileName, &res.FileSize, &res.FileSHA256, &res.FilePreviewOnly, &res.VisibleMinRole,
 			&res.AddedBy, &res.CreatedAt, &res.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
@@ -152,7 +166,7 @@ func (r *ResourcesRepo) List(ctx context.Context, f ResourceFilter) ([]model.Res
 }
 
 const resourceCols = `id::text, title, description, url, category, tags,
-	       folder_id::text, file_name, file_size, file_sha256, file_preview_only,
+	       folder_id::text, file_name, file_size, file_sha256, file_preview_only, visible_min_role,
 	       added_by::text, created_at, updated_at`
 
 // Get returns the resource with the given id, or pgx.ErrNoRows if none exists.
@@ -170,7 +184,7 @@ func (r *ResourcesRepo) Get(ctx context.Context, id string) (*model.Resource, er
 // GetVisible returns the resource only if the viewer may see it; a restricted
 // resource outside the viewer's groups behaves exactly like a missing one
 // (pgx.ErrNoRows), so its existence is not disclosed.
-func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll bool, viewerMemberID string) (*model.Resource, error) {
+func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll bool, viewerMemberID string, viewerRoleRank int) (*model.Resource, error) {
 	args := []any{id}
 	idx := 2
 	f := ResourceFilter{ViewerSeesAll: viewerSeesAll, ViewerMemberID: viewerMemberID}
@@ -179,6 +193,7 @@ func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll
 	if vis != "" {
 		q += " AND " + vis
 	}
+	q += " AND " + minRoleCond(viewerRoleRank, &args, &idx)
 	res, err := scanResource(r.db.QueryRow(ctx, q, args...))
 	if err != nil {
 		return nil, err
@@ -189,10 +204,10 @@ func (r *ResourcesRepo) GetVisible(ctx context.Context, id string, viewerSeesAll
 // Create inserts a new resource and returns the stored row.
 func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error) {
 	row := r.db.QueryRow(ctx, `
-		INSERT INTO resources (title, description, url, category, tags, folder_id, added_by)
-		VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid)
+		INSERT INTO resources (title, description, url, category, tags, folder_id, visible_min_role, added_by)
+		VALUES ($1, $2, $3, $4, $5, $6::uuid, $7, $8::uuid)
 		RETURNING `+resourceCols,
-		res.Title, res.Description, res.URL, res.Category, res.Tags, res.FolderID, addedBy)
+		res.Title, res.Description, res.URL, res.Category, res.Tags, res.FolderID, res.VisibleMinRole, addedBy)
 	created, err := scanResource(row)
 	if err != nil {
 		return nil, err
@@ -202,7 +217,7 @@ func (r *ResourcesRepo) Create(ctx context.Context, res *model.Resource, addedBy
 
 var resourceAllowedFields = map[string]bool{
 	"title": true, "description": true, "url": true, "category": true, "tags": true,
-	"folder_id": true, "file_preview_only": true,
+	"folder_id": true, "file_preview_only": true, "visible_min_role": true,
 }
 
 var resourceUUIDFields = map[string]bool{"folder_id": true}
@@ -253,7 +268,7 @@ func (r *ResourcesRepo) Delete(ctx context.Context, id string) error {
 func scanResource(row scannable) (model.Resource, error) {
 	var res model.Resource
 	err := row.Scan(&res.ID, &res.Title, &res.Description, &res.URL, &res.Category, &res.Tags,
-		&res.FolderID, &res.FileName, &res.FileSize, &res.FileSHA256, &res.FilePreviewOnly,
+		&res.FolderID, &res.FileName, &res.FileSize, &res.FileSHA256, &res.FilePreviewOnly, &res.VisibleMinRole,
 		&res.AddedBy, &res.CreatedAt, &res.UpdatedAt)
 	if res.Tags == nil {
 		res.Tags = []string{}

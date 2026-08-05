@@ -109,6 +109,7 @@ func (h *ResourcesHandler) List(w http.ResponseWriter, r *http.Request) {
 		// group their member record belongs to.
 		ViewerSeesAll:  roleAtLeast(roleFromCtx(r), "officer"),
 		ViewerMemberID: memberIDFromCtx(r),
+		ViewerRoleRank: roleRank[roleFromCtx(r)],
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
 		f.Offset = v
@@ -135,6 +136,10 @@ func (h *ResourcesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if res.Tags == nil {
 		res.Tags = []string{}
 	}
+	if res.VisibleMinRole != nil && !validMinRole[*res.VisibleMinRole] {
+		writeError(w, 400, "visible_min_role must be member, officer, or admin", "bad_request")
+		return
+	}
 	created, err := h.repo.Create(r.Context(), &res, userIDFromCtx(r))
 	if err != nil {
 		writeRepoError(w, err, "", "create error")
@@ -151,7 +156,7 @@ func (h *ResourcesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	// Viewer-scoped read: a restricted resource outside the viewer's groups is
 	// indistinguishable from a missing one.
-	res, err := h.repo.GetVisible(r.Context(), id, roleAtLeast(roleFromCtx(r), "officer"), memberIDFromCtx(r))
+	res, err := h.repo.GetVisible(r.Context(), id, roleAtLeast(roleFromCtx(r), "officer"), memberIDFromCtx(r), roleRank[roleFromCtx(r)])
 	if err != nil {
 		writeError(w, 404, "resource not found", "not_found")
 		return
@@ -173,12 +178,19 @@ func (h *ResourcesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := map[string]bool{
 		"title": true, "description": true, "url": true, "category": true, "tags": true,
-		"folder_id": true, "file_preview_only": true,
+		"folder_id": true, "file_preview_only": true, "visible_min_role": true,
 	}
 	fields := filterAllowedFields(body, allowed)
 	if pv, present := fields["file_preview_only"]; present {
 		if _, ok := pv.(bool); !ok {
 			writeError(w, 400, "file_preview_only must be a boolean", "bad_request")
+			return
+		}
+	}
+	if mr, present := fields["visible_min_role"]; present && mr != nil {
+		s, ok := mr.(string)
+		if !ok || !validMinRole[s] {
+			writeError(w, 400, "visible_min_role must be member, officer, or admin (or null)", "bad_request")
 			return
 		}
 	}
@@ -220,6 +232,8 @@ func (h *ResourcesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		notifier:    h.notifier,
 	})
 }
+
+var validMinRole = map[string]bool{"member": true, "officer": true, "admin": true}
 
 // maxUploadBytes caps document uploads (the request-body middleware raises
 // its limit to this on the upload route).
@@ -299,7 +313,7 @@ func (h *ResourcesHandler) fetchVisibleFile(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return nil, "", nil, false
 	}
-	res, err := h.repo.GetVisible(r.Context(), id, roleAtLeast(roleFromCtx(r), "officer"), memberIDFromCtx(r))
+	res, err := h.repo.GetVisible(r.Context(), id, roleAtLeast(roleFromCtx(r), "officer"), memberIDFromCtx(r), roleRank[roleFromCtx(r)])
 	if err != nil {
 		writeError(w, http.StatusNotFound, "resource not found", "not_found")
 		return nil, "", nil, false

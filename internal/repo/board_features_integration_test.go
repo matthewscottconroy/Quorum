@@ -208,14 +208,14 @@ func TestIntegration_DocumentUploads(t *testing.T) {
 		t.Fatalf("restrict: %v", err)
 	}
 	outsider := newMember(t, mr, uniq("tier"), "active")
-	if _, err := rr.GetVisible(ctx, res.ID, false, outsider); err != pgx.ErrNoRows {
+	if _, err := rr.GetVisible(ctx, res.ID, false, outsider, 2); err != pgx.ErrNoRows {
 		t.Fatalf("outsider must see ErrNoRows, got %v", err)
 	}
 	insider := newMember(t, mr, uniq("tier"), "active")
 	if err := gr.SetMembers(ctx, group.ID, []string{insider}); err != nil {
 		t.Fatalf("set members: %v", err)
 	}
-	if _, err := rr.GetVisible(ctx, res.ID, false, insider); err != nil {
+	if _, err := rr.GetVisible(ctx, res.ID, false, insider, 2); err != nil {
 		t.Fatalf("insider must see the document resource: %v", err)
 	}
 
@@ -427,4 +427,66 @@ func TestIntegration_AgileHierarchyLinksAnalytics(t *testing.T) {
 		t.Fatalf("blocked after done: %d", a2.BlockedCards)
 	}
 	_ = p3
+}
+
+func TestIntegration_ResourceMinRole(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	rr := repo.NewResourcesRepo(pool)
+	gr := repo.NewGroupsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	officer, admin := "officer", "admin"
+	open, _ := rr.Create(ctx, &model.Resource{Title: uniq("open"), Tags: []string{}}, uid)
+	offOnly, _ := rr.Create(ctx, &model.Resource{Title: uniq("officers"), Tags: []string{}, VisibleMinRole: &officer}, uid)
+	admOnly, _ := rr.Create(ctx, &model.Resource{Title: uniq("admins"), Tags: []string{}, VisibleMinRole: &admin}, uid)
+
+	sees := func(rank int, seesAll bool) map[string]bool {
+		items, _, err := rr.List(ctx, repo.ResourceFilter{Limit: 500, ViewerSeesAll: seesAll, ViewerRoleRank: rank})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		m := map[string]bool{}
+		for _, it := range items {
+			m[it.ID] = true
+		}
+		return m
+	}
+
+	member := sees(2, false)
+	if !member[open.ID] || member[offOnly.ID] || member[admOnly.ID] {
+		t.Fatalf("member visibility wrong: %v", member)
+	}
+	off := sees(3, true)
+	if !off[open.ID] || !off[offOnly.ID] || off[admOnly.ID] {
+		t.Fatal("officer must see officer-level but NOT admin-level, even with group bypass")
+	}
+	adm := sees(4, true)
+	if !adm[admOnly.ID] {
+		t.Fatal("admin must see admin-level")
+	}
+
+	// GetVisible: role bar hides like a missing row.
+	if _, err := rr.GetVisible(ctx, admOnly.ID, true, "", 3); err != pgx.ErrNoRows {
+		t.Fatalf("officer GetVisible on admin-level: got %v, want ErrNoRows", err)
+	}
+	if _, err := rr.GetVisible(ctx, admOnly.ID, true, "", 4); err != nil {
+		t.Fatalf("admin GetVisible: %v", err)
+	}
+
+	// Role and groups combine as AND: officer-level + group; a group member
+	// below the role bar still cannot see it.
+	grp, _ := gr.Create(ctx, uniq("Board"), nil, uid)
+	insider := newMember(t, mr, uniq("t"), "active")
+	if err := gr.SetMembers(ctx, grp.ID, []string{insider}); err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if err := gr.SetResourceGroups(ctx, offOnly.ID, []string{grp.ID}); err != nil {
+		t.Fatalf("restrict: %v", err)
+	}
+	if _, err := rr.GetVisible(ctx, offOnly.ID, false, insider, 2); err != pgx.ErrNoRows {
+		t.Fatalf("group member below role bar must not see: got %v", err)
+	}
 }

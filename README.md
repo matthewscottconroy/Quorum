@@ -205,7 +205,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/resources` | member | List/search resources |
 | `POST` | `/resources` | officer | Create |
 | `GET` | `/resources/:id` | member | Get |
-| `PATCH` | `/resources/:id` | officer | Update |
+| `PATCH` | `/resources/:id` | officer | Update (incl. `visible_min_role`: null\|member\|officer\|admin — role bar applies to everyone, even officers/admins below it) |
 | `DELETE` | `/resources/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
 | `POST` | `/resources/:id/file` | officer | Upload/replace the document (multipart `file`, 25 MiB max) |
 | `GET` | `/resources/:id/file` | member | Download: refused for preview-only docs; watermarked where the format allows; ledgered (who/when/IP/sha) + audited as EXPORT |

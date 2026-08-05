@@ -118,7 +118,7 @@ type contactsRepo interface {
 type resourcesRepo interface {
 	List(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error)
 	Get(ctx context.Context, id string) (*model.Resource, error)
-	GetVisible(ctx context.Context, id string, viewerSeesAll bool, viewerMemberID string) (*model.Resource, error)
+	GetVisible(ctx context.Context, id string, viewerSeesAll bool, viewerMemberID string, viewerRoleRank int) (*model.Resource, error)
 	Create(ctx context.Context, res *model.Resource, addedBy string) (*model.Resource, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Resource, error)
 	Delete(ctx context.Context, id string) error

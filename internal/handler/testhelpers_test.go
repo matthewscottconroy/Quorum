@@ -458,7 +458,7 @@ type mockResourcesRepo struct {
 func (m *mockResourcesRepo) List(ctx context.Context, f repo.ResourceFilter) ([]model.Resource, int, error) {
 	return m.ListFn(ctx, f)
 }
-func (m *mockResourcesRepo) GetVisible(ctx context.Context, id string, seesAll bool, memberID string) (*model.Resource, error) {
+func (m *mockResourcesRepo) GetVisible(ctx context.Context, id string, seesAll bool, memberID string, viewerRoleRank int) (*model.Resource, error) {
 	if m.GetVisibleFn != nil {
 		return m.GetVisibleFn(ctx, id, seesAll, memberID)
 	}
