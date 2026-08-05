@@ -37,6 +37,14 @@ func NewAccountingPackHandler(gl glRepo, c glRepoC, funds packFundsSource, v cha
 	return &AccountingPackHandler{gl: gl, c: c, funds: funds, verifier: v, audit: a, users: u}
 }
 
+func rulesCSV(rules []model.PostingRule) [][]string {
+	out := [][]string{{"rule_key", "account_code", "account_name"}}
+	for _, p := range rules {
+		out = append(out, []string{p.Key, p.AccountCode, p.AccountName})
+	}
+	return out
+}
+
 func csvBytes(rows [][]string) []byte {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
@@ -91,6 +99,21 @@ func (h *AccountingPackHandler) Zip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aging, err := h.c.ARAging(ctx, to)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	cashIncome, err := h.c.StatementCash(ctx, from, to)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	purchases, err := h.c.PurchasesCSVRows(ctx, from, to)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	rules, err := h.c.PostingRules(ctx)
 	if err != nil {
 		writeError(w, 500, "query error", "internal_error")
 		return
@@ -185,7 +208,10 @@ Verification tooling ships in the repository under ops/.
 		{"statements.pdf", statementsPDF},
 		{"trial-balance.csv", csvBytes(balancesCSV("", tb))},
 		{"general-ledger.csv", csvBytes(ledger)},
-		{"income-statement.csv", csvBytes(balancesCSV("", income))},
+		{"income-statement-accrual.csv", csvBytes(balancesCSV("", income))},
+		{"income-statement-cash.csv", csvBytes(balancesCSV("", cashIncome))},
+		{"purchases.csv", csvBytes(purchases)},
+		{"posting-rules.csv", csvBytes(rulesCSV(rules))},
 		{"balance-sheet.csv", csvBytes(balancesCSV("", position))},
 		{"funds.csv", csvBytes(fundsRows)},
 		{"ar-aging.csv", csvBytes(agingRows)},

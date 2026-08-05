@@ -683,6 +683,14 @@ both sides ("blocked by" on one card shows as "blocks" on the other), and a
 card whose blocker or dependency isn't done counts as **blocked** in
 analytics.
 
+**Accounting is configurable, not opinionated.** Admins (guided by the
+org's accountant) can reshape the books without code: edit the chart of
+accounts, remap every **posting rule** (Accounting → Posting rules — e.g.
+route Zelle receipts to a dedicated bank account, change the default
+expense account), switch statement **basis** between accrual and cash, close
+and reopen periods, and post adjusting entries. Rules affect future
+postings only; history is immutable.
+
 **Sprint analytics & report.** With a sprint selected, **📊 Analytics**
 shows points committed vs done, completion %, blocked and unpointed counts,
 and breakdowns by type, assignee, and status. Officers can export the same

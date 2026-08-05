@@ -110,6 +110,7 @@ class PageFunds extends HTMLElement {
           <span class="badge" style="background:color-mix(in srgb, ${color} 14%, transparent);color:${color}">${label}</span>
         </div>
         ${p.memo ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.2rem">${esc(p.memo)}</div>` : ''}
+        ${p.resource_id ? `<button class="btn-ghost pr-doc-open" data-rid="${esc(p.resource_id)}" style="font-size:.75rem;padding:.05rem .4rem">📄 supporting document</button>` : ''}
         <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.35rem">
           Requested by ${esc(p.requester_name ?? 'former user')} · ${esc(new Date(p.created_at).toLocaleDateString())}
           · signatures: ${(p.approvals ?? []).length}/${p.approvals_required}
@@ -125,6 +126,13 @@ class PageFunds extends HTMLElement {
       </div>`;
     }).join('') || `<div class="empty-state"><p>No purchase requests${this._fund ? ' for this fund' : ''}.</p></div>`;
 
+    box.querySelectorAll('.pr-doc-open').forEach(b => b.addEventListener('click', async () => {
+      try {
+        const r0 = await api('GET', `/resources/${b.dataset.rid}`);
+        if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
+        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+      } catch { toast("You don't have access to this document", 'error'); }
+    }));
     box.querySelectorAll('.pr-approve').forEach(b => b.addEventListener('click', () => this.signApproval(b.dataset.id)));
     box.querySelectorAll('.pr-complete').forEach(b => b.addEventListener('click', guardButton(b, async () => {
       try {
@@ -191,6 +199,12 @@ class PageFunds extends HTMLElement {
             <input id="pr-payee" placeholder="Who gets paid"></div>
           <div class="form-group"><label for="pr-memo">Memo</label>
             <textarea id="pr-memo" rows="2" placeholder="What is this for?"></textarea></div>
+          <div class="form-row">
+            <div class="form-group"><label for="pr-doc">Supporting document (quote/invoice)</label>
+              <select id="pr-doc"><option value="">— none —</option></select></div>
+            <div class="form-group"><label for="pr-exp">Expense account</label>
+              <select id="pr-exp"><option value="">Default</option></select></div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="pr-cancel2">Cancel</button>
@@ -198,6 +212,15 @@ class PageFunds extends HTMLElement {
         </div>`,
     });
     dialog.querySelector('#pr-cancel2').addEventListener('click', close);
+    api('GET', '/resources?limit=200').then(pg => {
+      dialog.querySelector('#pr-doc').innerHTML = '<option value="">— none —</option>' +
+        (pg?.data ?? []).map(r0 => `<option value="${esc(r0.id)}">${r0.file_name ? '📄' : '🔗'} ${esc(r0.title)}</option>`).join('');
+    }).catch(() => {});
+    api('GET', '/accounting/accounts').then(accts => {
+      dialog.querySelector('#pr-exp').innerHTML = '<option value="">Default</option>' +
+        (accts ?? []).filter(a => a.type === 'expense' && a.active)
+          .map(a => `<option value="${esc(a.id)}">${esc(a.code)} ${esc(a.name)}</option>`).join('');
+    }).catch(() => {});
     const saveBtn = dialog.querySelector('#pr-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const currency = dialog.querySelector('#pr-cur').value.trim().toUpperCase();
@@ -209,6 +232,8 @@ class PageFunds extends HTMLElement {
           fund_id: dialog.querySelector('#pr-fundsel').value,
           amount_minor, currency, payee,
           memo: dialog.querySelector('#pr-memo').value.trim() || null,
+          resource_id: dialog.querySelector('#pr-doc').value || null,
+          expense_account_id: dialog.querySelector('#pr-exp').value || null,
         });
         toast('Request filed — signatures needed', 'success');
         close(); this.load();

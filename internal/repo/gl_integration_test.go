@@ -8,6 +8,7 @@ package repo_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"quorum/internal/model"
@@ -46,6 +47,7 @@ func TestIntegration_GeneralLedger(t *testing.T) {
 		return bal
 	}
 
+	prov := strings.ToLower(uniq("prov"))
 	arBefore := balanceOf("1300", "USD")
 	cashBefore := balanceOf("1000", "USD")
 	incomeBefore := balanceOf("4000", "USD")
@@ -66,7 +68,7 @@ func TestIntegration_GeneralLedger(t *testing.T) {
 	// Partial payment -> DR Cash / CR AR.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO transactions (invoice_id, member_id, amount, currency, provider, recorded_by)
-		VALUES ($1::uuid, $2::uuid, 4000, 'USD', 'zelle', $3::uuid)`, invID, member, uid); err != nil {
+		VALUES ($1::uuid, $2::uuid, 4000, 'USD', $4, $3::uuid)`, invID, member, uid, prov); err != nil {
 		t.Fatalf("payment: %v", err)
 	}
 	if got := balanceOf("1000", "USD") - cashBefore; got != 4000 {
@@ -77,7 +79,7 @@ func TestIntegration_GeneralLedger(t *testing.T) {
 	// Correction (negative) reverses.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO transactions (invoice_id, member_id, amount, currency, provider, recorded_by)
-		VALUES ($1::uuid, $2::uuid, -1000, 'USD', 'zelle', $3::uuid)`, invID, member, uid); err != nil {
+		VALUES ($1::uuid, $2::uuid, -1000, 'USD', $4, $3::uuid)`, invID, member, uid, prov); err != nil {
 		t.Fatalf("correction: %v", err)
 	}
 	if got := balanceOf("1000", "USD") - cashBefore; got != 3000 {
@@ -354,13 +356,18 @@ func TestIntegration_PeriodsStatementsAccounts(t *testing.T) {
 	}
 
 	// Chart guard: new account OK; type change frozen after postings.
-	if err := gl.CreateAccount(ctx, "6100", uniq("Events")[:10], "expense"); err != nil {
+	var newCode string
+	if err := pool.QueryRow(ctx, `SELECT lpad((coalesce(max(code::int), 6099) + 1)::text, 4, '0')
+		FROM accounts WHERE code ~ '^61'`).Scan(&newCode); err != nil {
+		t.Fatalf("next code: %v", err)
+	}
+	if err := gl.CreateAccount(ctx, newCode, uniq("Events")[:10], "expense"); err != nil {
 		t.Fatalf("create account: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE accounts SET type = 'income' WHERE code = '5000'`); err == nil {
 		t.Fatal("type change on posted account must be refused")
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM accounts WHERE code = '6100'`); err == nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM accounts WHERE code = $1`, newCode); err == nil {
 		t.Fatal("account delete must be refused")
 	}
 	name := "Renamed Expenses"
@@ -368,5 +375,65 @@ func TestIntegration_PeriodsStatementsAccounts(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT id::text FROM accounts WHERE code = '5000'`).Scan(&acctID)
 	if err := gl.UpdateAccount(ctx, acctID, &name, nil); err != nil {
 		t.Fatalf("rename posted account (allowed): %v", err)
+	}
+}
+
+func TestIntegration_PostingRulesReroute(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	gl := repo.NewGLRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	// New bank account + a provider rule: that provider's money lands there.
+	prov := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, strings.ToLower(uniq("bank")))
+	var code string
+	if err := pool.QueryRow(ctx, `SELECT lpad((coalesce(max(code::int), 1700) + 1)::text, 4, '0')
+		FROM accounts WHERE code ~ '^17'`).Scan(&code); err != nil {
+		t.Fatalf("next code: %v", err)
+	}
+	if err := gl.CreateAccount(ctx, code, uniq("CU")[:10], "asset"); err != nil {
+		t.Fatalf("create acct: %v", err)
+	}
+	if err := gl.SetPostingRule(ctx, "cash.provider."+prov, code, uid); err != nil {
+		t.Fatalf("set rule: %v", err)
+	}
+	if err := gl.SetPostingRule(ctx, "cash.provider."+prov, "0000", uid); err == nil {
+		t.Fatal("unknown account code must be rejected")
+	}
+	var before int64
+	_ = pool.QueryRow(ctx, `SELECT gl_balance((SELECT id FROM accounts WHERE code=$1), 'USD')`, code).Scan(&before)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO transactions (amount, currency, provider, recorded_by)
+		VALUES (7700, 'USD', $2, $1::uuid)`, uid, prov); err != nil {
+		t.Fatalf("payment: %v", err)
+	}
+	var after int64
+	_ = pool.QueryRow(ctx, `SELECT gl_balance((SELECT id FROM accounts WHERE code=$1), 'USD')`, code).Scan(&after)
+	if after-before != 7700 {
+		t.Fatalf("zelle posting not rerouted: delta %d", after-before)
+	}
+	// Books still reconcile (credit side unchanged).
+	if rows, _ := gl.Reconcile(ctx); len(rows) != 0 {
+		t.Fatalf("reconcile after reroute: %+v", rows)
+	}
+	// Cash-basis statement sees the unlinked receipt as dues income.
+	cash, err := gl.StatementCash(ctx, "2020-01-01", "2030-12-31")
+	if err != nil {
+		t.Fatalf("cash stmt: %v", err)
+	}
+	found := false
+	for _, b := range cash {
+		if b.Code == "4000" && b.Currency == "USD" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cash-basis statement missing income row: %+v", cash)
 	}
 }

@@ -272,7 +272,7 @@ func (r *PurchasesRepo) Complete(ctx context.Context, requestID string) (*model.
 	var entryID string
 	if err := tx.QueryRow(ctx, `
 		SELECT gl_post(current_date, $1, 'purchase', $2::uuid,
-		       coalesce((SELECT expense_account_id FROM purchase_requests WHERE id = $2::uuid), gl_account('5000')),
+		       coalesce((SELECT expense_account_id FROM purchase_requests WHERE id = $2::uuid), gl_rule('expense.default')),
 		       $3::uuid, $4, $5)::text`,
 		"Purchase: "+payee, requestID, fundAcct, amount, currency).Scan(&entryID); err != nil {
 		return nil, err

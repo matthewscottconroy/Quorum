@@ -73,6 +73,46 @@ type glRepoC interface {
 	CreateAccount(ctx context.Context, code, name, typ string) error
 	UpdateAccount(ctx context.Context, id string, name *string, active *bool) error
 	LedgerCSVRows(ctx context.Context, from, to string) ([][]string, error)
+	PostingRules(ctx context.Context) ([]model.PostingRule, error)
+	SetPostingRule(ctx context.Context, key, accountCode, updatedBy string) error
+	StatementCash(ctx context.Context, from, to string) ([]model.GLBalance, error)
+	PurchasesCSVRows(ctx context.Context, from, to string) ([][]string, error)
+}
+
+var ruleKeyRe = regexp.MustCompile(`^(receivable|income\.dues|income\.unlinked|writeoff|cash\.operating|expense\.default|cash\.provider\.[a-z0-9_]{1,32})$`)
+
+// PostingRules lists the automatic-posting mappings (officer+).
+func (h *AccountingHandler) PostingRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.c.PostingRules(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+// SetPostingRules updates mappings (admin): {key: account_code, ...}.
+// Applies to FUTURE postings only; history is immutable.
+func (h *AccountingHandler) SetPostingRules(w http.ResponseWriter, r *http.Request) {
+	var body map[string]string
+	if err := decodeJSON(r, &body); err != nil || len(body) == 0 {
+		writeError(w, http.StatusBadRequest, "a {rule_key: account_code} object is required", "bad_request")
+		return
+	}
+	for k, code := range body {
+		if !ruleKeyRe.MatchString(k) || !acctCodeRe.MatchString(code) {
+			writeError(w, http.StatusBadRequest, "invalid rule key or account code: "+k, "bad_request")
+			return
+		}
+	}
+	for k, code := range body {
+		if err := h.c.SetPostingRule(r.Context(), k, code, userIDFromCtx(r)); err != nil {
+			writeError(w, http.StatusBadRequest, "unknown account code for "+k, "bad_request")
+			return
+		}
+	}
+	setAuditDetail(r, map[string]any{"rules": len(body)})
+	h.PostingRules(w, r)
 }
 
 // SetPhaseC wires the Phase C repo surface (same concrete repo).
@@ -88,7 +128,15 @@ func (h *AccountingHandler) Statements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "from and to (YYYY-MM-DD) required", "bad_request")
 		return
 	}
-	income, err := h.c.Statement(r.Context(), from, to, []string{"income", "expense"})
+	basis := r.URL.Query().Get("basis")
+	var income []model.GLBalance
+	var err error
+	if basis == "cash" {
+		income, err = h.c.StatementCash(r.Context(), from, to)
+	} else {
+		basis = "accrual"
+		income, err = h.c.Statement(r.Context(), from, to, []string{"income", "expense"})
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 		return
@@ -123,7 +171,7 @@ func (h *AccountingHandler) Statements(w http.ResponseWriter, r *http.Request) {
 		aging = []model.ARAgingRow{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"from": from, "to": to,
+		"from": from, "to": to, "basis": basis,
 		"income_statement":   income,
 		"balance_sheet":      position,
 		"net_income_to_date": netToDate,

@@ -29,6 +29,10 @@ class PageAccounting extends HTMLElement {
           <input id="ac-from" type="date" value="${from}">
           <span style="color:var(--color-text-muted)">→</span>
           <input id="ac-to" type="date" value="${to}">
+          <select id="ac-basis" title="Accounting basis for the income statement">
+            <option value="accrual">Accrual</option>
+            <option value="cash">Cash basis</option>
+          </select>
           <button class="btn-secondary" id="ac-run">Run</button>
           ${isAdmin() ? '<button class="btn-secondary" id="ac-entry">+ Adjusting entry</button>' : ''}
         </div></div>
@@ -43,11 +47,13 @@ class PageAccounting extends HTMLElement {
     const body = this.querySelector('#ac-body');
     body.innerHTML = '<span class="spinner"></span>';
     try {
-      const [st, tb, periods, accounts] = await Promise.all([
-        api('GET', `/accounting/statements?from=${from}&to=${to}`),
+      const basis = this.querySelector('#ac-basis').value;
+      const [st, tb, periods, accounts, rules] = await Promise.all([
+        api('GET', `/accounting/statements?from=${from}&to=${to}&basis=${basis}`),
         api('GET', '/accounting/trial-balance?limit=10'),
         api('GET', '/accounting/periods'),
         api('GET', '/accounting/accounts'),
+        api('GET', '/accounting/posting-rules').catch(() => []),
       ]);
       this._accounts = accounts ?? [];
       const money = (b) => `${formatMoney(Math.abs(b.balance), b.currency)} ${esc(b.currency)}`;
@@ -58,7 +64,7 @@ class PageAccounting extends HTMLElement {
       body.innerHTML = `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem">
           <div class="card" style="padding:1rem">
-            <h3 style="margin:0 0 .5rem;font-size:.95rem">Income statement <span style="font-weight:400;color:var(--color-text-muted)">${esc(from)} → ${esc(to)}</span></h3>
+            <h3 style="margin:0 0 .5rem;font-size:.95rem">Income statement <span style="font-weight:400;color:var(--color-text-muted)">${esc(from)} → ${esc(to)} · ${esc(st.basis)}</span></h3>
             <table style="width:100%"><tbody>${rows(st.income_statement, true)}</tbody></table>
           </div>
           <div class="card" style="padding:1rem">
@@ -90,6 +96,26 @@ class PageAccounting extends HTMLElement {
                 <button class="btn-secondary" id="pd-close">Close month</button>
               </div>
               <div style="font-size:.72rem;color:var(--color-text-muted);margin-top:.3rem">Closing locks posting dates in that month; reopening is allowed and audited.</div>` : ''}
+          </div>
+          <div class="card" style="padding:1rem">
+            <h3 style="margin:0 0 .5rem;font-size:.95rem">Posting rules</h3>
+            <p style="font-size:.74rem;color:var(--color-text-muted);margin:0 0 .5rem">
+              Where automatic postings land. Your accountant reconfigures these — future postings only; history never changes.
+              Add <code>cash.provider.&lt;name&gt;</code> rules to route any payment provider to its own account.</p>
+            ${(rules ?? []).map(r0 => `
+              <div style="display:flex;gap:.4rem;align-items:center;font-size:.82rem;padding:.1rem 0">
+                <code style="flex:1">${esc(r0.key)}</code>
+                ${isAdmin() ? `<select class="rule-acct" data-key="${esc(r0.key)}" style="max-width:220px;font-size:.8rem">
+                  ${this._accounts.map(a => `<option value="${esc(a.code)}" ${a.code === r0.account_code ? 'selected' : ''}>${esc(a.code)} ${esc(a.name)}</option>`).join('')}
+                </select>` : `<span>${esc(r0.account_code)} ${esc(r0.account_name)}</span>`}
+              </div>`).join('')}
+            ${isAdmin() ? `
+              <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
+                <input id="rule-provider" placeholder="provider (e.g. zelle)" style="flex:1;min-width:110px">
+                <select id="rule-provider-acct" style="max-width:200px">${this._accounts.filter(a => a.type === 'asset').map(a => `<option value="${esc(a.code)}">${esc(a.code)} ${esc(a.name)}</option>`).join('')}</select>
+                <button class="btn-secondary" id="rule-provider-add" style="font-size:.78rem">Add provider rule</button>
+              </div>
+              <button class="btn-primary" id="rules-save" style="margin-top:.5rem;font-size:.8rem">Save posting rules</button>` : ''}
           </div>
           <div class="card" style="padding:1rem">
             <h3 style="margin:0 0 .5rem;font-size:.95rem">Chart of accounts</h3>
@@ -126,6 +152,20 @@ class PageAccounting extends HTMLElement {
       try { await api('POST', '/accounting/periods/reopen', { month: b.dataset.m }); toast('Reopened (audited)', 'success'); this.load(); }
       catch (err) { toast(err.error ?? 'Reopen failed', 'error'); }
     }));
+    this.querySelector('#rules-save')?.addEventListener('click', async () => {
+      const body = {};
+      this.querySelectorAll('.rule-acct').forEach(s2 => { body[s2.dataset.key] = s2.value; });
+      try { await api('PUT', '/accounting/posting-rules', body); toast('Posting rules saved — applies to future postings', 'success'); this.load(); }
+      catch (err) { toast(err.error ?? 'Save failed', 'error'); }
+    });
+    this.querySelector('#rule-provider-add')?.addEventListener('click', async () => {
+      const name = this.querySelector('#rule-provider').value.trim().toLowerCase();
+      if (!/^[a-z0-9_]{1,32}$/.test(name)) { toast('Provider must be letters/digits/underscore', 'error'); return; }
+      try {
+        await api('PUT', '/accounting/posting-rules', { ['cash.provider.' + name]: this.querySelector('#rule-provider-acct').value });
+        toast('Provider rule added', 'success'); this.load();
+      } catch (err) { toast(err.error ?? 'Add failed', 'error'); }
+    });
     this.querySelector('#na-add')?.addEventListener('click', async () => {
       try {
         await api('POST', '/accounting/accounts', {

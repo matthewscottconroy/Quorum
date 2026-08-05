@@ -510,6 +510,8 @@ func main() {
 			r.With(mw.RequireRole("admin")).Post("/accounting/accounts", accountingH.CreateAccount)
 			r.With(mw.RequireRole("admin")).Patch("/accounting/accounts/{id}", accountingH.UpdateAccount)
 			r.With(mw.RequireRole("admin")).Post("/accounting/entries", accountingH.ManualEntry)
+			r.With(mw.RequireRole("officer")).Get("/accounting/posting-rules", accountingH.PostingRules)
+			r.With(mw.RequireRole("admin")).Put("/accounting/posting-rules", accountingH.SetPostingRules)
 			r.With(mw.RequireRole("admin")).Get("/reports/accounting-pack.zip", packH.Zip)
 
 			// Org settings: allowlisted keys, member-readable, admin-writable.

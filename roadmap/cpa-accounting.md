@@ -18,9 +18,15 @@ code/type frozen after postings, income statement + balance sheet +
 AR aging per currency, purchase expense-account categorization, and the
 CPA export pack (ZIP: sealed statements PDF + trial balance / GL /
 statements / funds / aging CSVs + EVIDENCE.txt with the audit-chain
-head). Remaining ideas parked: nightly reconcile alert, formal year-end
+head). **Configurability pass shipped** (migration 0034): posting rules moved
+from triggers into an admin-editable table (per-provider cash routing
+included), cash-basis statements as a toggle, purchase supporting-doc
+picker + expense-account selection in the UI, and purchases.csv +
+posting-rules.csv + both income bases in the CPA pack. Principle
+honored: professionals configure, they don't file feature requests.
+Remaining ideas parked: nightly reconcile alert, formal year-end
 closing entries (net income is computed live instead), functional-
-currency translation — all CPA-conversation items. Goal: books a CPA can test, rely on, and use to prepare the org's
+currency translation. Goal: books a CPA can test, rely on, and use to prepare the org's
 government filings — plus purpose-restricted accounts whose spending
 requires multi-person sign-off, with every completed purchase landing on
 the books automatically, verifiably, and audit-ready for tax purposes.

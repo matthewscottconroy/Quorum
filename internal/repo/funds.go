@@ -235,17 +235,17 @@ func (r *FundsRepo) Transfer(ctx context.Context, fundID, direction string, amou
 	}
 	var srcAcct string
 	if direction == "in" {
-		if err := tx.QueryRow(ctx, `SELECT gl_account('1000')::text`).Scan(&srcAcct); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT gl_rule('cash.operating')::text`).Scan(&srcAcct); err != nil {
 			return err
 		}
 		var opBal int64
-		if err := tx.QueryRow(ctx, `SELECT gl_balance(gl_account('1000'), $1)`, currency).Scan(&opBal); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT gl_balance(gl_rule('cash.operating'), $1)`, currency).Scan(&opBal); err != nil {
 			return err
 		}
 		if opBal < amount {
 			return fmt.Errorf("%w: operating cash has %d %s", ErrInsufficientFunds, opBal, currency)
 		}
-		_, err = tx.Exec(ctx, `SELECT gl_post(current_date, $1, 'fund_transfer', $2::uuid, $3::uuid, gl_account('1000'), $4, $5)`,
+		_, err = tx.Exec(ctx, `SELECT gl_post(current_date, $1, 'fund_transfer', $2::uuid, $3::uuid, gl_rule('cash.operating'), $4, $5)`,
 			memo, fundID, fundAcct, amount, currency)
 	} else {
 		var bal int64
@@ -255,7 +255,7 @@ func (r *FundsRepo) Transfer(ctx context.Context, fundID, direction string, amou
 		if bal < amount {
 			return fmt.Errorf("%w: fund has %d %s", ErrInsufficientFunds, bal, currency)
 		}
-		_, err = tx.Exec(ctx, `SELECT gl_post(current_date, $1, 'fund_transfer', $2::uuid, gl_account('1000'), $3::uuid, $4, $5)`,
+		_, err = tx.Exec(ctx, `SELECT gl_post(current_date, $1, 'fund_transfer', $2::uuid, gl_rule('cash.operating'), $3::uuid, $4, $5)`,
 			memo, fundID, fundAcct, amount, currency)
 	}
 	if err != nil {

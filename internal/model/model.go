@@ -840,3 +840,11 @@ type GLAccount struct {
 	Active      bool   `json:"active"`
 	HasPostings bool   `json:"has_postings"`
 }
+
+// PostingRule maps one automatic-posting slot to a chart account.
+type PostingRule struct {
+	Key         string `json:"key"`
+	AccountID   string `json:"account_id"`
+	AccountCode string `json:"account_code"`
+	AccountName string `json:"account_name"`
+}
