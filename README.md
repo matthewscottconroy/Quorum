@@ -480,6 +480,7 @@ doesn't fully reverse its `.up.sql` breaks the build. To roll back by hand:
 | **[RUNBOOK.md](RUNBOOK.md)** | Day-2 operations: user onboarding/offboarding, access restriction, secret rotation, locked-out admin recovery, upgrades, migration rollback, backup management, disaster recovery, breach forensics, health litmus tests |
 | **[PAYMENTS-SETUP.md](PAYMENTS-SETUP.md)** | Wiring Stripe/PayPal webhooks from zero: signing secrets, invoice-linking metadata, fail-closed verification checklist |
 | **[DOWNGRADING.md](DOWNGRADING.md)** | Walking back a successful-but-unwanted upgrade: binary vs schema vs data layers, migrate-down vs restore, rehearsal |
+| **[CONTINUITY-CHECKLIST.md](CONTINUITY-CHECKLIST.md)** | Bus-factor setup, step by step: second superadmin, custody registry, org vault, sealed envelope, the successor drill |
 | **[UPGRADING.md](UPGRADING.md)** | Moving production to newer code: on-server `ops/upgrade.sh` (backup, build, swap, auto-rollback), workstation deploys, version rollback |
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | Diagrams: system architecture, request/backup data flow, network zones and trust boundaries |
 | **[EMAIL-SETUP.md](EMAIL-SETUP.md)** | SMTP from zero: what a relay is, why mail gets spam-blocked (SPF/DKIM/DMARC), Amazon SES walkthrough, Gmail stopgap |
