@@ -348,6 +348,7 @@ const routes = {
   '#/meetings':        '<page-meetings>',
   '#/calendar':        '<page-calendar>',
   '#/board':           '<page-board>',
+  '#/discussions':     '<page-chat>',
   '#/reports':         '<page-reports>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
@@ -402,6 +403,7 @@ import './components/page-audit.js';
 import './components/page-meetings.js';
 import './components/page-calendar.js';
 import './components/page-board.js';
+import './components/page-chat.js';
 import './components/page-reports.js';
 import './components/page-plans.js';
 import './components/page-contacts.js';

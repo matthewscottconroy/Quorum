@@ -166,6 +166,7 @@ func main() {
 	cardLinksRepo := repo.NewCardLinksRepo(pool)
 	cardLinksH := handler.NewCardLinksHandler(cardLinksRepo, actionItemsRepo, sprintsRepo)
 	sprintReportH := handler.NewSprintReportHandler(cardLinksRepo, actionItemsRepo, sprintsRepo, auditRepo, authRepo)
+	channelsH := handler.NewChannelsHandler(repo.NewChannelsRepo(pool), resourcesRepo)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
 	reportsH := handler.NewReportsHandler(membersRepo, duesRepo, meetingsRepo, governanceRepo, auditRepo, auditRepo, auditRepo, authRepo)
@@ -490,6 +491,21 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/contacts/{id}", contactsH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/contacts/{id}", contactsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/contacts/{id}", contactsH.Delete)
+
+			// Discussions: Slack-style channels. Any member creates channels
+			// and adds people; reading/posting needs membership (admins may
+			// moderate). No uploads here - messages link library documents.
+			r.With(mw.RequireRole("member")).Get("/channels", channelsH.List)
+			r.With(mw.RequireRole("member")).Post("/channels", channelsH.Create)
+			r.With(mw.RequireRole("member")).Get("/channels/users", channelsH.Users)
+			r.With(mw.RequireRole("member")).Get("/channels/{id}", channelsH.Get)
+			r.With(mw.RequireRole("member")).Patch("/channels/{id}", channelsH.Update)
+			r.With(mw.RequireRole("member")).Delete("/channels/{id}", channelsH.Delete)
+			r.With(mw.RequireRole("member")).Post("/channels/{id}/members", channelsH.AddMember)
+			r.With(mw.RequireRole("member")).Delete("/channels/{id}/members/{uid}", channelsH.RemoveMember)
+			r.With(mw.RequireRole("member")).Get("/channels/{id}/messages", channelsH.Messages)
+			r.With(mw.RequireRole("member")).Post("/channels/{id}/messages", channelsH.Post)
+			r.With(mw.RequireRole("member")).Delete("/channels/{id}/messages/{mid}", channelsH.DeleteMessage)
 
 			// Visibility groups: admin defines who is in which group; officers
 			// attach groups to resources while curating the library.

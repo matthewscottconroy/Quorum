@@ -675,3 +675,38 @@ type SprintBucket struct {
 	DoneCards  int    `json:"done_cards"`
 	DonePoints int    `json:"done_points"`
 }
+
+// Channel is a discussion channel; membership is by user account, and any
+// channel member may add others.
+type Channel struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Topic        *string         `json:"topic,omitempty"`
+	CreatedBy    *string         `json:"created_by,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	MemberCount  int             `json:"member_count"`
+	MessageCount int             `json:"message_count"`
+	IsMember     bool            `json:"is_member"`
+	Members      []ChannelMember `json:"members,omitempty"`
+}
+
+// ChannelMember is one roster entry (name resolved member-then-email).
+type ChannelMember struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
+// ChannelMessage is one discussion message. ParentID nil = channel root;
+// set = reply in that root's thread. ResourceID references a library
+// document; viewers resolve it through the normal visibility check.
+type ChannelMessage struct {
+	ID         string    `json:"id"`
+	ChannelID  string    `json:"channel_id"`
+	ParentID   *string   `json:"parent_id,omitempty"`
+	AuthorID   *string   `json:"author_id,omitempty"`
+	AuthorName *string   `json:"author_name,omitempty"`
+	Body       string    `json:"body"`
+	ResourceID *string   `json:"resource_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	ReplyCount int       `json:"reply_count"`
+}

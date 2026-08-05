@@ -215,6 +215,17 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/folders` | member | List folders (nested via `parent_id`) |
 | `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / move / delete (cycle-safe; delete requires `?confirm=<name>`; contents return to the root) |
 
+### Discussions
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` / `POST` | `/channels` | member | List all channels (membership flagged) / create one (creator auto-joins) |
+| `GET` | `/channels/users` | member | Addable accounts for the people picker |
+| `GET` / `PATCH` / `DELETE` | `/channels/:id` | member | Channel + roster (members or admin) / edit / delete (creator or admin; `?confirm=<name>`) |
+| `POST` / `DELETE` | `/channels/:id/members[/:uid]` | member | Any member adds; self-leave, creator/admin removes |
+| `GET` / `POST` | `/channels/:id/messages` | member | Roots or `?thread=<id>` replies / post (`parent_id`, `resource_id` optional; author-visible docs only; no nesting) |
+| `DELETE` | `/channels/:id/messages/:mid` | member | Author deletes own; admin moderates |
+
 ### Board
 
 | Method | Path | Min role | Description |

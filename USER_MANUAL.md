@@ -348,7 +348,27 @@ A viewer can open and read:
 - **Resources** — the link/document library, searchable and filterable by
   category and tag.
 
-## 4.3 Searching and filtering
+## 4.3 Discussions (channels & threads)
+
+**Discussions** is the org's own place to talk — channels like a chat tool,
+kept inside Quorum where your governance and documents already live.
+
+- **Anyone (member and above) can create a channel** (+ New channel) and
+  **any channel member can add people** (+ Add people). You read and post
+  only in channels you belong to; other channels are listed by name so you
+  know what exists and whom to ask. Admins can open any channel (moderation).
+- **Threads.** Reply "in thread" on any message to keep side-conversations
+  from drowning the channel — one level deep, like Slack.
+- **No file uploads — by design.** The 📄 button on the composer instead
+  links a document from the **Resources** library. This is a feature, not a
+  gap: documents keep their visibility rules, download ledger, and audit
+  trail. A linked document a reader isn't cleared for shows as "a document
+  you don't have access to" — not even its title leaks.
+- Authors can delete their own messages; admins can moderate. Deleting a
+  message removes its thread; deleting a channel (creator or admin,
+  type-to-confirm) removes its whole history.
+
+## 4.4 Searching and filtering
 
 Where a page offers a search box or filters, they narrow the list as you type or
 select. Search covers the most useful text fields (names, titles,

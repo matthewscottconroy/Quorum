@@ -16,6 +16,7 @@ const LINKS = [
   { hash: '#/meetings',   label: 'Meetings',   icon: '📅', minRole: 'member' },
   { hash: '#/calendar',   label: 'Calendar',   icon: '📆', minRole: 'member' },
   { hash: '#/board',      label: 'Board',      icon: '🗂', minRole: 'member' },
+  { hash: '#/discussions', label: 'Discussions', icon: '💬', minRole: 'member' },
   { hash: '#/plans',      label: 'Plans',      icon: '📋', minRole: 'member' },
   { hash: '#/contacts',   label: 'Contacts',   icon: '📇', minRole: 'member' },
   { hash: '#/resources',  label: 'Resources',  icon: '🔗', minRole: 'member' },

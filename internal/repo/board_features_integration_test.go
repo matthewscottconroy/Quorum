@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -488,5 +489,81 @@ func TestIntegration_ResourceMinRole(t *testing.T) {
 	}
 	if _, err := rr.GetVisible(ctx, offOnly.ID, false, insider, 2); err != pgx.ErrNoRows {
 		t.Fatalf("group member below role bar must not see: got %v", err)
+	}
+}
+
+func TestIntegration_Discussions(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	ch := repo.NewChannelsRepo(pool)
+	rr := repo.NewResourcesRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	alice := newUser(t, ar)
+	bob := newUser(t, ar)
+
+	// Create: creator auto-joins; names are case-insensitively unique.
+	c, err := ch.Create(ctx, uniq("Ideas"), nil, alice)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !c.IsMember || c.MemberCount != 1 {
+		t.Fatalf("creator not auto-joined: %+v", c)
+	}
+	if _, err := ch.Create(ctx, strings.ToUpper(c.Name), nil, alice); err == nil {
+		t.Fatal("case-insensitive duplicate name must be rejected")
+	}
+
+	// Membership: bob out, then in (idempotent), visible in roster.
+	if ok, _ := ch.IsMember(ctx, c.ID, bob); ok {
+		t.Fatal("bob should not be a member yet")
+	}
+	if err := ch.AddMember(ctx, c.ID, bob, alice); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := ch.AddMember(ctx, c.ID, bob, alice); err != nil {
+		t.Fatalf("re-add must be idempotent: %v", err)
+	}
+	got, _ := ch.Get(ctx, c.ID, bob)
+	if !got.IsMember || got.MemberCount != 2 || len(got.Members) != 2 {
+		t.Fatalf("roster wrong: %+v", got)
+	}
+
+	// Messages, threads, and the no-nesting guard.
+	res, _ := rr.Create(ctx, &model.Resource{Title: uniq("linked-doc"), Tags: []string{}}, alice)
+	root, err := ch.PostMessage(ctx, c.ID, "", alice, "What about a raffle?", res.ID)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if root.ResourceID == nil || *root.ResourceID != res.ID {
+		t.Fatal("resource link lost")
+	}
+	reply, err := ch.PostMessage(ctx, c.ID, root.ID, bob, "Love it. Prizes?", "")
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if _, err := ch.PostMessage(ctx, c.ID, reply.ID, alice, "nested", ""); err == nil {
+		t.Fatal("nested replies must be rejected by the trigger")
+	}
+	roots, _ := ch.Messages(ctx, c.ID, "", 50)
+	if len(roots) != 1 || roots[0].ReplyCount != 1 {
+		t.Fatalf("roots: %+v", roots)
+	}
+	thread, _ := ch.Messages(ctx, c.ID, root.ID, 50)
+	if len(thread) != 1 || thread[0].Body != "Love it. Prizes?" {
+		t.Fatalf("thread: %+v", thread)
+	}
+
+	// Deleting the root cascades its thread; channel delete cascades all.
+	if err := ch.DeleteMessage(ctx, root.ID); err != nil {
+		t.Fatalf("delete root: %v", err)
+	}
+	if _, err := ch.GetMessage(ctx, reply.ID); err == nil {
+		t.Fatal("replies must cascade with their root")
+	}
+	if err := ch.RemoveMember(ctx, c.ID, bob); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+	if err := ch.Delete(ctx, c.ID); err != nil {
+		t.Fatalf("delete channel: %v", err)
 	}
 }
