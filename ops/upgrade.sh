@@ -55,6 +55,10 @@ as_owner go build -o quorum.next ./cmd/quorum
 [ -f quorum ] && cp -p quorum quorum.prev
 mv -f quorum.next quorum
 chown quorum:quorum quorum && chmod 755 quorum
+# go build renames the binary out of its cache, which carries the cache's
+# SELinux label along; on enforcing systems (Rocky) systemd then refuses to
+# exec it (203/EXEC "Permission denied"). Restore the directory's label.
+command -v restorecon >/dev/null 2>&1 && restorecon quorum || true
 
 echo "==> restarting quorum.service"
 systemctl restart quorum

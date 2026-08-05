@@ -31,6 +31,9 @@ install -o quorum -g quorum -m 0755 /tmp/quorum.new "$DIR/quorum.next"
 rm -f /tmp/quorum.new
 [ -f "$DIR/quorum" ] && cp -p "$DIR/quorum" "$DIR/quorum.prev"
 mv -f "$DIR/quorum.next" "$DIR/quorum"   # same filesystem: atomic
+# Fix the SELinux label the upload/rename may have carried along (no-op
+# where SELinux is absent); without this, systemd 203/EXECs on enforcing hosts.
+command -v restorecon >/dev/null 2>&1 && restorecon "$DIR/quorum" || true
 systemctl restart quorum
 for _ in $(seq 1 30); do
     sleep 1
