@@ -12,3 +12,20 @@ quorum.example.org {
 	}
 	encode gzip
 }
+
+# One server can carry any number of additional sites — Caddy issues and
+# renews a certificate per site block. Common pattern: the org's public
+# website (static files) beside the internal Quorum app, different domains.
+# Uncomment and adjust:
+#
+# company.example.com, www.company.example.com {
+# 	root * /srv/company-site
+# 	file_server
+# 	encode gzip
+# }
+#
+# Notes: `sudo mkdir -p /srv/company-site` and put index.html there; keep the
+# site's source in its own git repository (it is NOT covered by Quorum's
+# database backups); `sudo systemctl reload caddy` applies changes with zero
+# downtime. Quorum's domain and the public site's domain are independent —
+# only QUORUM_BASE_URL must match the domain that serves the app.
