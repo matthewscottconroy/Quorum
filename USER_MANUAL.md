@@ -454,7 +454,10 @@ ledger automatically:
    a client you provided services to, for example. Contact invoices post to
    **Service Income** on the books instead of dues income; everything else
    (payments, statuses, waivers) works the same.
-3. Choose the member or customer, enter the **amount** (e.g. `100.00`), the
+3. Pick the members from the searchable checkbox list (type to filter; **All
+   shown** / **None** for bulk selection — one invoice is created per member
+   selected), or pick the customer from the dropdown. Enter the **amount**
+   (e.g. `100.00`), the
    **currency** (3-letter code, default `USD`), a **period label** (e.g.
    `2026 Q1`, `Annual 2026`, or an invoice reference like `INV-0042`), and a
    **due date**.
@@ -467,9 +470,9 @@ ledger automatically:
 
 ### 5.2.3 Create invoices in bulk
 
-To bill many members the same amount for the same period in one action, use the
-bulk option: supply a **list of members** with a shared amount, period, and due
-date. Quorum creates one invoice per member.
+To bill many members the same amount for the same period in one action, just
+select them all in the member list of the same **+ New invoice** modal — filter,
+use **All shown**, untick exceptions. Quorum creates one invoice per member.
 
 ### 5.2.4 Record a payment
 

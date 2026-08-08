@@ -266,8 +266,16 @@ class PageDues extends HTMLElement {
             </select>
           </div>
           <div class="form-group" id="member-row">
-            <label for="f-members">Member ID(s) — comma-separated UUIDs</label>
-            <input id="f-members" placeholder="uuid1, uuid2, …">
+            <label for="f-msearch">Members to bill</label>
+            <input id="f-msearch" placeholder="Type to filter…" autocomplete="off">
+            <div id="f-mlist" style="max-height:180px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.35rem .6rem;margin-top:.35rem">
+              <span class="spinner"></span>
+            </div>
+            <div style="display:flex;gap:.5rem;align-items:center;margin-top:.35rem">
+              <button type="button" class="btn-secondary" id="f-mall" style="font-size:.75rem">All shown</button>
+              <button type="button" class="btn-secondary" id="f-mnone" style="font-size:.75rem">None</button>
+              <span id="f-mcount" style="font-size:.78rem;color:var(--color-text-muted)">0 selected</span>
+            </div>
           </div>
           <div class="form-group" id="contact-row" style="display:none">
             <label for="f-contact">Customer</label>
@@ -316,11 +324,45 @@ class PageDues extends HTMLElement {
       dialog.querySelector('#f-contact').innerHTML = '<option value="">— choose —</option>' +
         (pg?.data ?? pg ?? []).map(c => `<option value="${esc(c.id)}">${esc(c.name)}${c.organization ? ' — ' + esc(c.organization) : ''}</option>`).join('');
     }).catch(() => {});
+
+    // Member picker: selection survives filtering because it lives in a Set,
+    // not in the checkboxes themselves.
+    let pickerMembers = [];
+    const picked = new Set();
+    const mlist = dialog.querySelector('#f-mlist');
+    const recount = () => {
+      dialog.querySelector('#f-mcount').textContent = `${picked.size} selected`;
+    };
+    const renderPicker = () => {
+      const q = dialog.querySelector('#f-msearch').value.trim().toLowerCase();
+      const shown = pickerMembers.filter(m => !q || m.display_name.toLowerCase().includes(q) || (m.tier ?? '').toLowerCase().includes(q));
+      mlist.innerHTML = shown.map(m => `
+        <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
+          <input type="checkbox" class="inv-mcb" value="${esc(m.id)}" ${picked.has(m.id) ? 'checked' : ''}>
+          <span style="flex:1">${esc(m.display_name)}</span>
+          <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
+        </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem;margin:.3rem 0">No matching members.</p>';
+      mlist.querySelectorAll('.inv-mcb').forEach(cb => cb.addEventListener('change', () => {
+        if (cb.checked) picked.add(cb.value); else picked.delete(cb.value);
+        recount();
+      }));
+    };
+    api('GET', '/members?limit=200&status=active').then(pg => {
+      pickerMembers = pg?.data ?? pg ?? [];
+      renderPicker(); recount();
+    }).catch(() => { mlist.innerHTML = '<p style="color:var(--color-danger);font-size:.85rem">Failed to load members.</p>'; });
+    dialog.querySelector('#f-msearch').addEventListener('input', renderPicker);
+    dialog.querySelector('#f-mall').addEventListener('click', () => {
+      mlist.querySelectorAll('.inv-mcb').forEach(cb => picked.add(cb.value));
+      renderPicker(); recount();
+    });
+    dialog.querySelector('#f-mnone').addEventListener('click', () => {
+      picked.clear(); renderPicker(); recount();
+    });
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const isContact = ctype.value === 'contact';
-      const membersRaw = dialog.querySelector('#f-members').value;
-      const memberIDs  = membersRaw.split(',').map(s => s.trim()).filter(Boolean);
+      const memberIDs  = [...picked];
       const currency   = (dialog.querySelector('#f-currency').value || 'USD').trim().toUpperCase();
       if (!/^[A-Z]{3}$/.test(currency)) { toast('Currency must be a 3-letter code', 'error'); return; }
       const amountMinor = parseMoney(dialog.querySelector('#f-amount').value, currency);
@@ -343,7 +385,7 @@ class PageDues extends HTMLElement {
         if (!contact_id) { toast('Choose a customer', 'error'); return; }
         delete body.member_ids;
         body.contact_id = contact_id;
-      } else if (!memberIDs.length) { toast('At least one member ID required', 'error'); return; }
+      } else if (!memberIDs.length) { toast('Select at least one member', 'error'); return; }
       try {
         await api('POST', '/dues', body);
         toast('Invoice(s) created', 'success');
