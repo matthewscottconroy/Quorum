@@ -247,6 +247,19 @@ func TestIntegration_VendorBills_FundPayAndVoid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fund: %v", err)
 	}
+
+	// Transfers into a fund are guarded by the operating-cash balance, and a
+	// fresh CI database starts at zero (or below, after other tests spend).
+	// Seed operating cash to cover the 5000 this test moves.
+	opAcct := accountIDByRule(t, pool, "cash.operating")
+	if bal := acctBalance(t, pool, opAcct, "USD"); bal < 5000 {
+		if _, err := pool.Exec(ctx, `
+			SELECT gl_post(current_date, 'test seed', 'manual', gen_random_uuid(),
+			       gl_rule('cash.operating'), gl_rule('income.unlinked'), $1, 'USD')`,
+			5000-bal); err != nil {
+			t.Fatalf("seed operating cash: %v", err)
+		}
+	}
 	if err := funds.Transfer(ctx, fund.ID, "in", 5000, "USD", "seed"); err != nil {
 		t.Fatalf("fund seed: %v", err)
 	}
