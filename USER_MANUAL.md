@@ -558,8 +558,20 @@ CPA statements export.
 
 ### 5.3.2 Record attendance
 
-Open a meeting and edit its **attendance** roster, marking who was present. Saving
-replaces the full attendance list for that meeting.
+Open a meeting and use the **Attendance** panel (right-hand column). It lists
+every active member with a checkbox, plus bulk-select tools so you rarely have
+to click one by one:
+
+- **All** / **None** — check or clear everyone, then fine-tune individually
+  (e.g. select everyone and untick the two who were absent).
+- **Officers+** — adds every member whose login holds the officer role or
+  higher.
+- **+ tier…** — adds everyone in a membership tier (standard, premium, …).
+- **+ group…** — adds everyone in a visibility group (see 6.7).
+
+Bulk tools only ever *add* (except **None**), so you can layer them: Officers+,
+then a group, then untick individuals. Select **Save attendance** to replace
+the meeting's roster with the current selection.
 
 ### 5.3.3 Record decisions and votes
 

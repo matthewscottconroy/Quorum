@@ -51,6 +51,21 @@ func (h *GroupsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	genericGet(w, r, h.repo.Get, "group not found")
 }
 
+// MemberIDs returns just the group's member IDs (officer+). The full group
+// object stays admin-only; rosters only need the IDs for bulk selection.
+func (h *GroupsHandler) MemberIDs(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	g, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "group not found", "query error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"member_ids": g.MemberIDs})
+}
+
 // Create adds a group (admin+).
 func (h *GroupsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var body struct {

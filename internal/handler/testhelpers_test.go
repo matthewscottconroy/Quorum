@@ -211,6 +211,10 @@ func (m *mockMembersRepo) Delete(ctx context.Context, id string) error {
 }
 func (m *mockMembersRepo) Count(ctx context.Context) (int, error) { return m.CountFn(ctx) }
 
+func (m *mockMembersRepo) IDsByMinRole(ctx context.Context, minRank int) ([]string, error) {
+	return []string{}, nil
+}
+
 // ---- mockDuesRepo ----
 
 type mockDuesRepo struct {

@@ -47,6 +47,7 @@ type membersRepo interface {
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Member, error)
 	Delete(ctx context.Context, id string) error
 	Count(ctx context.Context) (int, error)
+	IDsByMinRole(ctx context.Context, minRank int) ([]string, error)
 }
 
 // duesRepo is satisfied by *repo.DuesRepo.

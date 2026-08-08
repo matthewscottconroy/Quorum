@@ -130,6 +130,7 @@ All API routes are under `/api/v1`. Authenticated routes require `Authorization:
 | `DELETE` | `/members/:id` | admin | Soft-delete (marks inactive) |
 | `GET` | `/members/:id/dues` | member¹ | Member's invoices |
 | `GET` | `/members/:id/action-items` | member¹ | Member's action items |
+| `GET` | `/members/ids?min_role=` | officer | Active member IDs whose linked user holds at least the given role (feeds roster bulk-select) |
 
 ¹ A `restricted` user may call these three endpoints, but only for their own linked member record (the id must match their account's member link); `member` and above may view any member.
 
@@ -163,7 +164,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/meetings/:id` | member | Get meeting + attendees + decisions |
 | `PATCH` | `/meetings/:id` | officer | Update meeting |
 | `DELETE` | `/meetings/:id` | superadmin | Delete meeting — requires `?confirm=<title>`, notifies admins |
-| `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list |
+| `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list (UI offers all/none/officers+/tier/group bulk-select) |
 | `POST` | `/meetings/:id/decisions` | officer | Add a decision |
 | `PATCH` | `/meetings/:id/decisions/:did` | officer | Update a decision |
 | `DELETE` | `/meetings/:id/decisions/:did` | officer | Delete a decision |
@@ -224,6 +225,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/groups` | member | List groups |
 | `POST` / `GET` / `PATCH` / `DELETE` | `/groups[/:id]` | admin | Manage groups |
 | `PUT` | `/groups/:id/members` | admin | Replace a group's member list |
+| `GET` | `/groups/:id/member-ids` | officer | Just the member IDs (feeds roster bulk-select, e.g. meeting attendance) |
 | `GET` / `PUT` | `/resources/:id/groups` | officer | Groups attached to a resource |
 
 ### Accounting (general ledger — Phase A)

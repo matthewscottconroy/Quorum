@@ -210,6 +210,33 @@ func (r *MembersRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// IDsByMinRole returns active member IDs whose linked user account holds a
+// role at or above the given rank (roleRank ladder). Members with no user
+// account never match: role is a property of the login, not the person.
+func (r *MembersRepo) IDsByMinRole(ctx context.Context, minRank int) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT u.member_id::text
+		FROM users u
+		JOIN members m ON m.id = u.member_id
+		WHERE m.status = 'active'
+		  AND CASE u.role WHEN 'restricted' THEN 1 WHEN 'member' THEN 2
+		                  WHEN 'officer' THEN 3 WHEN 'admin' THEN 4
+		                  WHEN 'superadmin' THEN 5 ELSE 0 END >= $1`, minRank)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // Count returns the number of active members.
 func (r *MembersRepo) Count(ctx context.Context) (int, error) {
 	var n int

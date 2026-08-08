@@ -22,6 +22,24 @@ func NewMembersHandler(r membersRepo, ai actionItemsRepo, d duesRepo) *MembersHa
 	return &MembersHandler{repo: r, actionItems: ai, dues: d}
 }
 
+// IDsByRole returns active member IDs whose linked user holds at least the
+// given role (?min_role=officer). Feeds bulk-select in rosters (e.g. meeting
+// attendance) without exposing per-user account details.
+func (h *MembersHandler) IDsByRole(w http.ResponseWriter, r *http.Request) {
+	minRole := r.URL.Query().Get("min_role")
+	rank, ok := roleRank[minRole]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "min_role must be one of restricted, member, officer, admin, superadmin", "bad_request")
+		return
+	}
+	ids, err := h.repo.IDsByMinRole(r.Context(), rank)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"member_ids": ids})
+}
+
 // List handles GET requests for a paginated, filterable list of members.
 func (h *MembersHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()

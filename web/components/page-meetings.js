@@ -194,6 +194,8 @@ class PageMeetings extends HTMLElement {
                 </div>
                 <button class="btn-secondary" id="add-decision-btn" style="width:100%">+ Add decision</button>
               </div>`:''}
+            <h3 style="margin:1rem 0 .5rem;font-size:.95rem">Attendance</h3>
+            <div id="attendance-section"><span class="spinner"></span></div>
           </div>
 
           <div id="gov-section" style="grid-column:1 / -1;border-top:1px solid var(--color-border);padding-top:1rem">
@@ -241,6 +243,7 @@ class PageMeetings extends HTMLElement {
     };
 
     renderDecisions(mt.decisions);
+    this.renderAttendance(dialog, id, mt);
     this.renderGovernance(dialog, id);
     this.renderMinutes(dialog, id, mt);
 
@@ -288,6 +291,114 @@ class PageMeetings extends HTMLElement {
         });
         toast('Saved','success');
       } catch { toast('Save failed','error'); }
+    }));
+  }
+
+  // ─── Attendance roster ─────────────────────────────────────────────────────
+
+  /**
+   * Checkbox roster with bulk-select tools: everyone, no one, by minimum
+   * role (linked user account), by member tier, or by visibility group —
+   * then fine-tune individually before saving.
+   */
+  async renderAttendance(dialog, meetingId, mt) {
+    const host = dialog.querySelector('#attendance-section');
+    if (!host) return;
+    const attending = new Map((mt.attendees ?? []).map(a => [a.member_id, a.present]));
+
+    if (!canWrite()) {
+      const names = (mt.attendees ?? []).map(a => esc(a.member_name)).join(', ');
+      host.innerHTML = names
+        ? `<p style="font-size:.85rem">${names}</p>`
+        : '<p style="font-size:.85rem;color:var(--color-text-muted)">No attendees recorded.</p>';
+      return;
+    }
+
+    let members = [], groups = [];
+    try {
+      const mp = await api('GET', '/members?limit=200&status=active');
+      members = mp?.data ?? mp ?? [];
+      groups = await api('GET', '/groups') ?? [];
+    } catch { host.innerHTML = '<p class="empty-state">Failed to load members.</p>'; return; }
+    if (!dialog.isConnected) return;
+
+    const tiers = [...new Set(members.map(m => m.tier).filter(Boolean))].sort();
+    host.innerHTML = `
+      <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.5rem">
+        <button class="btn-secondary" id="att-all" style="font-size:.75rem">All</button>
+        <button class="btn-secondary" id="att-none" style="font-size:.75rem">None</button>
+        <button class="btn-secondary" id="att-officers" style="font-size:.75rem">Officers+</button>
+        <select id="att-tier" style="font-size:.75rem;max-width:9rem">
+          <option value="">+ tier…</option>
+          ${tiers.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+        </select>
+        <select id="att-group" style="font-size:.75rem;max-width:9rem">
+          <option value="">+ group…</option>
+          ${groups.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="att-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.4rem .6rem">
+        ${members.map(m => `
+          <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
+            <input type="checkbox" class="att-cb" value="${esc(m.id)}" ${attending.has(m.id) ? 'checked' : ''}>
+            <span style="flex:1">${esc(m.display_name)}</span>
+            <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
+          </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem">No active members.</p>'}
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.5rem">
+        <span id="att-count" style="font-size:.78rem;color:var(--color-text-muted)"></span>
+        <button class="btn-primary" id="att-save" style="font-size:.8rem">Save attendance</button>
+      </div>`;
+
+    const boxes = () => [...host.querySelectorAll('.att-cb')];
+    const recount = () => {
+      host.querySelector('#att-count').textContent =
+        `${boxes().filter(b => b.checked).length} of ${members.length} attending`;
+    };
+    const setChecked = (ids, on) => {
+      const set = new Set(ids);
+      boxes().forEach(b => { if (set.has(b.value)) b.checked = on; });
+      recount();
+    };
+    boxes().forEach(b => b.addEventListener('change', recount));
+    recount();
+
+    host.querySelector('#att-all').addEventListener('click', () => setChecked(members.map(m => m.id), true));
+    host.querySelector('#att-none').addEventListener('click', () => setChecked(members.map(m => m.id), false));
+    host.querySelector('#att-officers').addEventListener('click', async () => {
+      try {
+        const res = await api('GET', '/members/ids?min_role=officer');
+        setChecked(res.member_ids ?? [], true);
+      } catch { toast('Could not load officers', 'error'); }
+    });
+    host.querySelector('#att-tier').addEventListener('change', e => {
+      if (!e.target.value) return;
+      setChecked(members.filter(m => m.tier === e.target.value).map(m => m.id), true);
+      e.target.value = '';
+    });
+    host.querySelector('#att-group').addEventListener('change', async e => {
+      const gid = e.target.value;
+      if (!gid) return;
+      e.target.value = '';
+      try {
+        const res = await api('GET', `/groups/${gid}/member-ids`);
+        setChecked(res.member_ids ?? [], true);
+      } catch { toast('Could not load group members', 'error'); }
+    });
+    const saveBtn = host.querySelector('#att-save');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const roster = boxes().filter(b => b.checked).map(b => ({
+        member_id: b.value,
+        // Keep an existing present/absent flag; newly added people default to present.
+        present: attending.get(b.value) ?? true,
+      }));
+      try {
+        const saved = await api('PUT', `/meetings/${meetingId}/attendees`, { attendees: roster });
+        attending.clear();
+        saved.forEach(a => attending.set(a.member_id, a.present));
+        toast('Attendance saved', 'success');
+        recount();
+      } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
     }));
   }
 

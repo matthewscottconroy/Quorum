@@ -384,6 +384,7 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/dashboard", dashH.Summary)
 
 			r.With(mw.RequireRole("member")).Get("/members", membersH.List)
+			r.With(mw.RequireRole("officer")).Get("/members/ids", membersH.IDsByRole)
 			r.With(mw.RequireRole("officer")).Post("/members", membersH.Create)
 			r.Get("/members/{id}", membersH.Get) // ownership-scoped
 			r.With(mw.RequireRole("officer")).Patch("/members/{id}", membersH.Update)
@@ -615,6 +616,7 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/groups", groupsH.List)
 			r.With(mw.RequireRole("admin")).Post("/groups", groupsH.Create)
 			r.With(mw.RequireRole("admin")).Get("/groups/{id}", groupsH.Get)
+			r.With(mw.RequireRole("officer")).Get("/groups/{id}/member-ids", groupsH.MemberIDs)
 			r.With(mw.RequireRole("admin")).Patch("/groups/{id}", groupsH.Update)
 			r.With(mw.RequireRole("admin")).Delete("/groups/{id}", groupsH.Delete)
 			r.With(mw.RequireRole("admin")).Put("/groups/{id}/members", groupsH.SetMembers)
