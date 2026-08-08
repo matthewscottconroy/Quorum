@@ -705,10 +705,14 @@ customElements.define('page-settings', PageSettings);
 (function () {
   const proto = customElements.get('page-settings')?.prototype;
   if (!proto) return;
-  const orig = proto.connectedCallback;
-  proto.connectedCallback = function () {
-    orig.call(this);
-    queueMicrotask(async () => {
+  // Hook render(), not connectedCallback: the base class re-renders on
+  // several events, and each re-render replaces the DOM (and any listeners
+  // wired from outside). Re-wire after every render instead.
+  const origRender = proto.render;
+  proto.render = async function (...args) {
+    await origRender.apply(this, args);
+    (async () => {
+      if (!this.querySelector('#og-save')) return; // non-admin: card absent
       const { api } = await import('../app.js');
       const { toast } = await import('./toast-notification.js');
       const { esc } = await import('../utils.js');
@@ -787,6 +791,6 @@ customElements.define('page-settings', PageSettings);
           .catch(err => toast(err.error ?? 'Superadmin only', 'error'));
       });
       loadCont();
-    });
+    })();
   };
 })();
