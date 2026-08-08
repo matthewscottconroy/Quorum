@@ -147,7 +147,7 @@ func (h *AuthHandler) logAudit(r *http.Request, userID, action string) {
 // refresh cookie, and writes the standard login response. Shared by the
 // single-step login path and the second-factor (TOTP) completion path.
 func (h *AuthHandler) issueSession(w http.ResponseWriter, r *http.Request, user *model.User) {
-	access, err := auth.IssueAccessToken(user.ID, user.Role, derefStr(user.MemberID), h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
+	access, err := auth.IssueAccessTokenFor(user.ID, user.Role, derefStr(user.MemberID), user.TOTPEnabled, h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
 		return
@@ -353,7 +353,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	access, err := auth.IssueAccessToken(user.ID, user.Role, derefStr(user.MemberID), h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
+	access, err := auth.IssueAccessTokenFor(user.ID, user.Role, derefStr(user.MemberID), user.TOTPEnabled, h.cfg.JWTSecret, h.cfg.JWTAccessTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "token error", "internal_error")
 		return

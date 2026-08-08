@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"quorum/internal/auth"
 	"quorum/internal/model"
 )
 
@@ -155,5 +156,44 @@ func TestDownloadFile_PreviewOnlyRefused(t *testing.T) {
 	h.DownloadFile(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("preview-only download: got %d, want 403 (%s)", rr.Code, rr.Body)
+	}
+}
+
+// ---- org-mandated 2FA gate ----
+
+func TestMFAGate(t *testing.T) {
+	mw := NewMiddleware(testSecret, false)
+	policy := "member"
+	mw.SetMFAPolicy(func() string { return policy })
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	callPath := func(token, path string) int {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		mw.Auth(okHandler).ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	unenrolled, _ := auth.IssueAccessTokenFor("u1", "member", "", false, testSecret, time.Minute)
+	enrolled, _ := auth.IssueAccessTokenFor("u1", "member", "", true, testSecret, time.Minute)
+
+	if got := callPath(unenrolled, "/api/v1/members"); got != 403 {
+		t.Fatalf("unenrolled under mandate: got %d, want 403", got)
+	}
+	for _, p := range []string{"/api/v1/auth/2fa/setup", "/api/v1/auth/2fa/enable", "/api/v1/auth/me", "/api/v1/auth/logout"} {
+		if got := callPath(unenrolled, p); got != 200 {
+			t.Fatalf("exempt path %s: got %d, want 200", p, got)
+		}
+	}
+	if got := callPath(enrolled, "/api/v1/members"); got != 200 {
+		t.Fatalf("enrolled: got %d, want 200", got)
+	}
+	policy = "admin" // mandate above this user's role: not gated
+	if got := callPath(unenrolled, "/api/v1/members"); got != 200 {
+		t.Fatalf("below mandate role: got %d, want 200", got)
+	}
+	policy = "off"
+	if got := callPath(unenrolled, "/api/v1/members"); got != 200 {
+		t.Fatalf("policy off: got %d, want 200", got)
 	}
 }

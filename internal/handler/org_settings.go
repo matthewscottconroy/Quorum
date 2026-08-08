@@ -34,6 +34,11 @@ var orgSettingKeys = map[string]orgSetting{
 	// Free text shown to members on My Account ("how to pay": Zelle address,
 	// Venmo handle, checks payable to...).
 	"how_to_pay": {validate: func(v string) bool { return len(v) <= 4000 }},
+	// Org-wide two-factor mandate: accounts at/above this role must enroll.
+	// Member-visible so the enrollment screen can explain the policy.
+	"require_2fa": {validate: func(v string) bool {
+		return v == "off" || v == "admin" || v == "officer" || v == "member"
+	}},
 	// Continuity (roadmap E1-E3); admin-only visibility - these describe
 	// where the org's keys live and who gets the bus-factor alarm.
 	"infrastructure_facts":   {validate: func(v string) bool { return len(v) <= 4000 }, adminOnly: true},

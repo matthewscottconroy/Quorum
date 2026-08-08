@@ -28,6 +28,10 @@ type Claims struct {
 	// MemberID links the account to a member record, or "" if unlinked. Used to
 	// scope what a `restricted` user may read (only their own record).
 	MemberID string `json:"member_id,omitempty"`
+	// MFA is true when the account had two-factor enabled at issuance. The
+	// require-2FA middleware gate reads it (stateless enforcement); it
+	// refreshes to true on the first token minted after enrollment.
+	MFA bool `json:"mfa,omitempty"`
 	// Purpose distinguishes token types. Access tokens leave it empty; an
 	// interim two-factor token sets it to "mfa" and is accepted ONLY by the
 	// second-factor login step, never by the API middleware.
@@ -63,12 +67,19 @@ func DummyCheckPassword(password string) bool {
 }
 
 // IssueAccessToken signs an HS256 JWT carrying userID, role, and the linked
-// memberID (may be empty), expiring after ttl.
+// memberID (may be empty), expiring after ttl. MFA claim defaults to false;
+// login/refresh paths use IssueAccessTokenFor to carry enrollment state.
 func IssueAccessToken(userID, role, memberID, secret string, ttl time.Duration) (string, error) {
+	return IssueAccessTokenFor(userID, role, memberID, false, secret, ttl)
+}
+
+// IssueAccessTokenFor is IssueAccessToken with the MFA-enrolled claim.
+func IssueAccessTokenFor(userID, role, memberID string, mfa bool, secret string, ttl time.Duration) (string, error) {
 	claims := Claims{
 		UserID:   userID,
 		Role:     role,
 		MemberID: memberID,
+		MFA:      mfa,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

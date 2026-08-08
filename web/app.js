@@ -93,6 +93,14 @@ export function clearAuth() {
  * @returns {Promise<object|null>} Parsed response body.
  * @throws {object} Parsed error response `{error, code}` on failure.
  */
+/** Org-mandated 2FA: any mfa_required answer routes to the enrollment page. */
+function mfaGate(err) {
+  if (err?.code === 'mfa_required' && routePath(location.hash) !== '#/setup-2fa') {
+    navigate('#/setup-2fa');
+  }
+  return err;
+}
+
 export async function api(method, path, body) {
   // Pre-emptively refresh if the token is known to be expired (saves one round-trip).
   if (_token && _tokenExpiresAt > 0 && Date.now() >= _tokenExpiresAt && path !== '/auth/login') {
@@ -130,7 +138,7 @@ export async function api(method, path, body) {
       } finally {
         clearTimeout(t2);
       }
-      if (!retry.ok) throw await retry.json().catch(() => ({ error: retry.statusText }));
+      if (!retry.ok) throw mfaGate(await retry.json().catch(() => ({ error: retry.statusText })));
       return retry.status === 204 ? null : retry.json();
     }
     clearAuth();
@@ -138,7 +146,7 @@ export async function api(method, path, body) {
     throw { error: 'Session expired', code: 'unauthorized' };
   }
 
-  if (!res.ok) throw await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw mfaGate(await res.json().catch(() => ({ error: res.statusText })));
   return res.status === 204 ? null : res.json();
 }
 
@@ -350,6 +358,7 @@ const routes = {
   '#/board':           '<page-board>',
   '#/discussions':     '<page-chat>',
   '#/funds':           '<page-funds>',
+  '#/setup-2fa':       '<page-setup-2fa>',
   '#/accounting':      '<page-accounting>',
   '#/reports':         '<page-reports>',
   '#/plans':           '<page-plans>',
@@ -407,6 +416,7 @@ import './components/page-calendar.js';
 import './components/page-board.js';
 import './components/page-chat.js';
 import './components/page-funds.js';
+import './components/page-setup-2fa.js';
 import './components/page-accounting.js';
 import './components/page-reports.js';
 import './components/page-plans.js';

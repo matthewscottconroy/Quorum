@@ -260,6 +260,17 @@ wrong codes lock 2FA attempts briefly (per account) — wait a minute.
 with the new device. You can regenerate a fresh set of recovery codes (this
 invalidates the old set) from the same settings area — password required.
 
+### 2.6a When your organization requires 2FA
+
+Admins can mandate two-factor for accounts at or above a chosen role
+(Settings → Organization settings → `require_2fa`). Under a mandate, an
+account without 2FA can still sign in — but every screen redirects to a
+guided setup page until enrollment is complete (about two minutes; the
+policy is enforced by the server, not the browser). Enrollment lifts the
+requirement immediately. Lost-device recovery is unchanged: recovery codes
+first, operator break-glass as the last resort — which clears enrollment,
+so the mandate simply walks that person through setup again at next login.
+
 ## 2.7 Your active sessions
 
 Your account settings list every device currently signed in as you — with

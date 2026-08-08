@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -174,6 +175,25 @@ func main() {
 	packH := handler.NewAccountingPackHandler(glRepo, glRepo, fundsRepo, auditRepo, auditRepo, authRepo)
 	orgSettingsRepo := repo.NewOrgSettingsRepo(pool)
 	orgSettingsH := handler.NewOrgSettingsHandler(orgSettingsRepo)
+	// Require-2FA policy: cached 30s so the gate costs no DB hit per request.
+	var mfaPolMu sync.Mutex
+	var mfaPolVal string
+	var mfaPolAt time.Time
+	mw.SetMFAPolicy(func() string {
+		mfaPolMu.Lock()
+		defer mfaPolMu.Unlock()
+		if time.Since(mfaPolAt) < 30*time.Second {
+			return mfaPolVal
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		all, err := orgSettingsRepo.All(ctx)
+		if err == nil {
+			mfaPolVal = all["require_2fa"]
+			mfaPolAt = time.Now()
+		}
+		return mfaPolVal
+	})
 	continuityRepo := repo.NewContinuityRepo(pool)
 	continuityH := handler.NewContinuityHandler(continuityRepo, handler.PackConfigSources{
 		Settings: orgSettingsRepo, GL: glRepo, Funds: fundsRepo,

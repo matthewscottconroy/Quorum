@@ -184,6 +184,7 @@ type Middleware struct {
 	// (e.g. the k8s ingress) sets X-Real-IP / X-Forwarded-For, otherwise all
 	// clients behind the proxy share one bucket.
 	trustProxy bool
+	mfaPolicy  func() string
 }
 
 // NewMiddleware constructs the shared middleware with separate login and refresh rate limiters.
@@ -248,12 +249,38 @@ func (m *Middleware) Auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "two-factor authentication incomplete", "unauthorized")
 			return
 		}
+		// Org-mandated two-factor: when policy requires it for this role and
+		// the token says not enrolled, everything except the enrollment path
+		// is refused. Stateless (claim-based); enrollment lifts it at the
+		// next token refresh.
+		if m.mfaPolicy != nil && !claims.MFA {
+			if pol := m.mfaPolicy(); pol != "" && pol != "off" &&
+				roleRank[claims.Role] >= roleRank[pol] && !mfaExemptPath(r.URL.Path) {
+				writeError(w, http.StatusForbidden,
+					"your organization requires two-factor authentication: set it up to continue", "mfa_required")
+				return
+			}
+		}
 		ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 		ctx = context.WithValue(ctx, ctxRole, claims.Role)
 		ctx = context.WithValue(ctx, ctxMemberID, claims.MemberID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// mfaExemptPath lists the walled garden a not-yet-enrolled user may reach
+// under a 2FA mandate: see who they are, enroll, and leave.
+func mfaExemptPath(p string) bool {
+	switch strings.TrimPrefix(p, "/api/v1") {
+	case "/auth/me", "/auth/logout", "/auth/2fa/setup", "/auth/2fa/enable", "/settings/org":
+		return true
+	}
+	return false
+}
+
+// SetMFAPolicy wires the require-2FA policy provider (a cached org-settings
+// lookup returning off|admin|officer|member).
+func (m *Middleware) SetMFAPolicy(fn func() string) { m.mfaPolicy = fn }
 
 // RequireRole blocks requests whose role is less than the required level.
 func (m *Middleware) RequireRole(role string) func(http.Handler) http.Handler {
