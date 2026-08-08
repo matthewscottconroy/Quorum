@@ -97,6 +97,14 @@ class PageSettings extends HTMLElement {
           <div class="form-row">
             <div class="form-group" style="max-width:220px"><label for="og-fy">Fiscal year starts (month 1–12)</label>
               <input id="og-fy" type="number" min="1" max="12" value="1"></div>
+            <div class="form-group" style="max-width:300px"><label for="og-2fa">Require two-factor auth</label>
+              <select id="og-2fa">
+                <option value="off">Off (optional for everyone)</option>
+                <option value="admin">Admins and above</option>
+                <option value="officer">Officers and above</option>
+                <option value="member">Everyone (members and above)</option>
+              </select>
+              <div style="font-size:.72rem;color:var(--color-text-muted)">Server-enforced. Un-enrolled accounts at/above the chosen role are walked through setup at next use (takes effect within ~30s).</div></div>
           </div>
           <div class="form-group"><label for="og-pay">How to pay (shown to members)</label>
             <textarea id="og-pay" rows="3" placeholder="Zelle: treasurer@…  ·  Venmo: @org-handle  ·  Checks payable to …"></textarea></div>
@@ -708,6 +716,7 @@ customElements.define('page-settings', PageSettings);
         const st = await api('GET', '/settings/org');
         const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
         set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
+        set('#og-2fa', st.require_2fa ?? 'off');
         set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
         set('#og-contacts', st.continuity_contacts);
       } catch { /* defaults are fine */ }
@@ -715,6 +724,7 @@ customElements.define('page-settings', PageSettings);
         try {
           await api('PUT', '/settings/org', {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
+            require_2fa: this.querySelector('#og-2fa').value,
             how_to_pay: this.querySelector('#og-pay').value,
             infrastructure_facts: this.querySelector('#og-infra').value,
             continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
