@@ -722,7 +722,9 @@ func staticHandler(webFS fs.FS) http.Handler {
 		// The root serves the app shell (hash routing means the browser always
 		// requests "/" for navigation). Do not treat it as a directory listing.
 		if r.URL.Path == "/" {
-			w.Header().Set("Cache-Control", "public, max-age=300")
+			// The shell must always revalidate or an upgrade can leave the
+			// browser running mixed module versions (buttons silently dead).
+			w.Header().Set("Cache-Control", "no-cache")
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -740,7 +742,18 @@ func staticHandler(webFS fs.FS) http.Handler {
 				return
 			}
 		}
-		w.Header().Set("Cache-Control", "public, max-age=300")
+		switch {
+		case strings.HasPrefix(clean, "vendor/"):
+			// Large, version-pinned libraries (mermaid, sheetjs, mammoth).
+			w.Header().Set("Cache-Control", "public, max-age=86400")
+		case strings.HasSuffix(clean, ".js") || strings.HasSuffix(clean, ".css") || strings.HasSuffix(clean, ".html"):
+			// App code: embedded FS carries no validators, so no-cache means
+			// a fresh copy every load - the price of guaranteed coherence
+			// after upgrades, and these files are small and gzipped.
+			w.Header().Set("Cache-Control", "no-cache")
+		default:
+			w.Header().Set("Cache-Control", "public, max-age=300")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }

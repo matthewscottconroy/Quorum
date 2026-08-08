@@ -159,11 +159,19 @@ class PageChat extends HTMLElement {
   }
 
   composerHTML(prefix) {
+    if (!this._current?.is_member) {
+      return `
+      <div class="chat-compose" style="display:flex;gap:.6rem;align-items:center">
+        <span style="font-size:.82rem;color:var(--color-text-muted);flex:1">
+          You're viewing this channel but haven't joined it — join to post.</span>
+        <button class="btn-secondary" id="${prefix}-join" style="font-size:.8rem">Join channel</button>
+      </div>`;
+    }
     return `
       <div class="chat-compose">
         <div id="${prefix}-doc-chip" style="display:none"></div>
         <div style="display:flex;gap:.4rem;align-items:flex-end">
-          <textarea id="${prefix}-input" rows="2" placeholder="Write a message… (Ctrl+Enter sends)" style="flex:1"></textarea>
+          <textarea id="${prefix}-input" rows="2" placeholder="Write a message… (Enter sends, Shift+Enter for a new line)" style="flex:1"></textarea>
           <button class="btn-ghost" id="${prefix}-attach" title="Link a document from Resources">📄</button>
           <button class="btn-primary" id="${prefix}-send">Send</button>
         </div>
@@ -248,7 +256,9 @@ class PageChat extends HTMLElement {
       } catch (err) { toast(err.error ?? 'Send failed', 'error'); }
     };
     this.querySelector(`#${prefix}-send`)?.addEventListener('click', send);
-    input?.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send(); });
+    input?.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
   }
 
   wireMain() {
@@ -289,7 +299,16 @@ class PageChat extends HTMLElement {
         },
       });
     });
-    if (this._thread) this.wireComposer('th', this._thread.id);
+    const joinBtn = this.querySelector('#ch-join') ?? this.querySelector('#th-join');
+    if (joinBtn) {
+      joinBtn.addEventListener('click', async () => {
+        try {
+          await api('POST', `/channels/${c.id}/members`, { user_id: getUser().id });
+          await this.openChannel(c.id);
+          this.loadChannels();
+        } catch (err) { toast(err.error ?? 'Join failed', 'error'); }
+      });
+    } else if (this._thread) this.wireComposer('th', this._thread.id);
     else this.wireComposer('ch', null);
   }
 

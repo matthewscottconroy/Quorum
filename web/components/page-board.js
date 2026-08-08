@@ -607,7 +607,7 @@ class PageBoard extends HTMLElement {
           <span class="spinner"></span>
         </div>
         <div style="display:flex;gap:.4rem;align-items:flex-start">
-          <textarea id="cm-input" rows="2" placeholder="Write a comment…" style="flex:1"></textarea>
+          <textarea id="cm-input" rows="2" placeholder="Write a comment… (Enter sends, Shift+Enter for a new line)" style="flex:1"></textarea>
           <button class="btn-primary" id="cm-send">Comment</button>
         </div>
       </div>`;
@@ -656,7 +656,7 @@ class PageBoard extends HTMLElement {
     };
     dialog.querySelector('#cm-send').addEventListener('click', send);
     dialog.querySelector('#cm-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send();
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
     loadThread();
   }
