@@ -338,7 +338,7 @@ class PageDues extends HTMLElement {
       const shown = pickerMembers.filter(m => !q || m.display_name.toLowerCase().includes(q) || (m.tier ?? '').toLowerCase().includes(q));
       mlist.innerHTML = shown.map(m => `
         <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
-          <input type="checkbox" class="inv-mcb" value="${esc(m.id)}" ${picked.has(m.id) ? 'checked' : ''}>
+          <input type="checkbox" class="inv-mcb" style="width:auto" value="${esc(m.id)}" ${picked.has(m.id) ? 'checked' : ''}>
           <span style="flex:1">${esc(m.display_name)}</span>
           <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
         </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem;margin:.3rem 0">No matching members.</p>';

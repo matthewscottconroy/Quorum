@@ -561,7 +561,9 @@ CPA statements export.
 
 ### 5.3.2 Record attendance
 
-Open a meeting and use the **Attendance** panel (right-hand column). It lists
+You can pick attendees right in the **Schedule meeting** form (the optional
+**Attendees** block at the bottom), or afterwards: open the meeting and use
+the **Attendance** panel (right-hand column). Both use the same picker. It lists
 every active member with a checkbox, plus bulk-select tools so you rarely have
 to click one by one:
 
