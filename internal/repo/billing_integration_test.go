@@ -66,9 +66,10 @@ func TestIntegration_ContactInvoices(t *testing.T) {
 	recvBefore := acctBalance(t, pool, recvAcct, "USD")
 
 	// A contact invoice goes through the same batch path as member invoices.
+	period := uniq("SVC")
 	created, err := dues.CreateInvoiceBatch(ctx, []*model.DuesInvoice{{
 		ContactID: &contact, AmountMinor: 25000, Currency: "USD",
-		PeriodLabel: uniq("SVC"), DueDate: time.Date(2030, 1, 31, 0, 0, 0, 0, time.UTC), Status: "pending",
+		PeriodLabel: period, DueDate: time.Date(2030, 1, 31, 0, 0, 0, 0, time.UTC), Status: "pending",
 	}})
 	if err != nil {
 		t.Fatalf("contact invoice: %v", err)
@@ -101,7 +102,7 @@ func TestIntegration_ContactInvoices(t *testing.T) {
 	}
 
 	// ListInvoices labels the counterparty and carries contact_id.
-	got, _, err := dues.ListInvoices(ctx, repo.InvoiceFilter{Limit: 5})
+	got, _, err := dues.ListInvoices(ctx, repo.InvoiceFilter{PeriodLabel: period, Limit: 5})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
