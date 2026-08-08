@@ -83,6 +83,15 @@ class PageAccounting extends HTMLElement {
               ${tb.reconciled ? '✓ GL and dues subledger reconcile' : '⚠ RECONCILIATION MISMATCH — investigate'}</div>
           </div>
           <div class="card" style="padding:1rem">
+            <h3 style="margin:0 0 .5rem;font-size:.95rem">Payables aging <span style="font-weight:400;color:var(--color-text-muted)">as of ${esc(to)}</span></h3>
+            <table style="width:100%"><tbody>
+              ${(st.ap_aging ?? []).map(a => `<tr><td>${esc(a.currency)}</td><td>${esc(a.bucket)}</td><td>${a.invoices} bills</td>
+                <td style="text-align:right">${formatMoney(a.amount, a.currency)}</td></tr>`).join('') || '<tr><td style="color:var(--color-text-muted)">No open bills.</td></tr>'}
+            </tbody></table>
+            <div style="font-size:.78rem;color:var(--color-text-muted);margin-top:.4rem">
+              Open vendor bills live under <a href="#/payables">Payables</a>.</div>
+          </div>
+          <div class="card" style="padding:1rem">
             <h3 style="margin:0 0 .5rem;font-size:.95rem">Closed periods</h3>
             ${(periods ?? []).map(p => `
               <div style="display:flex;justify-content:space-between;font-size:.85rem;padding:.15rem 0">

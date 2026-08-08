@@ -259,8 +259,19 @@ class PageDues extends HTMLElement {
       body: `
         <div class="modal-body">
           <div class="form-group">
+            <label for="f-ctype">Bill to</label>
+            <select id="f-ctype">
+              <option value="member">Member(s) — dues receivable</option>
+              <option value="contact">Outside customer (contact) — service receivable</option>
+            </select>
+          </div>
+          <div class="form-group" id="member-row">
             <label for="f-members">Member ID(s) — comma-separated UUIDs</label>
             <input id="f-members" placeholder="uuid1, uuid2, …">
+          </div>
+          <div class="form-group" id="contact-row" style="display:none">
+            <label for="f-contact">Customer</label>
+            <select id="f-contact"><option value="">Loading contacts…</option></select>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -295,8 +306,19 @@ class PageDues extends HTMLElement {
     });
 
     dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    const ctype = dialog.querySelector('#f-ctype');
+    ctype.addEventListener('change', () => {
+      const contact = ctype.value === 'contact';
+      dialog.querySelector('#member-row').style.display = contact ? 'none' : '';
+      dialog.querySelector('#contact-row').style.display = contact ? '' : 'none';
+    });
+    api('GET', '/contacts?limit=200').then(pg => {
+      dialog.querySelector('#f-contact').innerHTML = '<option value="">— choose —</option>' +
+        (pg?.data ?? pg ?? []).map(c => `<option value="${esc(c.id)}">${esc(c.name)}${c.organization ? ' — ' + esc(c.organization) : ''}</option>`).join('');
+    }).catch(() => {});
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const isContact = ctype.value === 'contact';
       const membersRaw = dialog.querySelector('#f-members').value;
       const memberIDs  = membersRaw.split(',').map(s => s.trim()).filter(Boolean);
       const currency   = (dialog.querySelector('#f-currency').value || 'USD').trim().toUpperCase();
@@ -316,7 +338,12 @@ class PageDues extends HTMLElement {
       if (!body.period_label || !body.due_date) {
         toast('Amount, period, and due date are required', 'error'); return;
       }
-      if (!memberIDs.length) { toast('At least one member ID required', 'error'); return; }
+      if (isContact) {
+        const contact_id = dialog.querySelector('#f-contact').value;
+        if (!contact_id) { toast('Choose a customer', 'error'); return; }
+        delete body.member_ids;
+        body.contact_id = contact_id;
+      } else if (!memberIDs.length) { toast('At least one member ID required', 'error'); return; }
       try {
         await api('POST', '/dues', body);
         toast('Invoice(s) created', 'success');

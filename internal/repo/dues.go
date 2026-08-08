@@ -65,13 +65,14 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) OVER() AS total_count,
-		       di.id::text, di.member_id::text, di.amount, di.currency, di.period_label,
+		       di.id::text, coalesce(di.member_id::text, ''), di.amount, di.currency, di.period_label,
 		       di.due_date, di.status, di.notes, di.created_at, di.updated_at,
-		       m.display_name
+		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text
 		FROM dues_invoices di
-		JOIN members m ON m.id = di.member_id
+		LEFT JOIN members m ON m.id = di.member_id
+		LEFT JOIN contacts c ON c.id = di.contact_id
 		%s
-		ORDER BY di.due_date DESC, m.display_name
+		ORDER BY di.due_date DESC, 12
 		LIMIT $%d OFFSET $%d`, where, idx, idx+1)
 	args = append(args, limit, f.Offset)
 
@@ -87,7 +88,7 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		var inv model.DuesInvoice
 		if err := rows.Scan(&total, &inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName); err != nil {
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID); err != nil {
 			return nil, 0, err
 		}
 		invoices = append(invoices, inv)
@@ -109,15 +110,16 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error) {
 	var inv model.DuesInvoice
 	err := r.db.QueryRow(ctx, `
-		SELECT di.id::text, di.member_id::text, di.amount, di.currency, di.period_label,
+		SELECT di.id::text, coalesce(di.member_id::text, ''), di.amount, di.currency, di.period_label,
 		       di.due_date, di.status, di.notes, di.created_at, di.updated_at,
-		       m.display_name
+		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text
 		FROM dues_invoices di
-		JOIN members m ON m.id = di.member_id
+		LEFT JOIN members m ON m.id = di.member_id
+		LEFT JOIN contacts c ON c.id = di.contact_id
 		WHERE di.id = $1::uuid`, id).
 		Scan(&inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName)
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,11 +143,11 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 	for _, inv := range invs {
 		var c model.DuesInvoice
 		err := tx.QueryRow(ctx, `
-			INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status, notes)
-			VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
-			RETURNING id::text, member_id::text, amount, currency, period_label, due_date, status, notes, created_at, updated_at`,
-			inv.MemberID, inv.AmountMinor, inv.Currency, inv.PeriodLabel, inv.DueDate, inv.Status, inv.Notes).
-			Scan(&c.ID, &c.MemberID, &c.AmountMinor, &c.Currency, &c.PeriodLabel, &c.DueDate, &c.Status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
+			INSERT INTO dues_invoices (member_id, contact_id, amount, currency, period_label, due_date, status, notes)
+			VALUES (nullif($1, '')::uuid, $8::uuid, $2, $3, $4, $5, $6, $7)
+			RETURNING id::text, coalesce(member_id::text, ''), contact_id::text, amount, currency, period_label, due_date, status, notes, created_at, updated_at`,
+			inv.MemberID, inv.AmountMinor, inv.Currency, inv.PeriodLabel, inv.DueDate, inv.Status, inv.Notes, inv.ContactID).
+			Scan(&c.ID, &c.MemberID, &c.ContactID, &c.AmountMinor, &c.Currency, &c.PeriodLabel, &c.DueDate, &c.Status, &c.Notes, &c.CreatedAt, &c.UpdatedAt)
 		if err != nil {
 			return nil, err
 		}

@@ -216,6 +216,9 @@ func main() {
 		}
 	})
 
+	billsRepo := repo.NewBillsRepo(pool)
+	billsH := handler.NewBillsHandler(billsRepo)
+	accountingH.SetAPAging(billsRepo)
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
@@ -553,6 +556,12 @@ func main() {
 			r.With(mw.RequireRole("admin")).Post("/accounting/accounts", accountingH.CreateAccount)
 			r.With(mw.RequireRole("admin")).Patch("/accounting/accounts/{id}", accountingH.UpdateAccount)
 			r.With(mw.RequireRole("admin")).Post("/accounting/entries", accountingH.ManualEntry)
+			// Vendor bills (accounts payable).
+			r.With(mw.RequireRole("member")).Get("/bills", billsH.List)
+			r.With(mw.RequireRole("officer")).Post("/bills", billsH.Create)
+			r.With(mw.RequireRole("officer")).Post("/bills/{id}/pay", billsH.Pay)
+			r.With(mw.RequireRole("admin")).Post("/bills/{id}/void", billsH.Void)
+
 			r.With(mw.RequireRole("officer")).Get("/accounting/posting-rules", accountingH.PostingRules)
 			r.With(mw.RequireRole("admin")).Put("/accounting/posting-rules", accountingH.SetPostingRules)
 			r.With(mw.RequireRole("admin")).Get("/reports/accounting-pack.zip", packH.Zip)

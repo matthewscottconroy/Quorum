@@ -11,6 +11,7 @@ const LINKS = [
   { hash: '#/members',    label: 'Members',    icon: '👥', minRole: 'member' },
   { hash: '#/dues',       label: 'Dues',       icon: '💳', minRole: 'officer' },
   { hash: '#/funds',      label: 'Funds',      icon: '🏦', minRole: 'member' },
+  { hash: '#/payables',   label: 'Payables',   icon: '🧾', minRole: 'officer' },
   { hash: '#/accounting', label: 'Accounting', icon: '📒', minRole: 'officer' },
   { hash: '#/budget',     label: 'Budget',     icon: '📊', minRole: 'officer' },
   { hash: '#/analytics',  label: 'Analytics',  icon: '📈', minRole: 'officer' },

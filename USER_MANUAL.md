@@ -436,13 +436,34 @@ permanently delete records (those are admin/superadmin actions).
 > currency** as the invoice it applies to. Quorum rejects a mismatched-currency
 > payment, and only same-currency payments count toward an invoice's paid status.
 
+Every direction money can flow has a home, and each posts to the general
+ledger automatically:
+
+| Money flows… | Use | Where |
+|---|---|---|
+| Member → organization (dues) | Member invoice | **Dues** |
+| Customer → organization (services you sold) | Contact invoice (Bill to → Outside customer) | **Dues** (5.2.2) |
+| Organization → vendor (services you bought) | Vendor bill | **Payables** (5.2.8) |
+| Organization → member (reimbursement) | Bill payable to the member (added as a contact), or a fund purchase | **Payables** (5.2.8) / **Funds** (6.6a) |
+
 ### 5.2.2 Create a single invoice
 
 1. Go to **Dues** and select **+ New invoice**.
-2. Choose the **member**, enter the **amount** (e.g. `100.00`), the **currency**
-   (3-letter code, default `USD`), a **period label** (e.g. `2026 Q1` or
-   `Annual 2026`), and a **due date**.
-3. Optionally add notes. Select **Save**. The invoice starts as **pending**.
+2. Under **Bill to**, keep the default **Member(s)** for dues, or switch to
+   **Outside customer (contact)** to invoice someone who is not a member —
+   a client you provided services to, for example. Contact invoices post to
+   **Service Income** on the books instead of dues income; everything else
+   (payments, statuses, waivers) works the same.
+3. Choose the member or customer, enter the **amount** (e.g. `100.00`), the
+   **currency** (3-letter code, default `USD`), a **period label** (e.g.
+   `2026 Q1`, `Annual 2026`, or an invoice reference like `INV-0042`), and a
+   **due date**.
+4. Optionally add notes. Select **Save**. The invoice starts as **pending**.
+
+> **Which direction does the money flow?** Invoices (member or contact) are
+> money **owed to** the organization. Money the organization **owes to
+> someone else** — a vendor bill, or reimbursing a member who bought
+> something out of pocket — is recorded under **Payables** (see 5.2.8).
 
 ### 5.2.3 Create invoices in bulk
 
@@ -487,6 +508,34 @@ schedule** instead of remembering to bulk-invoice: choose the members, amount,
 currency, and cadence, and the nightly cycle generates each period's invoices
 automatically — exactly once per member per period, even across restarts.
 Pause or edit the schedule any time; already-issued invoices are unaffected.
+
+### 5.2.8 Payables: money the organization owes (vendor bills & reimbursements)
+
+The **Payables** page (officer and up) is the mirror image of invoicing: it
+records what the organization owes an outside party — a vendor's bill, or a
+member who paid for something out of pocket and needs reimbursing. (For a
+member reimbursement, first add the member to **Contacts** so they can be a
+payee; the contact entry represents them as a counterparty, separate from
+their membership record.)
+
+1. **Record the bill** with **+ New bill**: choose the vendor (from Contacts),
+   amount, currency, the **expense account** it belongs to (from your chart of
+   accounts), and optionally a bill date, due date, and memo. Recording a bill
+   immediately puts the liability on the books — debit the expense, credit
+   **Accounts Payable** — so your balance sheet is honest even before you pay.
+2. **Pay it** when the money actually moves: choose the source — **operating
+   cash** (with the payment method, so the cash posts to the right
+   provider-routed account) or a **fund** (refused if the fund doesn't hold
+   enough). Paying posts debit A/P / credit cash and marks the bill **paid**.
+3. **Void** (admin only) reverses an open bill with a mirroring journal entry
+   if it was recorded in error.
+
+Bills are permanent records: they cannot be deleted, and a paid or void bill
+is frozen by the database. If you keep **cash-basis** books, unpaid bills
+simply don't appear in your statements until paid — the accrual entry touches
+no cash account, so both presentations stay correct with no extra work. Open
+bills appear in the **Payables aging** block on the Accounting page and in the
+CPA statements export.
 
 ## 5.3 Meetings
 

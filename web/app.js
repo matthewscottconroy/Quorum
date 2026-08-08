@@ -358,6 +358,7 @@ const routes = {
   '#/board':           '<page-board>',
   '#/discussions':     '<page-chat>',
   '#/funds':           '<page-funds>',
+  '#/payables':        '<page-payables>',
   '#/setup-2fa':       '<page-setup-2fa>',
   '#/accounting':      '<page-accounting>',
   '#/reports':         '<page-reports>',
@@ -416,6 +417,7 @@ import './components/page-calendar.js';
 import './components/page-board.js';
 import './components/page-chat.js';
 import './components/page-funds.js';
+import './components/page-payables.js';
 import './components/page-setup-2fa.js';
 import './components/page-accounting.js';
 import './components/page-reports.js';

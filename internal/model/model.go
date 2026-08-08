@@ -55,6 +55,7 @@ var ValidInvoiceStatuses = map[string]bool{
 type DuesInvoice struct {
 	ID           string        `json:"id"`
 	MemberID     string        `json:"member_id"`
+	ContactID    *string       `json:"contact_id,omitempty"`
 	AmountMinor  int64         `json:"amount_minor"`
 	Currency     string        `json:"currency"`
 	PeriodLabel  string        `json:"period_label"`
@@ -868,4 +869,26 @@ type ContinuityChecks struct {
 	CustodyStale    int  `json:"custody_stale"`
 	AttestDays      int  `json:"attest_days"`
 	WatchConfigured bool `json:"watch_configured"`
+}
+
+// Bill is a vendor invoice (accounts payable): accrued at creation, then
+// paid or voided — every step on the books.
+type Bill struct {
+	ID                 string     `json:"id"`
+	ContactID          string     `json:"contact_id"`
+	ContactName        string     `json:"contact_name"`
+	Amount             int64      `json:"amount_minor"`
+	Currency           string     `json:"currency"`
+	Memo               *string    `json:"memo,omitempty"`
+	ExpenseAccountID   string     `json:"expense_account_id"`
+	ExpenseAccountCode string     `json:"expense_account_code"`
+	ExpenseAccountName string     `json:"expense_account_name"`
+	BillDate           time.Time  `json:"bill_date"`
+	DueDate            *time.Time `json:"due_date,omitempty"`
+	Status             string     `json:"status"`
+	PaidAt             *time.Time `json:"paid_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	// Input-only date strings (YYYY-MM-DD); empty means default/null.
+	BillDateStr string `json:"-"`
+	DueDateStr  string `json:"-"`
 }

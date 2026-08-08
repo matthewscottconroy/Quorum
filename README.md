@@ -152,6 +152,8 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 
 **Bulk invoice creation**: include `member_ids` (array) instead of `member_id` to create one invoice per member in a single request.
 
+**Invoicing an outside customer**: pass `contact_id` (a Contacts entry) instead of `member_ids`. The invoice posts to the `income.services` rule instead of `income.dues`, and payments/waivers work exactly as for member invoices. An invoice has exactly one counterparty — member or contact — enforced by a DB CHECK.
+
 ### Meetings
 
 | Method | Path | Min role | Description |
@@ -215,12 +217,21 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/folders` | member | List folders (nested via `parent_id`) |
 | `POST` / `PATCH` / `DELETE` | `/folders[/:id]` | officer | Create / rename / move / delete (cycle-safe; delete requires `?confirm=<name>`; contents return to the root) |
 
+### Visibility groups
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/groups` | member | List groups |
+| `POST` / `GET` / `PATCH` / `DELETE` | `/groups[/:id]` | admin | Manage groups |
+| `PUT` | `/groups/:id/members` | admin | Replace a group's member list |
+| `GET` / `PUT` | `/resources/:id/groups` | officer | Groups attached to a resource |
+
 ### Accounting (general ledger — Phase A)
 
 | Method | Path | Min role | Description |
 |--------|------|----------|-------------|
 | `GET` | `/accounting/trial-balance` | officer | Per-account/per-currency balances, AR reconciliation status, recent postings. Postings happen via DB triggers (migration 0031). |
-| `GET` | `/accounting/statements?from=&to=&basis=` | officer | Income statement (accrual or cash basis), balance sheet + net income to date + AR aging (as of `to`), per currency |
+| `GET` | `/accounting/statements?from=&to=&basis=` | officer | Income statement (accrual or cash basis), balance sheet + net income to date + AR and AP aging (as of `to`), per currency |
 | `GET` / `POST close|reopen` | `/accounting/periods[...]` | officer / admin | Closed months; closing locks posting dates (DB trigger); reopen is audited |
 | `GET` / `POST` / `PATCH` | `/accounting/accounts[/:id]` | officer / admin | Chart of accounts; code+type freeze once posted (DB trigger) |
 | `POST` | `/accounting/entries` | admin | Adjusting journal entry (balanced per currency or the DB refuses) |
@@ -241,6 +252,17 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` / `POST` | `/purchases` | member / officer | List (`?fund_id=&status=`) / file a request |
 | `POST` | `/purchases/:id/approve` | member | Sign: password re-entry required; requester and non-signers refused; records who/when/IP |
 | `POST` | `/purchases/:id/reject` \| `/cancel` \| `/complete` | officer / requester / officer | Reject; withdraw; execute — completion posts DR Expenses / CR fund-cash in the same transaction |
+
+### Vendor bills (accounts payable)
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/bills?status=` | member | List bills (`open`, `paid`, `void`) |
+| `POST` | `/bills` | officer | Record a bill: accrues DR expense / CR Accounts Payable immediately (`contact_id`, `amount_minor`, `currency`, `expense_account_id`, optional `bill_date`/`due_date`/`memo`) |
+| `POST` | `/bills/:id/pay` | officer | Settle: DR A/P / CR cash — from a fund (`fund_id`, balance-guarded) or the provider-routed operating account (`provider`) |
+| `POST` | `/bills/:id/void` | admin | Reverse an open bill with a mirroring journal entry |
+
+Bills are permanent records: no deletes, and a paid or void bill is frozen (DB triggers). Cash-basis statements ignore a bill until it is actually paid — the accrual entry touches no cash account. Open bills appear in the AP aging block of `/accounting/statements`.
 
 ### Discussions
 

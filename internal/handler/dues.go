@@ -61,6 +61,9 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Notes       *string `json:"notes"`
 		// Bulk: list of member_ids + shared amount/period/due_date
 		MemberIDs []string `json:"member_ids"`
+		// ContactID invoices an outside customer (services receivable)
+		// instead of a member. Exactly one counterparty kind per request.
+		ContactID string `json:"contact_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -77,6 +80,29 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	dueDate, err := time.Parse("2006-01-02", body.DueDate)
 	if err != nil {
 		writeError(w, 400, "due_date must be YYYY-MM-DD", "bad_request")
+		return
+	}
+
+	// Contact (outside customer) invoice: single, no bulk.
+	if body.ContactID != "" {
+		if body.MemberID != "" || len(body.MemberIDs) > 0 {
+			writeError(w, 400, "an invoice has exactly one counterparty: member or contact", "bad_request")
+			return
+		}
+		if !isValidUUID(body.ContactID) {
+			writeError(w, 400, "contact_id must be a UUID", "bad_request")
+			return
+		}
+		cid := body.ContactID
+		created, err := h.repo.CreateInvoiceBatch(r.Context(), []*model.DuesInvoice{{
+			ContactID: &cid, AmountMinor: body.AmountMinor, Currency: currency,
+			PeriodLabel: body.PeriodLabel, DueDate: dueDate, Status: "pending", Notes: body.Notes,
+		}})
+		if err != nil {
+			writeRepoError(w, err, "contact not found", "create error")
+			return
+		}
+		writeJSON(w, 201, created[0])
 		return
 	}
 

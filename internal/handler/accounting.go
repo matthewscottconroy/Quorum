@@ -22,7 +22,16 @@ type glRepo interface {
 type AccountingHandler struct {
 	repo glRepo
 	c    glRepoC
+	ap   apAgingSource
 }
+
+// apAgingSource is the payables-aging slice of the bills repo.
+type apAgingSource interface {
+	APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error)
+}
+
+// SetAPAging wires the payables aging source.
+func (h *AccountingHandler) SetAPAging(src apAgingSource) { h.ap = src }
 
 // NewAccountingHandler constructs the handler.
 func NewAccountingHandler(r glRepo) *AccountingHandler {
@@ -161,6 +170,16 @@ func (h *AccountingHandler) Statements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 		return
 	}
+	var apAging []model.ARAgingRow
+	if h.ap != nil {
+		if apAging, err = h.ap.APAging(r.Context(), to); err != nil {
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
+		}
+	}
+	if apAging == nil {
+		apAging = []model.ARAgingRow{}
+	}
 	if income == nil {
 		income = []model.GLBalance{}
 	}
@@ -176,6 +195,7 @@ func (h *AccountingHandler) Statements(w http.ResponseWriter, r *http.Request) {
 		"balance_sheet":      position,
 		"net_income_to_date": netToDate,
 		"ar_aging":           aging,
+		"ap_aging":           apAging,
 	})
 }
 
