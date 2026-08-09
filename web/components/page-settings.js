@@ -130,6 +130,16 @@ class PageSettings extends HTMLElement {
           <div class="form-group"><label for="og-vocab">Vocabulary overrides (optional JSON)</label>
             <input id="og-vocab" placeholder='{"Dues":"Assessments","Members":"Residents"}'>
             <div style="font-size:.72rem;color:var(--color-text-muted)">Rename UI labels to your org's terms. Takes effect on next load.</div></div>
+          <div class="form-row">
+            <div class="form-group" style="max-width:240px"><label for="og-lapse">Auto-lapse overdue members (days, 0=off)</label>
+              <input id="og-lapse" type="number" min="0" max="3650" value="0">
+              <div style="font-size:.72rem;color:var(--color-text-muted)">Members overdue beyond this move to inactive nightly.</div></div>
+            <div class="form-group"><label for="og-monthly">Monthly financial summary email (optional)</label>
+              <input id="og-monthly" placeholder="board@example.com"></div>
+          </div>
+          <div class="form-group" style="max-width:240px"><label for="og-hold">Audit legal hold</label>
+            <select id="og-hold"><option value="off">Off — prune per retention</option><option value="on">On — preserve everything</option></select>
+            <div style="font-size:.72rem;color:var(--color-text-muted)">When on, the nightly job never prunes the audit log (litigation/investigation hold).</div></div>
           <div class="form-group"><label for="og-infra">Infrastructure facts (admin-only; feeds the continuity pack)</label>
             <textarea id="og-infra" rows="4" placeholder="Registrar: … · DNS: Route 53 · Cloud: AWS acct owner … · Server: … · Backup bucket: … · Password vault: …"></textarea></div>
           <div class="form-row">
@@ -781,6 +791,8 @@ customElements.define('page-settings', PageSettings);
         set('#og-2fa', st.require_2fa ?? 'off');
         set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
         set('#og-paylink', st.payment_link_template); set('#og-vocab', st.vocab_overrides);
+        set('#og-lapse', st.lapse_after_days); set('#og-monthly', st.monthly_report_email);
+        if (this.querySelector('#og-hold')) this.querySelector('#og-hold').value = st.audit_legal_hold || 'off';
         set('#og-contacts', st.continuity_contacts);
       } catch { /* defaults are fine */ }
       this.querySelector('#og-save')?.addEventListener('click', async () => {
@@ -791,6 +803,9 @@ customElements.define('page-settings', PageSettings);
             how_to_pay: this.querySelector('#og-pay').value,
             payment_link_template: this.querySelector('#og-paylink').value,
             vocab_overrides: this.querySelector('#og-vocab').value || '{}',
+            lapse_after_days: String(this.querySelector('#og-lapse').value || '0'),
+            monthly_report_email: this.querySelector('#og-monthly').value,
+            audit_legal_hold: this.querySelector('#og-hold').value,
             infrastructure_facts: this.querySelector('#og-infra').value,
             continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
             continuity_contacts: this.querySelector('#og-contacts').value,

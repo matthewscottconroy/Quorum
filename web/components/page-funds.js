@@ -1,4 +1,4 @@
-import { api, getUser, canWrite, isAdmin } from '../app.js';
+import { api, getUser, currentMemberId, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies } from '../utils.js';
 
@@ -95,6 +95,7 @@ class PageFunds extends HTMLElement {
     try { this._purchases = await api('GET', '/purchases' + qs) ?? []; }
     catch { toast('Failed to load purchases', 'error'); return; }
     const me = getUser()?.id;
+    const myMember = currentMemberId();
     const box = this.querySelector('#pr-list');
     box.innerHTML = this._purchases.map(p => {
       const [label, color] = STATUS_BADGE[p.status] ?? [p.status, '#6b7280'];
@@ -116,11 +117,13 @@ class PageFunds extends HTMLElement {
           · signatures: ${(p.approvals ?? []).length}/${p.approvals_required}
           ${(p.approvals ?? []).map(a => `<span class="badge badge-none" title="${esc(a.ip)} · ${esc(new Date(a.approved_at).toLocaleString())}" style="margin-left:.2rem">✍ ${esc(a.approver_name)}</span>`).join('')}
           ${(p.missing_signers ?? []).length && p.status === 'pending' ? `<span style="color:var(--color-warning,#b45309)"> · awaiting required: ${p.missing_signers.map(esc).join(', ')}</span>` : ''}
+          ${(p.recusals ?? []).length ? `<span style="display:block;margin-top:.2rem">Recused: ${p.recusals.map(x => esc(x.member_name)).join(', ')}</span>` : ''}
         </div>
         <div style="display:flex;gap:.4rem;margin-top:.5rem;flex-wrap:wrap">
           ${canApprove ? `<button class="btn-primary pr-approve" data-id="${esc(p.id)}" style="font-size:.78rem">✍ Sign approval</button>` : ''}
           ${p.status === 'approved' && canWrite() ? `<button class="btn-primary pr-complete" data-id="${esc(p.id)}" style="font-size:.78rem">Complete purchase (posts to books)</button>` : ''}
           ${p.status === 'pending' && canWrite() ? `<button class="btn-ghost pr-reject" data-id="${esc(p.id)}" style="font-size:.78rem;color:var(--color-danger)">Reject</button>` : ''}
+          ${['pending', 'approved'].includes(p.status) && myMember && !(p.recusals ?? []).some(x => x.member_id === myMember) ? `<button class="btn-ghost pr-recuse" data-id="${esc(p.id)}" style="font-size:.78rem">Recuse myself</button>` : ''}
           ${['pending', 'approved'].includes(p.status) && (p.requester_id === me || isAdmin()) ? `<button class="btn-ghost pr-cancel" data-id="${esc(p.id)}" style="font-size:.78rem">Cancel</button>` : ''}
         </div>
       </div>`;
@@ -144,6 +147,11 @@ class PageFunds extends HTMLElement {
     box.querySelectorAll('.pr-reject').forEach(b => b.addEventListener('click', async () => {
       try { await api('POST', `/purchases/${b.dataset.id}/reject`); this.load(); }
       catch (err) { toast(err.error ?? 'Reject failed', 'error'); }
+    }));
+    box.querySelectorAll('.pr-recuse').forEach(b => b.addEventListener('click', async () => {
+      const reason = (prompt('Reason for recusing (optional, recorded for the audit trail):') ?? '').trim();
+      try { await api('POST', `/recusals/${b.dataset.id}`, { type: 'purchase', reason }); toast('Recusal recorded', 'success'); this.load(); }
+      catch (err) { toast(err.error ?? 'Failed', 'error'); }
     }));
     box.querySelectorAll('.pr-cancel').forEach(b => b.addEventListener('click', async () => {
       try { await api('POST', `/purchases/${b.dataset.id}/cancel`); this.load(); }

@@ -26,6 +26,8 @@ class LoginPage extends HTMLElement {
             <button type="submit" class="btn-primary" style="width:100%">Sign in</button>
             <p style="text-align:center;margin-top:.9rem">
               <a href="#/forgot-password" style="font-size:.85rem;color:var(--color-primary)">Forgot your password?</a>
+              <span style="color:var(--color-text-muted)"> · </span>
+              <a href="#/apply" style="font-size:.85rem;color:var(--color-primary)">Apply to join</a>
             </p>
           </form>
 

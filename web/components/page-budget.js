@@ -1,7 +1,7 @@
 import { api } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, openModal, formatMoney, parseMoney, moneyExponent } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, moneyExponent } from '../utils.js';
 
 const STATUSES = ['draft', 'active', 'archived'];
 
@@ -148,6 +148,7 @@ class PageBudget extends HTMLElement {
             </div>
           </div>
           <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <button class="btn-secondary" id="vsactual-btn" style="font-size:.78rem">Vs actual</button>
             <button class="btn-secondary" id="seed-btn" style="font-size:.78rem">Seed dues</button>
             <button class="btn-secondary" id="clone-btn" style="font-size:.78rem">Clone</button>
             <button class="btn-ghost" id="del-btn" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
@@ -185,6 +186,50 @@ class PageBudget extends HTMLElement {
           <span style="width:100px;text-align:right;font-weight:600">${formatMoney(expense, currency)}</span></div>
         <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:.35rem;font-size:1rem">Net: ${netLabel(net, currency)}</div>
       </div>`;
+  }
+
+  /** Compares this scenario's budgeted totals to posted GL actuals over a period. */
+  openVsActual(s) {
+    const cur = s.currency;
+    const { dialog, close } = openModal({
+      title: `Budget vs. actual — ${s.name}`,
+      maxWidth: '520px',
+      body: `
+        <div class="modal-body">
+          <p style="color:var(--color-text-muted);font-size:.85rem">Compare budgeted income and expense against what's actually posted to the ledger over a date range.</p>
+          <div style="display:flex;gap:.6rem;align-items:end;flex-wrap:wrap">
+            <div class="form-group" style="margin-bottom:0"><label for="va-from">From</label><input id="va-from" type="date"></div>
+            <div class="form-group" style="margin-bottom:0"><label for="va-to">To</label><input id="va-to" type="date"></div>
+            <button class="btn-primary" id="va-run">Compare</button>
+          </div>
+          <div id="va-out" style="margin-top:1rem"></div>
+        </div>
+        <div class="modal-footer"><button class="btn-secondary" id="va-close">Close</button></div>`,
+    });
+    dialog.querySelector('#va-close').addEventListener('click', close);
+    const run = dialog.querySelector('#va-run');
+    run.addEventListener('click', guardButton(run, async () => {
+      const from = dialog.querySelector('#va-from').value, to = dialog.querySelector('#va-to').value;
+      if (!from || !to) { toast('Pick both dates', 'error'); return; }
+      let d;
+      try { d = await api('GET', `/budgets/${s.id}/vs-actual?from=${from}&to=${to}`); }
+      catch (err) { toast(err.error ?? 'Failed', 'error'); return; }
+      const row = (label, budget, actual, variance, favGood) => {
+        const good = favGood ? variance >= 0 : variance <= 0;
+        return `<tr>
+          <td>${label}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(budget, cur)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(actual, cur)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;color:${good ? 'var(--color-success)' : 'var(--color-danger)'}">${variance >= 0 ? '+' : ''}${formatMoney(variance, cur)}</td>
+        </tr>`;
+      };
+      dialog.querySelector('#va-out').innerHTML = `
+        <table><thead><tr><th></th><th style="text-align:right">Budget</th><th style="text-align:right">Actual</th><th style="text-align:right">Variance</th></tr></thead>
+          <tbody>
+            ${row('Income', d.budget_income, d.actual_income, d.income_variance, true)}
+            ${row('Expense', d.budget_expense, d.actual_expense, d.expense_variance, false)}
+          </tbody></table>`;
+    }));
   }
 
   /** Leniently computes a line's amount in minor units from its live inputs. */
@@ -244,6 +289,8 @@ class PageBudget extends HTMLElement {
       } catch (err) { toast(err.error ?? 'Save failed','error'); }
     };
     ['#s-name','#s-period','#s-status'].forEach(sel => detail.querySelector(sel).addEventListener('change', saveMeta));
+
+    detail.querySelector('#vsactual-btn').addEventListener('click', () => this.openVsActual(s));
 
     detail.querySelector('#seed-btn').addEventListener('click', async () => {
       try {

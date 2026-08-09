@@ -31,6 +31,7 @@ const GROUPS = [
     key: 'people', label: 'People', links: [
       { hash: '#/members',  label: 'Members',  icon: '👥', minRole: 'member' },
       { hash: '#/contacts', label: 'Contacts', icon: '📇', minRole: 'member' },
+      { hash: '#/roster',   label: 'Roster',   icon: '🏛', minRole: 'member' },
     ],
   },
   {

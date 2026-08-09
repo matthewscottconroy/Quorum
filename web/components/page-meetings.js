@@ -611,6 +611,8 @@ class PageMeetings extends HTMLElement {
           </div>
           ${m.detail ? `<div style="font-size:.82rem;margin:.4rem 0">${esc(m.detail)}</div>` : ''}
           <div style="margin:.5rem 0"><vote-tally for="${tally.for}" against="${tally.against}" abstain="${tally.abstain}"></vote-tally></div>
+          ${(m.recusals?.length) ? `<div style="font-size:.75rem;color:var(--color-text-muted);margin:.25rem 0">Recused: ${m.recusals.map(x => esc(x.member_name)).join(', ')}</div>` : ''}
+          ${myMember && !terminal ? `<button class="btn-ghost gov-act" data-act="recuse" style="font-size:.75rem">Recuse myself</button>` : ''}
           ${controls}
         </div>`;
     }).join('') || '<p style="font-size:.85rem;color:var(--color-text-muted);margin:.5rem 0">No motions yet.</p>';
@@ -833,6 +835,10 @@ class PageMeetings extends HTMLElement {
         } else if (act === 'unproxy') {
           await api('DELETE', `/proxies/${btn.dataset.proxy}`);
           toast('Proxy removed','success');
+        } else if (act === 'recuse') {
+          const reason = (prompt('Reason for recusing (optional, recorded in the minutes):') ?? '').trim();
+          await api('POST', `/recusals/${motionId}`, { type: 'motion', reason });
+          toast('Recusal recorded','success');
         }
         await reload();
       } catch (err) {

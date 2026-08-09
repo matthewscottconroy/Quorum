@@ -266,13 +266,122 @@ class PageDues extends HTMLElement {
                   </tr>`).join('')}
                 </tbody>
                </table>`}
+          ${canWrite() ? `
+          <h3 style="margin-top:1.25rem;margin-bottom:.5rem">Payment plan</h3>
+          <div id="inst-box"><span class="spinner"></span></div>` : ''}
         </div>
         <div class="modal-footer">
+          ${canWrite() && inv.status !== 'waived' ? `<button class="btn-secondary" id="refund-btn">Record refund</button>` : ''}
           <button class="btn-secondary" id="close-btn2">Close</button>
         </div>
       `,
     });
     dialog.querySelector('#close-btn2').addEventListener('click', close);
+    dialog.querySelector('#refund-btn')?.addEventListener('click', () => {
+      close();
+      this.openRefundModal(inv);
+    });
+    if (canWrite()) this._loadInstallments(dialog, inv);
+  }
+
+  /** Renders the installment plan inside the detail modal, with an inline editor. */
+  async _loadInstallments(dialog, inv) {
+    const box = dialog.querySelector('#inst-box');
+    if (!box) return;
+    let plan;
+    try { plan = await api('GET', `/dues/${inv.id}/installments`) ?? []; }
+    catch { box.innerHTML = '<p style="color:var(--color-text-muted)">Failed to load.</p>'; return; }
+    const rows = plan.length
+      ? `<table><thead><tr><th>#</th><th>Due</th><th>Amount</th></tr></thead><tbody>
+          ${plan.map((p, i) => `<tr><td>${i + 1}</td><td>${fmtDate(p.due_date)}</td><td>${formatMoney(p.amount_minor, inv.currency)}</td></tr>`).join('')}
+         </tbody></table>`
+      : '<p style="color:var(--color-text-muted)">No payment plan. The full amount is due on the due date.</p>';
+    box.innerHTML = `${rows}<button class="btn-ghost" id="edit-inst" style="font-size:.8rem;margin-top:.4rem">${plan.length ? 'Edit plan' : 'Split into installments'}</button>`;
+    box.querySelector('#edit-inst').addEventListener('click', () => this.openInstallmentModal(inv, plan));
+  }
+
+  openRefundModal(inv) {
+    const { dialog, close } = openModal({
+      title: `Refund — ${inv.member_name}`,
+      maxWidth: '420px',
+      body: `
+        <div class="modal-body">
+          <p style="color:var(--color-text-muted);font-size:.85rem">Records a reversing entry in ${esc(inv.currency)}. Posts to the ledger and recomputes the invoice status.</p>
+          <div class="form-group"><label for="rf-amt">Amount (${esc(inv.currency)}) *</label>
+            <input id="rf-amt" inputmode="decimal" placeholder="0.00"></div>
+          <div class="form-group"><label for="rf-prov">Provider / method *</label>
+            <select id="rf-prov">${providerOptions('manual')}</select></div>
+          <div class="form-group"><label for="rf-note">Note</label>
+            <input id="rf-note" placeholder="Reason for refund"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="rf-cancel">Cancel</button>
+          <button class="btn-primary" id="rf-save">Record refund</button>
+        </div>`,
+    });
+    dialog.querySelector('#rf-cancel').addEventListener('click', close);
+    const save = dialog.querySelector('#rf-save');
+    save.addEventListener('click', guardButton(save, async () => {
+      const minor = parseMoney(dialog.querySelector('#rf-amt').value, inv.currency);
+      if (!minor || minor <= 0) { toast('Enter a positive amount', 'error'); return; }
+      try {
+        await api('POST', `/dues/${inv.id}/refund`, {
+          amount_minor: minor,
+          currency: inv.currency,
+          provider: dialog.querySelector('#rf-prov').value,
+          note: dialog.querySelector('#rf-note').value.trim() || null,
+        });
+        toast('Refund recorded', 'success'); close(); this.load();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    }));
+  }
+
+  openInstallmentModal(inv, plan) {
+    const initial = plan.length ? plan : [{ due_date: '', amount_minor: 0 }];
+    const rowHTML = (p = {}) => `
+      <div class="inst-row" style="display:flex;gap:.5rem;margin-bottom:.4rem">
+        <input type="date" class="inst-due" value="${p.due_date ? esc(String(p.due_date).slice(0, 10)) : ''}" style="flex:1">
+        <input class="inst-amt" inputmode="decimal" placeholder="Amount" value="${p.amount_minor ? (p.amount_minor / 100).toFixed(2) : ''}" style="flex:1">
+        <button class="btn-ghost inst-del" style="font-size:.8rem;color:var(--color-danger)">✕</button>
+      </div>`;
+    const { dialog, close } = openModal({
+      title: 'Payment plan',
+      maxWidth: '460px',
+      body: `
+        <div class="modal-body">
+          <p style="color:var(--color-text-muted);font-size:.85rem">Split this ${formatMoney(inv.amount_minor, inv.currency)} invoice into scheduled installments (tracking only — payments still post through transactions). Saving an empty list clears the plan.</p>
+          <div id="inst-rows">${initial.map(rowHTML).join('')}</div>
+          <button class="btn-ghost" id="inst-add" style="font-size:.82rem">+ Add installment</button>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="inst-cancel">Cancel</button>
+          <button class="btn-primary" id="inst-save">Save plan</button>
+        </div>`,
+    });
+    const rowsBox = dialog.querySelector('#inst-rows');
+    const wire = () => rowsBox.querySelectorAll('.inst-del').forEach(b =>
+      b.onclick = () => { b.closest('.inst-row').remove(); });
+    wire();
+    dialog.querySelector('#inst-add').addEventListener('click', () => {
+      rowsBox.insertAdjacentHTML('beforeend', rowHTML());
+      wire();
+    });
+    dialog.querySelector('#inst-cancel').addEventListener('click', close);
+    const save = dialog.querySelector('#inst-save');
+    save.addEventListener('click', guardButton(save, async () => {
+      const installments = [];
+      for (const row of rowsBox.querySelectorAll('.inst-row')) {
+        const due = row.querySelector('.inst-due').value;
+        const amt = parseMoney(row.querySelector('.inst-amt').value, inv.currency);
+        if (!due && !amt) continue;
+        if (!due || !amt || amt <= 0) { toast('Each installment needs a date and a positive amount', 'error'); return; }
+        installments.push({ due_date: due, amount_minor: amt });
+      }
+      try {
+        await api('PUT', `/dues/${inv.id}/installments`, { installments });
+        toast('Payment plan saved', 'success'); close();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    }));
   }
 
   /** Bulk bar for invoices: waive or re-open (mark pending) the selection. */

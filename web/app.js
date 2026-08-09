@@ -350,6 +350,7 @@ const routes = {
   '#/forgot-password': '<forgot-password-page>',
   '#/reset-password':  '<reset-password-page>',
   '#/ballot':          '<ballot-page>',
+  '#/apply':           '<page-apply>',
   '#/dashboard':       '<page-dashboard>',
   '#/members':         '<page-members>',
   '#/dues':            '<page-dues>',
@@ -370,6 +371,7 @@ const routes = {
   '#/reports':         '<page-reports>',
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
+  '#/roster':          '<page-roster>',
   '#/resources':       '<page-resources>',
   '#/settings':        '<page-settings>',
   '#/my-account':      '<page-my-account>',
@@ -380,7 +382,7 @@ const routes = {
  * Public routes reachable without authentication. `#/reset-password` carries a
  * `?token=…` query, so the router matches on the path portion only.
  */
-export const PUBLIC_ROUTES = new Set(['#/login', '#/forgot-password', '#/reset-password', '#/ballot']);
+export const PUBLIC_ROUTES = new Set(['#/login', '#/forgot-password', '#/reset-password', '#/ballot', '#/apply']);
 
 /** Returns the hash with any `?query` stripped, e.g. `#/reset-password?token=x` → `#/reset-password`. */
 export function routePath(hash) {
@@ -408,6 +410,7 @@ import './components/login-page.js';
 import './components/forgot-password-page.js';
 import './components/reset-password-page.js';
 import './components/ballot-page.js';
+import './components/page-apply.js';
 import './components/app-shell.js';
 import './components/nav-bar.js';
 import './components/page-dashboard.js';
@@ -424,6 +427,7 @@ import './components/page-board.js';
 import './components/page-chat.js';
 import './components/page-funds.js';
 import './components/page-payables.js';
+import './components/page-roster.js';
 import './components/page-payment-reports.js';
 import './components/page-setup-2fa.js';
 import './components/page-accounting.js';
