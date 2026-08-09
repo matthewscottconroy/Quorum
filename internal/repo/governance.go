@@ -216,7 +216,39 @@ func (r *GovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]m
 		t.Carried = ComputeMotionOutcome(motions[i].Threshold, t.For, t.Against)
 		motions[i].Tally = t
 	}
+
+	// Attach any conflict-of-interest recusals in one batched pass.
+	recusals, err := r.recusalsBySubject(ctx, "motion", ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range motions {
+		motions[i].Recusals = recusals[motions[i].ID]
+	}
 	return motions, nil
+}
+
+// recusalsBySubject loads recusals for a set of subject ids in a single query.
+func (r *GovernanceRepo) recusalsBySubject(ctx context.Context, subjectType string, ids []string) (map[string][]model.Recusal, error) {
+	out := map[string][]model.Recusal{}
+	rows, err := r.db.Query(ctx, `
+		SELECT rc.subject_id::text, rc.member_id::text, m.display_name, coalesce(rc.reason,''), rc.created_at
+		FROM recusals rc JOIN members m ON m.id = rc.member_id
+		WHERE rc.subject_type = $1 AND rc.subject_id = ANY($2::uuid[])
+		ORDER BY rc.created_at`, subjectType, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid string
+		var rc model.Recusal
+		if err := rows.Scan(&sid, &rc.MemberID, &rc.MemberName, &rc.Reason, &rc.CreatedAt); err != nil {
+			return nil, err
+		}
+		out[sid] = append(out[sid], rc)
+	}
+	return out, rows.Err()
 }
 
 // tallyMotions counts ballots for a set of motion ids in a single query.

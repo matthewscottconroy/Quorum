@@ -1,11 +1,17 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"quorum/internal/model"
 )
+
+// budgetActuals is the GL slice the budget-vs-actual view needs.
+type budgetActuals interface {
+	Statement(ctx context.Context, from, to string, types []string) ([]model.GLBalance, error)
+}
 
 // Bounds on budget line inputs. The product quantity × unit stays well within
 // int64 (max ~9.2e18), so the Go rollup and the Postgres SUM agree instead of
@@ -18,12 +24,65 @@ const (
 
 // BudgetHandler handles budget scenario planning endpoints.
 type BudgetHandler struct {
-	repo budgetRepo
+	repo    budgetRepo
+	actuals budgetActuals
 }
 
 // NewBudgetHandler constructs a BudgetHandler.
 func NewBudgetHandler(r budgetRepo) *BudgetHandler {
 	return &BudgetHandler{repo: r}
+}
+
+// SetActuals wires the GL source for the budget-vs-actual comparison.
+func (h *BudgetHandler) SetActuals(a budgetActuals) { h.actuals = a }
+
+// VsActual compares a scenario's planned totals to GL actuals over [from,to]
+// (officer+). Budget lines are not account-linked, so the comparison is at the
+// income/expense-total level — planned vs actual, with the variance.
+func (h *BudgetHandler) VsActual(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	if !validISODate(from) || !validISODate(to) {
+		writeError(w, http.StatusBadRequest, "from and to (YYYY-MM-DD) required", "bad_request")
+		return
+	}
+	sc, err := h.repo.GetScenario(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "scenario not found", "not_found")
+		return
+	}
+	var actualIncome, actualExpense int64
+	if h.actuals != nil {
+		rows, err := h.actuals.Statement(r.Context(), from, to, []string{"income", "expense"})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
+		}
+		for _, b := range rows {
+			// Income accounts carry credit balances (negative in debit-minus-credit);
+			// flip so both report as positive magnitudes.
+			switch b.Type {
+			case "income":
+				actualIncome += -b.Balance
+			case "expense":
+				actualExpense += b.Balance
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scenario":         sc.Name,
+		"currency":         sc.Totals.Currency,
+		"budget_income":    sc.Totals.IncomeMinor,
+		"budget_expense":   sc.Totals.ExpenseMinor,
+		"actual_income":    actualIncome,
+		"actual_expense":   actualExpense,
+		"income_variance":  actualIncome - sc.Totals.IncomeMinor,
+		"expense_variance": actualExpense - sc.Totals.ExpenseMinor,
+		"from":             from, "to": to,
+	})
 }
 
 // List returns all budget scenarios with rolled-up totals (officer+).

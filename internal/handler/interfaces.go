@@ -63,6 +63,8 @@ type duesRepo interface {
 	ListTransactions(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
 	CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
 	FindInvoiceByProviderRef(ctx context.Context, providerRef string) (string, error)
+	SetInstallments(ctx context.Context, invoiceID string, plan []model.InvoiceInstallment) error
+	ListInstallments(ctx context.Context, invoiceID string) ([]model.InvoiceInstallment, error)
 	MarkEventProcessed(ctx context.Context, eventID string) error
 	RecordWebhookPayment(ctx context.Context, eventID string, t *model.Transaction) (already bool, err error)
 	ListSchedules(ctx context.Context) ([]model.DuesSchedule, error)

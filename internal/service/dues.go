@@ -86,6 +86,7 @@ type DuesService struct {
 	auditRetention time.Duration
 	postHook       func(context.Context)
 	reportHook     func(context.Context)
+	legalHold      func(context.Context) bool
 
 	// lastSuccessUnix is the wall-clock time (unix seconds) the nightly job
 	// last completed, for the observability gauge and startup catch-up. 0 until
@@ -109,6 +110,11 @@ func (s *DuesService) SetPostHook(fn func(context.Context)) { s.postHook = fn }
 // SetReportHook attaches the scheduled-report digest sender, run at the end of
 // each nightly job under the leader lock (it decides its own cadence by date).
 func (s *DuesService) SetReportHook(fn func(context.Context)) { s.reportHook = fn }
+
+// SetLegalHoldCheck attaches a predicate the prune consults before deleting
+// audit entries: when it returns true, audit-log pruning is skipped entirely
+// (a litigation/investigation hold), regardless of the retention window.
+func (s *DuesService) SetLegalHoldCheck(fn func(context.Context) bool) { s.legalHold = fn }
 
 // SetAuditRetention overrides how long audit entries are kept. A non-positive
 // value keeps the default.
@@ -304,7 +310,11 @@ func (s *DuesService) pruneBookkeeping(ctx context.Context) {
 	} else if n > 0 {
 		log.Printf("pruned %d old processed events", n)
 	}
-	if n, err := s.janitor.PruneAuditLog(ctx, s.auditRetentionWindow()); err != nil {
+	// A legal hold suspends audit-log pruning entirely — history must be
+	// preserved for the investigation/litigation regardless of retention.
+	if s.legalHold != nil && s.legalHold(ctx) {
+		log.Printf("audit-log prune skipped: legal hold in effect")
+	} else if n, err := s.janitor.PruneAuditLog(ctx, s.auditRetentionWindow()); err != nil {
 		log.Printf("prune audit_log error: %v", err)
 	} else if n > 0 {
 		log.Printf("pruned %d old audit entries", n)

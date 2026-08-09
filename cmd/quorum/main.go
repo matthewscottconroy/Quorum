@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -156,6 +157,7 @@ func main() {
 	payReportsH := handler.NewPaymentReportsHandler(payReportsRepo, duesRepo)
 	reportSubsRepo := repo.NewReportSubsRepo(pool)
 	reportSubsH := handler.NewReportSubsHandler(reportSubsRepo)
+	orgFeaturesH := handler.NewOrgFeaturesHandler(repo.NewOrgFeaturesRepo(pool))
 	plansH := handler.NewPlansHandler(plansRepo)
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
@@ -177,6 +179,7 @@ func main() {
 	channelsH := handler.NewChannelsHandler(repo.NewChannelsRepo(pool), resourcesRepo)
 	glRepo := repo.NewGLRepo(pool)
 	accountingH := handler.NewAccountingHandler(glRepo)
+	budgetH.SetActuals(glRepo)
 	accountingH.SetPhaseC(glRepo)
 	fundsRepo := repo.NewFundsRepo(pool)
 	packH := handler.NewAccountingPackHandler(glRepo, glRepo, fundsRepo, auditRepo, auditRepo, authRepo)
@@ -232,10 +235,24 @@ func main() {
 	// Scheduled report digests: weekly on Monday, monthly on the 1st. Each
 	// subscriber gets a plain-text summary of the report they chose.
 	duesSvc.SetReportHook(func(ctx context.Context) {
+		now := time.Now()
+		asOf := now.Format("2006-01-02")
+		yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+
+		// Renewal lapse automation (settings-driven, email not required).
+		if all, err := orgSettingsRepo.All(ctx); err == nil {
+			if days, _ := strconv.Atoi(all["lapse_after_days"]); days > 0 {
+				if n, err := membersRepo.LapseOverdueMembers(ctx, days); err != nil {
+					log.Printf("lapse automation: %v", err)
+				} else if n > 0 {
+					log.Printf("lapse automation: moved %d members to inactive", n)
+				}
+			}
+		}
+
 		if cfg.SMTPHost == "" {
 			return
 		}
-		now := time.Now()
 		var cadences []string
 		if now.Weekday() == time.Monday {
 			cadences = append(cadences, "weekly")
@@ -246,8 +263,6 @@ func main() {
 		if len(cadences) == 0 {
 			return
 		}
-		asOf := now.Format("2006-01-02")
-		yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
 		for _, cadence := range cadences {
 			for _, report := range []string{"ar_aging", "ap_aging", "income_statement"} {
 				recips, err := reportSubsRepo.DueRecipients(ctx, report, cadence)
@@ -260,6 +275,27 @@ func main() {
 				}
 			}
 		}
+
+		// Monthly org-wide report email to the configured address (a single
+		// recipient distinct from per-user subscriptions).
+		if now.Day() == 1 {
+			if all, err := orgSettingsRepo.All(ctx); err == nil {
+				if to := all["monthly_report_email"]; to != "" {
+					_, body := buildReportDigest(ctx, "ar_aging", "monthly", asOf, yearStart, glRepo, billsRepo)
+					_, apBody := buildReportDigest(ctx, "ap_aging", "monthly", asOf, yearStart, glRepo, billsRepo)
+					_, isBody := buildReportDigest(ctx, "income_statement", "monthly", asOf, yearStart, glRepo, billsRepo)
+					if err := emailSvc.Send([]string{to}, "Quorum: monthly financial summary",
+						body+"\n"+apBody+"\n"+isBody); err != nil {
+						log.Printf("monthly report email: %v", err)
+					}
+				}
+			}
+		}
+	})
+	// Legal hold: consulted before each audit-log prune.
+	duesSvc.SetLegalHoldCheck(func(ctx context.Context) bool {
+		all, err := orgSettingsRepo.All(ctx)
+		return err == nil && all["audit_legal_hold"] == "on"
 	})
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
@@ -395,6 +431,9 @@ func main() {
 		// authorizes a read-only ICS subscription (meetings are member-visible).
 		r.Get("/calendar/{token}", calendarH.Feed)
 
+		// Public membership application: anyone can apply; admins review.
+		r.With(mw.LoginRateLimit).Post("/public/join-request", orgFeaturesH.CreateJoinRequest)
+
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth)
 			r.Use(mw.APIRateLimit) // after Auth: keyed per user, before audit writes
@@ -457,6 +496,20 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/payment-reports/{id}/dismiss", payReportsH.Dismiss)
 			r.With(mw.RequireRole("officer")).Get("/me/report-subscriptions", reportSubsH.List)
 			r.With(mw.RequireRole("officer")).Put("/me/report-subscriptions", reportSubsH.Set)
+			r.With(mw.RequireRole("member")).Get("/office-terms", orgFeaturesH.ListOfficeTerms)
+			r.With(mw.RequireRole("admin")).Post("/office-terms", orgFeaturesH.AddOfficeTerm)
+			r.With(mw.RequireRole("admin")).Post("/office-terms/{id}/end", orgFeaturesH.EndOfficeTerm)
+			r.With(mw.RequireRole("member")).Get("/committees", orgFeaturesH.ListCommittees)
+			r.With(mw.RequireRole("member")).Get("/committees/{id}", orgFeaturesH.GetCommittee)
+			r.With(mw.RequireRole("admin")).Post("/committees", orgFeaturesH.CreateCommittee)
+			r.With(mw.RequireRole("admin")).Patch("/committees/{id}", orgFeaturesH.UpdateCommittee)
+			r.With(mw.RequireRole("admin")).Delete("/committees/{id}", orgFeaturesH.DeleteCommittee)
+			r.With(mw.RequireRole("admin")).Put("/committees/{id}/members", orgFeaturesH.SetCommitteeMembers)
+			r.With(mw.RequireRole("member")).Get("/recusals/{id}", orgFeaturesH.ListRecusals)
+			r.With(mw.RequireRole("member")).Post("/recusals/{id}", orgFeaturesH.AddRecusal)
+			r.With(mw.RequireRole("officer")).Get("/join-requests", orgFeaturesH.ListJoinRequests)
+			r.With(mw.RequireRole("officer")).Post("/join-requests/{id}/approve", orgFeaturesH.ApproveJoinRequest)
+			r.With(mw.RequireRole("officer")).Post("/join-requests/{id}/reject", orgFeaturesH.RejectJoinRequest)
 
 			r.With(mw.RequireRole("member")).Get("/members", membersH.List)
 			r.With(mw.RequireRole("officer")).Get("/members/ids", membersH.IDsByRole)
@@ -479,6 +532,9 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/dues/{id}", duesH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/dues/{id}", duesH.Update)
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/transactions", duesH.CreateTransaction)
+			r.With(mw.RequireRole("officer")).Post("/dues/{id}/refund", duesH.RecordRefund)
+			r.With(mw.RequireRole("officer")).Get("/dues/{id}/installments", duesH.GetInstallments)
+			r.With(mw.RequireRole("officer")).Put("/dues/{id}/installments", duesH.SetInstallments)
 			r.With(mw.RequireRole("officer")).Get("/dues/transactions", duesH.ListTransactions)
 
 			// Recurring dues schedules (auto-generate invoices per tier).
@@ -494,6 +550,7 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/budgets", budgetH.Create)
 			r.With(mw.RequireRole("officer")).Get("/budgets/compare", budgetH.Compare)
 			r.With(mw.RequireRole("officer")).Get("/budgets/{id}", budgetH.Get)
+			r.With(mw.RequireRole("officer")).Get("/budgets/{id}/vs-actual", budgetH.VsActual)
 			r.With(mw.RequireRole("officer")).Patch("/budgets/{id}", budgetH.Update)
 			r.With(mw.RequireRole("officer")).Delete("/budgets/{id}", budgetH.Delete)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/clone", budgetH.Clone)

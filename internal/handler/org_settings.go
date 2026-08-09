@@ -58,6 +58,18 @@ var orgSettingKeys = map[string]orgSetting{
 	"payment_link_template": {validate: func(v string) bool {
 		return v == "" || (len(v) <= 500 && strings.HasPrefix(v, "https://"))
 	}},
+	// Auto-lapse: members with an invoice overdue by more than this many days
+	// are moved to inactive by the nightly job (0 = off). A renewal policy knob.
+	"lapse_after_days": {validate: intRange(0, 3650)},
+	// Legal hold: when 'on', the nightly job stops pruning the audit log
+	// regardless of the retention window, preserving everything for an
+	// investigation or litigation hold. Admin-only.
+	"audit_legal_hold": {validate: func(v string) bool { return v == "on" || v == "off" }, adminOnly: true},
+	// Scheduled CPA pack: an email address that receives the accounting pack
+	// summary monthly (empty = off). Admin-only. Reuses the nightly job.
+	"monthly_report_email": {validate: func(v string) bool {
+		return v == "" || (len(v) <= 200 && strings.Contains(v, "@"))
+	}, adminOnly: true},
 	// Continuity (roadmap E1-E3); admin-only visibility - these describe
 	// where the org's keys live and who gets the bus-factor alarm.
 	"infrastructure_facts":   {validate: func(v string) bool { return len(v) <= 4000 }, adminOnly: true},

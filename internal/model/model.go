@@ -434,6 +434,7 @@ type Motion struct {
 	UpdatedAt    time.Time    `json:"updated_at"`
 	Tally        MotionTally  `json:"tally"`
 	Votes        []MotionVote `json:"votes,omitempty"`
+	Recusals     []Recusal    `json:"recusals,omitempty"`
 }
 
 // MotionTally aggregates the ballots on a motion. Carried is set relative to the
@@ -540,6 +541,63 @@ type Page[T any] struct {
 	Total  int `json:"total"`
 	Limit  int `json:"limit"`
 	Offset int `json:"offset"`
+}
+
+// InvoiceInstallment is one scheduled partial payment of an invoice (a payment
+// plan). Tracking only — the invoice's own paid/partial status is authoritative.
+type InvoiceInstallment struct {
+	ID          string    `json:"id"`
+	InvoiceID   string    `json:"invoice_id"`
+	AmountMinor int64     `json:"amount_minor"`
+	DueDate     time.Time `json:"due_date"`
+	Seq         int       `json:"seq"`
+	// DueDateStr is input-only (YYYY-MM-DD) on create.
+	DueDateStr string `json:"due_date_str,omitempty"`
+}
+
+// OfficeTerm is an informational office held by a member over a period.
+type OfficeTerm struct {
+	ID         string     `json:"id"`
+	MemberID   string     `json:"member_id"`
+	MemberName string     `json:"member_name"`
+	Title      string     `json:"title"`
+	StartedOn  time.Time  `json:"started_on"`
+	EndedOn    *time.Time `json:"ended_on,omitempty"`
+}
+
+// Committee is a named working group with an optional chair.
+type Committee struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Purpose     *string           `json:"purpose,omitempty"`
+	ChairID     *string           `json:"chair_id,omitempty"`
+	ChairName   string            `json:"chair_name,omitempty"`
+	MemberCount int               `json:"member_count"`
+	Members     []CommitteeMember `json:"members,omitempty"`
+}
+
+// CommitteeMember is one member on a committee roster.
+type CommitteeMember struct {
+	MemberID   string `json:"member_id"`
+	MemberName string `json:"member_name"`
+}
+
+// Recusal records a member recusing from a motion or purchase (conflict of interest).
+type Recusal struct {
+	MemberID   string    `json:"member_id"`
+	MemberName string    `json:"member_name"`
+	Reason     string    `json:"reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// JoinRequest is a public membership application awaiting admin review.
+type JoinRequest struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	Message   string    `json:"message,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ReportSubscription is a user's opt-in to a scheduled report digest.
@@ -852,6 +910,7 @@ type PurchaseRequest struct {
 	ApprovalsRequired int                `json:"approvals_required"`
 	Approvals         []PurchaseApproval `json:"approvals"`
 	MissingSigners    []string           `json:"missing_signers,omitempty"`
+	Recusals          []Recusal          `json:"recusals,omitempty"`
 }
 
 // PurchaseApproval is one recorded signature: who, when, from where.

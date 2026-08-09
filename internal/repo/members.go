@@ -440,3 +440,23 @@ func deref(s *string) string {
 	}
 	return *s
 }
+
+// LapseOverdueMembers moves active members to 'inactive' when they have an
+// invoice overdue by more than `days` days. Returns the count changed. Used by
+// the nightly renewal-lapse automation; a no-op when days <= 0.
+func (r *MembersRepo) LapseOverdueMembers(ctx context.Context, days int) (int64, error) {
+	if days <= 0 {
+		return 0, nil
+	}
+	tag, err := r.db.Exec(ctx, `
+		UPDATE members SET status = 'inactive', updated_at = now()
+		WHERE status = 'active' AND id IN (
+			SELECT DISTINCT member_id FROM dues_invoices
+			WHERE member_id IS NOT NULL AND status = 'overdue'
+			  AND due_date < current_date - ($1 || ' days')::interval
+		)`, days)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

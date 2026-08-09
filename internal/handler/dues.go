@@ -233,6 +233,119 @@ func (h *DuesHandler) BatchUpdateStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]any{"updated": n})
 }
 
+// GetInstallments returns an invoice's payment-plan schedule (officer+).
+func (h *DuesHandler) GetInstallments(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	plan, err := h.repo.ListInstallments(r.Context(), id)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, 200, plan)
+}
+
+// SetInstallments replaces an invoice's payment plan (officer+).
+// Body: {installments: [{amount_minor, due_date}]}. An empty list clears it.
+func (h *DuesHandler) SetInstallments(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Installments []struct {
+			AmountMinor int64  `json:"amount_minor"`
+			DueDate     string `json:"due_date"`
+		} `json:"installments"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "invalid body", "bad_request")
+		return
+	}
+	if len(body.Installments) > 60 {
+		writeError(w, 400, "at most 60 installments", "bad_request")
+		return
+	}
+	plan := make([]model.InvoiceInstallment, 0, len(body.Installments))
+	for _, in := range body.Installments {
+		d, err := time.Parse("2006-01-02", in.DueDate)
+		if err != nil || in.AmountMinor <= 0 {
+			writeError(w, 400, "each installment needs a positive amount_minor and a YYYY-MM-DD due_date", "bad_request")
+			return
+		}
+		plan = append(plan, model.InvoiceInstallment{AmountMinor: in.AmountMinor, DueDate: d})
+	}
+	if err := h.repo.SetInstallments(r.Context(), id, plan); err != nil {
+		writeRepoError(w, err, "invoice not found", "update error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"invoice": id, "installments": len(plan)})
+	out, _ := h.repo.ListInstallments(r.Context(), id)
+	writeJSON(w, 200, out)
+}
+
+// RecordRefund records a refund against an invoice (officer+): a negative
+// transaction that the GL trigger posts as a reversing entry (DR income /
+// CR cash) and that lowers the invoice's paid total. Body amount_minor is the
+// positive refund amount; it is stored negative.
+func (h *DuesHandler) RecordRefund(w http.ResponseWriter, r *http.Request) {
+	invoiceID, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	userID := userIDFromCtx(r)
+	var body struct {
+		AmountMinor int64   `json:"amount_minor"`
+		Currency    string  `json:"currency"`
+		Provider    string  `json:"provider"`
+		Note        *string `json:"note"`
+	}
+	if err := decodeJSON(r, &body); err != nil || body.AmountMinor <= 0 || body.Provider == "" {
+		writeError(w, 400, "positive amount_minor and provider required", "bad_request")
+		return
+	}
+	inv, err := h.repo.GetInvoice(r.Context(), invoiceID)
+	if err != nil {
+		writeError(w, 404, "invoice not found", "not_found")
+		return
+	}
+	currency := body.Currency
+	if currency == "" {
+		currency = inv.Currency
+	}
+	if !strings.EqualFold(currency, inv.Currency) {
+		writeError(w, 400, "refund currency must match the invoice currency", "bad_request")
+		return
+	}
+	status := "refunded"
+	var memberPtr *string
+	if inv.MemberID != "" {
+		memberPtr = &inv.MemberID
+	}
+	tx, err := h.repo.CreateTransaction(r.Context(), &model.Transaction{
+		InvoiceID:      &invoiceID,
+		MemberID:       memberPtr,
+		AmountMinor:    -body.AmountMinor, // negative → reversing GL entry
+		Currency:       currency,
+		Provider:       body.Provider,
+		ProviderStatus: &status,
+		RecordedBy:     &userID,
+		OccurredAt:     time.Now(),
+		Notes:          body.Note,
+	})
+	if err != nil {
+		writeRepoError(w, err, "", "refund error")
+		return
+	}
+	if err := h.repo.RecomputeInvoiceStatus(r.Context(), invoiceID); err != nil {
+		log.Printf("recompute invoice %s after refund: %v", invoiceID, err)
+	}
+	setAuditDetail(r, map[string]any{"invoice": invoiceID, "refund_minor": body.AmountMinor, "currency": currency})
+	writeJSON(w, 201, tx)
+}
+
 // CreateTransaction records a manual payment against an invoice.
 func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	invoiceID, ok := requireUUID(w, r, "id")

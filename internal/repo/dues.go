@@ -492,3 +492,44 @@ func (r *DuesRepo) OverdueInvoicesForEmail(ctx context.Context) ([]model.DuesInv
 	}
 	return invs, rows.Err()
 }
+
+// SetInstallments replaces an invoice's installment schedule in one transaction.
+// Each entry gets a sequential seq. An empty list clears the schedule.
+func (r *DuesRepo) SetInstallments(ctx context.Context, invoiceID string, plan []model.InvoiceInstallment) error {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `DELETE FROM invoice_installments WHERE invoice_id = $1::uuid`, invoiceID); err != nil {
+		return err
+	}
+	for i, p := range plan {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO invoice_installments (invoice_id, amount, due_date, seq)
+			VALUES ($1::uuid, $2, $3::date, $4)`, invoiceID, p.AmountMinor, p.DueDate, i+1); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// ListInstallments returns an invoice's schedule in order.
+func (r *DuesRepo) ListInstallments(ctx context.Context, invoiceID string) ([]model.InvoiceInstallment, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, invoice_id::text, amount, due_date, seq
+		FROM invoice_installments WHERE invoice_id = $1::uuid ORDER BY seq`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.InvoiceInstallment{}
+	for rows.Next() {
+		var p model.InvoiceInstallment
+		if err := rows.Scan(&p.ID, &p.InvoiceID, &p.AmountMinor, &p.DueDate, &p.Seq); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

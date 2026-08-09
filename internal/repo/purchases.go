@@ -108,7 +108,27 @@ func (r *PurchasesRepo) loadEvidence(ctx context.Context, p *model.PurchaseReque
 		}
 		p.MissingSigners = append(p.MissingSigners, name)
 	}
-	return mrows.Err()
+	if err := mrows.Err(); err != nil {
+		return err
+	}
+	// Conflict-of-interest recusals recorded against this purchase.
+	rrows, err := r.db.Query(ctx, `
+		SELECT rc.member_id::text, m.display_name, coalesce(rc.reason,''), rc.created_at
+		FROM recusals rc JOIN members m ON m.id = rc.member_id
+		WHERE rc.subject_type = 'purchase' AND rc.subject_id = $1::uuid
+		ORDER BY rc.created_at`, p.ID)
+	if err != nil {
+		return err
+	}
+	defer rrows.Close()
+	for rrows.Next() {
+		var rc model.Recusal
+		if err := rrows.Scan(&rc.MemberID, &rc.MemberName, &rc.Reason, &rc.CreatedAt); err != nil {
+			return err
+		}
+		p.Recusals = append(p.Recusals, rc)
+	}
+	return rrows.Err()
 }
 
 // List returns requests, optionally filtered by fund and/or status.

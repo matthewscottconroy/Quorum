@@ -91,6 +91,12 @@ func (h *WebhooksHandler) Stripe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "processing error", "internal_error")
 			return
 		}
+	case "charge.refunded":
+		if err := h.handleStripeRefund(r, event.ID, event.Data); err != nil {
+			log.Printf("stripe: refund event %s: %v", event.ID, err)
+			writeError(w, http.StatusInternalServerError, "processing error", "internal_error")
+			return
+		}
 	default:
 		log.Printf("stripe: unhandled event type %s", event.Type)
 		if err := h.dues.MarkEventProcessed(r.Context(), event.ID); err != nil {
@@ -99,6 +105,67 @@ func (h *WebhooksHandler) Stripe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleStripeRefund records a refund as a negative transaction against the
+// original invoice (the GL trigger posts the reversing entry). The invoice is
+// resolved from metadata or by matching the charge/payment-intent id to the
+// original payment's provider reference; if it can't be resolved the event is
+// acknowledged and logged for manual handling rather than dropped.
+func (h *WebhooksHandler) handleStripeRefund(r *http.Request, eventID string, data json.RawMessage) error {
+	var obj struct {
+		Object struct {
+			ID             string `json:"id"`
+			AmountRefunded int64  `json:"amount_refunded"`
+			Currency       string `json:"currency"`
+			PaymentIntent  string `json:"payment_intent"`
+			Metadata       struct {
+				InvoiceID string `json:"quorum_invoice_id"`
+			} `json:"metadata"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		log.Printf("stripe: parse refund object error: %v", err)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	invoiceID := obj.Object.Metadata.InvoiceID
+	if invoiceID != "" && !isValidUUID(invoiceID) {
+		invoiceID = ""
+	}
+	if invoiceID == "" {
+		for _, ref := range []string{obj.Object.PaymentIntent, obj.Object.ID} {
+			if ref == "" {
+				continue
+			}
+			id, err := h.dues.FindInvoiceByProviderRef(r.Context(), ref)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if id != "" {
+				invoiceID = id
+				break
+			}
+		}
+	}
+	if invoiceID == "" || obj.Object.AmountRefunded <= 0 {
+		log.Printf("stripe: refund %s not linked to an invoice — record manually", eventID)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	status := "refunded"
+	pid := obj.Object.ID
+	_, err := h.dues.RecordWebhookPayment(r.Context(), eventID, &model.Transaction{
+		InvoiceID:           &invoiceID,
+		AmountMinor:         -obj.Object.AmountRefunded, // negative → reversing entry
+		Currency:            strings.ToUpper(obj.Object.Currency),
+		Provider:            "stripe",
+		ProviderReferenceID: &pid,
+		ProviderStatus:      &status,
+		OccurredAt:          time.Now(),
+	})
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	return err
 }
 
 // handleStripePayment records a Stripe payment transaction. Malformed payloads

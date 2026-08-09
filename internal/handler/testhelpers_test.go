@@ -277,6 +277,12 @@ func (m *mockDuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) er
 func (m *mockDuesRepo) BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error) {
 	return int64(len(ids)), nil
 }
+func (m *mockDuesRepo) SetInstallments(ctx context.Context, invoiceID string, plan []model.InvoiceInstallment) error {
+	return nil
+}
+func (m *mockDuesRepo) ListInstallments(ctx context.Context, invoiceID string) ([]model.InvoiceInstallment, error) {
+	return []model.InvoiceInstallment{}, nil
+}
 func (m *mockDuesRepo) CountByStatus(ctx context.Context, status string) (int, error) {
 	return m.CountByStatusFn(ctx, status)
 }
