@@ -896,7 +896,18 @@ your organization's server.
   machines fill the rest; the white perk lets you kick kegs, and after the
   walls close a settle timer forces a finish), and **HEXFECTION** (up to
   twelve seats, hotseat humans plus machines, convert your neighbours until
-  the dish is yours).
+  the dish is yours), and **INTERNS** (a stream of new hires marches out of
+  the door knowing only how to walk; hand out jobs — climb, parachute,
+  supervise, build, bash, dig, quit-loudly — to route enough of them to the
+  exit before the clock runs out; solo, two players at one machine, or two
+  players online).
+- **Building INTERNS levels.** The cabinet's **LEVEL EDITOR** button opens a
+  free authoring mode (no credit): paint and erase terrain with the mouse,
+  place both players' doors, tune the head-count and quota, test-play with
+  G, and save with S. Saved levels go on the organization's shared shelf —
+  everyone sees them in the LEVEL picker, credited to their author. You can
+  update your own levels by saving under the same name; admins can remove
+  anything unfit for the break room.
 - Every cabinet has sound (mute your device if the basement should stay
   secret) and **Esc** pauses any local single-machine round.
 - **Playing online.** Chess, Go, Powder Keg, and Hexfection also play over
