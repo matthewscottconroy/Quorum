@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	quorum "quorum"
@@ -158,6 +159,8 @@ func main() {
 	reportSubsRepo := repo.NewReportSubsRepo(pool)
 	reportSubsH := handler.NewReportSubsHandler(reportSubsRepo)
 	orgFeaturesH := handler.NewOrgFeaturesHandler(repo.NewOrgFeaturesRepo(pool))
+	arcadeH := handler.NewArcadeHandler(repo.NewArcadeRepo(pool))
+	arcadeHub := handler.NewArcadeHub(cfg.JWTSecret)
 	plansH := handler.NewPlansHandler(plansRepo)
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
@@ -434,6 +437,11 @@ func main() {
 		// Public membership application: anyone can apply; admins review.
 		r.With(mw.LoginRateLimit).Post("/public/join-request", orgFeaturesH.CreateJoinRequest)
 
+		// Networked arcade rooms. Browsers cannot set an Authorization header
+		// on a WebSocket, so the socket authenticates via its FIRST message
+		// (JWT, member+) — the route sits outside mw.Auth by necessity.
+		r.Get("/arcade/ws", arcadeHub.Serve)
+
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth)
 			r.Use(mw.APIRateLimit) // after Auth: keyed per user, before audit writes
@@ -496,6 +504,10 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/payment-reports/{id}/dismiss", payReportsH.Dismiss)
 			r.With(mw.RequireRole("officer")).Get("/me/report-subscriptions", reportSubsH.List)
 			r.With(mw.RequireRole("officer")).Put("/me/report-subscriptions", reportSubsH.Set)
+			r.With(mw.RequireRole("member")).Get("/arcade/stats", arcadeH.Stats)
+			r.With(mw.RequireRole("member")).Get("/arcade/{game}/scores", arcadeH.TopScores)
+			r.With(mw.RequireRole("member")).Post("/arcade/{game}/credit", arcadeH.InsertCredit)
+			r.With(mw.RequireRole("member")).Post("/arcade/{game}/score", arcadeH.SubmitScore)
 			r.With(mw.RequireRole("member")).Get("/office-terms", orgFeaturesH.ListOfficeTerms)
 			r.With(mw.RequireRole("admin")).Post("/office-terms", orgFeaturesH.AddOfficeTerm)
 			r.With(mw.RequireRole("admin")).Post("/office-terms/{id}/end", orgFeaturesH.EndOfficeTerm)
@@ -786,7 +798,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("embed sub: %v", err)
 	}
-	r.Handle("/*", staticHandler(webFS))
+	// Static assets are gzipped in-process: reverse proxies rarely compress
+	// application/wasm out of the box, and the arcade cartridge is the one
+	// genuinely large asset we serve (14 MB raw → ~4 MB gzipped).
+	compress := chimw.Compress(5,
+		"text/html", "text/css", "application/javascript", "application/wasm", "image/svg+xml")
+	r.Handle("/*", compress(staticHandler(webFS)))
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{

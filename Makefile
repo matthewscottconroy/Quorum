@@ -1,4 +1,4 @@
-.PHONY: build run dev test test-web test-integration lint backup backup-list restore backup-verify backups-install \
+.PHONY: build run dev test test-web test-integration lint arcade arcade-test backup backup-list restore backup-verify backups-install \
         local local-down local-reset local-restart local-logs local-status \
         pod-up pod-down pod-build pod-push \
         docker-up docker-down \
@@ -8,6 +8,18 @@
 
 build:
 	go build -o ./quorum ./cmd/quorum
+
+# Optional: build the Top Secret arcade cartridge (Rust → wasm) into
+# web/arcade/, which is embedded into the binary on the NEXT `make build`.
+# Requires: rustup target add wasm32-unknown-unknown
+#           cargo install wasm-bindgen-cli --version 0.2.126
+# Without this the app runs fine; the arcade page reports the cartridge
+# as not installed.
+arcade:
+	./arcade/build.sh
+
+arcade-test:
+	cd arcade && cargo test -p arcade-logic
 
 run: build
 	./quorum

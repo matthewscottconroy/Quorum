@@ -1004,3 +1004,21 @@ type Bill struct {
 	BillDateStr string `json:"-"`
 	DueDateStr  string `json:"-"`
 }
+
+// ArcadeScore is one leaderboard row: a user's best score on a cabinet.
+type ArcadeScore struct {
+	PlayerName string    `json:"player_name"`
+	Score      int64     `json:"score"`
+	AchievedAt time.Time `json:"achieved_at"`
+}
+
+// ArcadeGameStats summarizes one arcade cabinet, including the caller's own
+// numbers. Credits are play tokens, never money.
+type ArcadeGameStats struct {
+	Game       string `json:"game"`
+	TotalPlays int    `json:"total_plays"`
+	HighScore  int64  `json:"high_score"`
+	HighScorer string `json:"high_scorer,omitempty"`
+	YourPlays  int    `json:"your_plays"`
+	YourBest   int64  `json:"your_best"`
+}

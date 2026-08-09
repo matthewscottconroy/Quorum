@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -339,14 +340,17 @@ func (m *Middleware) RefreshRateLimit(next http.Handler) http.Handler {
 func SecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// script-src stays strict ('self', no inline/eval) — that is the
-		// security-critical directive. style-src allows 'unsafe-inline' because
+		// security-critical directive. 'wasm-unsafe-eval' additionally permits
+		// compiling same-origin WebAssembly (the arcade cartridges); despite the
+		// scary token name it does NOT enable JS eval()/Function(), so the XSS
+		// posture is unchanged. style-src allows 'unsafe-inline' because
 		// the vanilla-JS components set element style="" attributes for layout;
 		// inline styles cannot execute code, so this does not weaken XSS defense.
 		// blob: entries exist for the in-app document viewer: previews are
 		// fetched with auth headers and rendered from object URLs (images,
 		// PDFs, sandboxed HTML frames). Scripts stay 'self'-only.
 		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+			"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data: blob:; frame-src 'self' blob:; object-src 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -552,6 +556,16 @@ type auditResponseWriter struct {
 func (a *auditResponseWriter) WriteHeader(status int) {
 	a.status = status
 	a.ResponseWriter.WriteHeader(status)
+}
+
+// Hijack passes WebSocket upgrades through the observability wrappers —
+// gorilla/websocket needs the raw TCP connection, and without this the
+// arcade's /arcade/ws route dies with a 500 inside the upgrader.
+func (a *auditResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := a.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, errors.New("underlying ResponseWriter does not support hijacking")
 }
 
 // auditBodyCap bounds how much of the response body we buffer to find a

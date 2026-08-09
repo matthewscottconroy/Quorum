@@ -51,6 +51,11 @@ const GROUPS = [
       { hash: '#/settings',  label: 'Settings',  icon: '⚙',  minRole: 'admin' },
     ],
   },
+  {
+    key: 'topsecret', label: 'Top Secret', links: [
+      { hash: '#/arcade', label: 'Arcade', icon: '🕹', minRole: 'member' },
+    ],
+  },
 ];
 
 // Collapsed-state memory. UI preference only — tokens never touch storage.

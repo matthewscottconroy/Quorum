@@ -372,6 +372,7 @@ const routes = {
   '#/plans':           '<page-plans>',
   '#/contacts':        '<page-contacts>',
   '#/roster':          '<page-roster>',
+  '#/arcade':          '<page-arcade>',
   '#/resources':       '<page-resources>',
   '#/settings':        '<page-settings>',
   '#/my-account':      '<page-my-account>',
@@ -428,6 +429,7 @@ import './components/page-chat.js';
 import './components/page-funds.js';
 import './components/page-payables.js';
 import './components/page-roster.js';
+import './components/page-arcade.js';
 import './components/page-payment-reports.js';
 import './components/page-setup-2fa.js';
 import './components/page-accounting.js';
