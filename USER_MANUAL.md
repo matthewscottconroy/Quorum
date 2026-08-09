@@ -735,6 +735,8 @@ The **Board** page tracks work two ways over the same cards:
   `active`, `completed`), each with a goal and dates, for time-boxed planning.
 
 Create a card with a title, optional description, an **assignee** (a member),
+optional **additional contributors** (any number of members working on the
+card alongside the assignee — the card face shows 👥 +N, hover for names),
 and a sprint (or none — it sits in the backlog). Officers create and move
 cards; members can view the boards and take part in card conversations.
 

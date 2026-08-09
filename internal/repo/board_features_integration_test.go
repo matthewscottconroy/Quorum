@@ -567,3 +567,81 @@ func TestIntegration_Discussions(t *testing.T) {
 		t.Fatalf("delete channel: %v", err)
 	}
 }
+
+func TestIntegration_CardContributors(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	ai := repo.NewActionItemsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	m1 := newMember(t, mr, uniq("tier"), "active")
+	m2 := newMember(t, mr, uniq("tier"), "active")
+
+	card, err := ai.Create(ctx, &model.ActionItem{Title: uniq("Card"), Status: "open", Priority: "normal"}, uid)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(card.Contributors) != 0 {
+		t.Fatalf("new card contributors = %+v, want none", card.Contributors)
+	}
+
+	// Set two, read them back with names, on both Get and List.
+	got, err := ai.SetContributors(ctx, card.ID, []string{m1, m2})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if len(got.Contributors) != 2 {
+		t.Fatalf("contributors = %+v, want 2", got.Contributors)
+	}
+	for _, c := range got.Contributors {
+		if c.MemberName == "" || (c.MemberID != m1 && c.MemberID != m2) {
+			t.Fatalf("bad contributor row: %+v", c)
+		}
+	}
+	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 200})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, it := range listed {
+		if it.ID == card.ID {
+			found = true
+			if len(it.Contributors) != 2 {
+				t.Fatalf("listed contributors = %+v, want 2", it.Contributors)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("card missing from list")
+	}
+
+	// Replace shrinks the roster; duplicates collapse; unknown members refuse.
+	got, err = ai.SetContributors(ctx, card.ID, []string{m2, m2})
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if len(got.Contributors) != 1 || got.Contributors[0].MemberID != m2 {
+		t.Fatalf("after replace = %+v, want just m2", got.Contributors)
+	}
+	if _, err := ai.SetContributors(ctx, card.ID, []string{"00000000-0000-0000-0000-000000000001"}); err == nil {
+		t.Fatal("unknown member accepted as contributor")
+	}
+	if _, err := ai.SetContributors(ctx, "00000000-0000-0000-0000-000000000002", nil); err == nil {
+		t.Fatal("unknown card accepted")
+	}
+
+	// Deleting the card cascades its contributor rows.
+	if err := ai.Delete(ctx, card.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM action_item_contributors WHERE action_item_id = $1::uuid`, card.ID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("contributor rows survived card deletion: %d", n)
+	}
+}

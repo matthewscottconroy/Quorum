@@ -87,7 +87,10 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		       ai.created_by::text, ai.created_at, ai.updated_at,
 		       m.display_name,
 		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
-		       ai.story_points, ai.card_type, ai.parent_id::text, par.title
+		       ai.story_points, ai.card_type, ai.parent_id::text, par.title,
+		       (SELECT coalesce(json_agg(json_build_object('member_id', cb.member_id::text, 'member_name', cm.display_name) ORDER BY cm.display_name), '[]'::json)
+		        FROM action_item_contributors cb JOIN members cm ON cm.id = cb.member_id
+		        WHERE cb.action_item_id = ai.id)
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
@@ -116,6 +119,7 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&item.AssigneeName, &item.CommentCount,
 			&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
+			&item.Contributors,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -143,7 +147,10 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 		       ai.created_by::text, ai.created_at, ai.updated_at,
 		       m.display_name,
 		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
-		       ai.story_points, ai.card_type, ai.parent_id::text, par.title
+		       ai.story_points, ai.card_type, ai.parent_id::text, par.title,
+		       (SELECT coalesce(json_agg(json_build_object('member_id', cb.member_id::text, 'member_name', cm.display_name) ORDER BY cm.display_name), '[]'::json)
+		        FROM action_item_contributors cb JOIN members cm ON cm.id = cb.member_id
+		        WHERE cb.action_item_id = ai.id)
 		FROM action_items ai
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
@@ -170,7 +177,7 @@ func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, cr
 		          meeting_id::text, plan_id::text, due_date,
 		          status, priority, sprint_id::text, NULL::text, column_id::text,
 		          created_by::text, created_at, updated_at, NULL::text, 0,
-		          story_points, card_type, parent_id::text, NULL::text`,
+		          story_points, card_type, parent_id::text, NULL::text, '[]'::json`,
 		item.Title, item.Description, item.AssigneeID, item.MeetingID, item.PlanID,
 		item.DueDate, item.Status, item.Priority, item.SprintID,
 		item.StoryPoints, item.CardType, item.ParentID, createdBy)
@@ -253,6 +260,39 @@ func scanActionItem(row scannable) (model.ActionItem, error) {
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 		&item.AssigneeName, &item.CommentCount,
 		&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
+		&item.Contributors,
 	)
 	return item, err
+}
+
+// SetContributors replaces the card's contributor list and returns the
+// updated card. Unknown member IDs fail the insert's FK.
+func (r *ActionItemsRepo) SetContributors(ctx context.Context, id string, memberIDs []string) (*model.ActionItem, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// The card must exist; DELETE alone would silently "succeed" for a bogus id.
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT true FROM action_items WHERE id = $1::uuid`, id).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM action_item_contributors WHERE action_item_id = $1::uuid`, id); err != nil {
+		return nil, err
+	}
+	for _, mid := range memberIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO action_item_contributors (action_item_id, member_id)
+			VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`, id, mid); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.Get(ctx, id)
 }

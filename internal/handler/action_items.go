@@ -233,6 +233,34 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 // Delete handles deleting a action item.
+// SetContributors replaces a card's contributor roster (officer+).
+func (h *ActionItemsHandler) SetContributors(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		MemberIDs []string `json:"member_ids"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, 400, "invalid body", "bad_request")
+		return
+	}
+	for _, mid := range body.MemberIDs {
+		if !isValidUUID(mid) {
+			writeError(w, 400, "member_ids must be UUIDs", "bad_request")
+			return
+		}
+	}
+	item, err := h.repo.SetContributors(r.Context(), id, body.MemberIDs)
+	if err != nil {
+		writeRepoError(w, err, "action item or member not found", "update error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"title": item.Title, "contributors": len(body.MemberIDs)})
+	writeJSON(w, 200, item)
+}
+
 func (h *ActionItemsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	crudDelete(w, r, deleteSpec[model.ActionItem]{
 		entity:      "action item",

@@ -517,6 +517,7 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/action-items", actionItemsH.List)
 			r.With(mw.RequireRole("officer")).Post("/action-items", actionItemsH.Create)
 			r.With(mw.RequireRole("officer")).Patch("/action-items/{id}", actionItemsH.Update)
+			r.With(mw.RequireRole("officer")).Put("/action-items/{id}/contributors", actionItemsH.SetContributors)
 			r.With(mw.RequireRole("superadmin")).Delete("/action-items/{id}", actionItemsH.Delete)
 			// Card conversations: any member can read and take part; deletion
 			// is author-or-admin (enforced in the handler).

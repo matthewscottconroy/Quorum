@@ -189,6 +189,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/action-items` | member | List (`?status=`, `?assignee_id=`, etc.) |
 | `POST` | `/action-items` | officer | Create |
 | `PATCH` | `/action-items/:id` | officer | Update |
+| `PUT` | `/action-items/:id/contributors` | officer | Replace the card's additional-contributor roster (`{member_ids}`) |
 | `DELETE` | `/action-items/:id` | superadmin | Delete — requires `?confirm=<title>`, notifies admins |
 
 ### Contacts

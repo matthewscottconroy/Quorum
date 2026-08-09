@@ -415,6 +415,10 @@ func (m *mockActionItemsRepo) Update(ctx context.Context, id string, fields map[
 func (m *mockActionItemsRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
 }
+func (m *mockActionItemsRepo) SetContributors(ctx context.Context, id string, memberIDs []string) (*model.ActionItem, error) {
+	return &model.ActionItem{ID: id}, nil
+}
+
 func (m *mockActionItemsRepo) AssigneeEmail(ctx context.Context, id string) (string, error) {
 	if m.AssigneeEmailFn != nil {
 		return m.AssigneeEmailFn(ctx, id)

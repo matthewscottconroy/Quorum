@@ -194,6 +194,7 @@ class PageBoard extends HTMLElement {
         ${i.parent_title ? `<div class="board-card-sprint">◳ ${esc(i.parent_title)}</div>` : ''}
         <div class="board-card-meta">
           ${i.assignee_name ? `<span>👤 ${esc(i.assignee_name)}</span>` : '<span style="opacity:.6">unassigned</span>'}
+          ${(i.contributors ?? []).length ? `<span title="${esc(i.contributors.map(c => c.member_name).join(', '))}">👥 +${i.contributors.length}</span>` : ''}
           ${due ? `<span style="${overdue ? 'color:var(--color-danger,#dc2626);font-weight:700' : ''}">📅 ${esc(due.toLocaleDateString())}</span>` : ''}
         </div>
         ${i.sprint_name && !this._scope ? `<div class="board-card-sprint">🏁 ${esc(i.sprint_name)}</div>` : ''}
@@ -413,6 +414,17 @@ class PageBoard extends HTMLElement {
             <div class="form-group"><label for="c-assignee">Assignee</label><select id="c-assignee">${memberOpts(item.assignee_id)}</select></div>
             <div class="form-group"><label for="c-sprint">Sprint</label><select id="c-sprint">${sprintOpts(item.sprint_id)}</select></div>
           </div>
+          <div class="form-group">
+            <label>Additional contributors</label>
+            <div id="c-contrib" style="max-height:130px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.35rem .6rem">
+              ${this._members.map(m => `
+                <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.1rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
+                  <input type="checkbox" class="c-contrib-cb" style="width:auto" value="${esc(m.id)}"
+                    ${(item.contributors ?? []).some(c => c.member_id === m.id) ? 'checked' : ''}>
+                  <span>${esc(m.display_name)}</span>
+                </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem;margin:.3rem 0">No members.</p>'}
+            </div>
+          </div>
           <div class="form-row">
             <div class="form-group"><label for="c-priority">Priority</label>
               <select id="c-priority">${['high', 'normal', 'low'].map(v => `<option ${item.priority === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
@@ -461,6 +473,11 @@ class PageBoard extends HTMLElement {
           story_points: ptsRaw === '' ? null : Number(ptsRaw),
           parent_id: dialog.querySelector('#c-parent').value || null,
         });
+        const contribIDs = [...dialog.querySelectorAll('.c-contrib-cb:checked')].map(cb => cb.value);
+        const before = (item.contributors ?? []).map(c => c.member_id).sort().join(',');
+        if (contribIDs.slice().sort().join(',') !== before) {
+          await api('PUT', `/action-items/${item.id}/contributors`, { member_ids: contribIDs });
+        }
         toast('Saved', 'success');
         close();
         this.load();
@@ -478,6 +495,7 @@ class PageBoard extends HTMLElement {
           <div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:.85rem;color:var(--color-text-muted)">
             <span>${esc(item.card_type.replace('_', '-'))}${item.story_points != null ? ` · ${item.story_points} pts` : ''}</span>
             <span>👤 ${esc(item.assignee_name ?? 'unassigned')}</span>
+            ${(item.contributors ?? []).length ? `<span>👥 ${esc(item.contributors.map(c => c.member_name).join(', '))}</span>` : ''}
             <span>Status: ${esc(item.status.replace('_', ' '))}</span>
             ${item.due_date ? `<span>📅 ${esc(new Date(item.due_date).toLocaleDateString())}</span>` : ''}
             ${item.sprint_name ? `<span>🏁 ${esc(item.sprint_name)}</span>` : ''}

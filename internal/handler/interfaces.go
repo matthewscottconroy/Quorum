@@ -135,6 +135,7 @@ type actionItemsRepo interface {
 	Update(ctx context.Context, id string, fields map[string]any) (*model.ActionItem, error)
 	Delete(ctx context.Context, id string) error
 	AssigneeEmail(ctx context.Context, id string) (string, error)
+	SetContributors(ctx context.Context, id string, memberIDs []string) (*model.ActionItem, error)
 }
 
 // auditRepo is satisfied by *repo.AuditRepo.
