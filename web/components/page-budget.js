@@ -67,7 +67,7 @@ class PageBudget extends HTMLElement {
   renderList() {
     const el = this.querySelector('#b-list');
     el.innerHTML = this._scenarios.length ? this._scenarios.map(s => `
-      <div class="card b-card" data-id="${esc(s.id)}" style="padding:.85rem 1rem;margin-bottom:.6rem;cursor:pointer;border-left:3px solid ${s.id===this._selectedId?'var(--color-primary)':'transparent'}">
+      <div class="card b-card" data-id="${esc(s.id)}" role="button" tabindex="0" aria-label="Open scenario ${esc(s.name)}" style="padding:.85rem 1rem;margin-bottom:.6rem;cursor:pointer;border-left:3px solid ${s.id===this._selectedId?'var(--color-primary)':'transparent'}">
         <div style="display:flex;align-items:center;gap:.5rem">
           <input type="checkbox" class="cmp-chk" data-id="${esc(s.id)}" ${this._compare.has(s.id)?'checked':''} title="Add to comparison" style="width:auto">
           <div style="flex:1">
@@ -83,9 +83,14 @@ class PageBudget extends HTMLElement {
       </div>`).join('') : '<div class="empty-state"><p>No scenarios yet.</p></div>';
 
     el.querySelectorAll('.b-card').forEach(card => {
-      card.addEventListener('click', e => {
+      const open = e => {
         if (e.target.classList.contains('cmp-chk')) return;
         this.select(card.dataset.id);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', e => {
+        if (e.target.closest('input, button, a, select')) return;
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
       });
     });
     el.querySelectorAll('.cmp-chk').forEach(chk => {
@@ -117,7 +122,7 @@ class PageBudget extends HTMLElement {
         <td><input class="l-qty" type="number" min="0" value="${l.quantity}" style="width:64px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
         <td><input class="l-unit" value="${plainAmount(l.unit_amount_minor, cur)}" style="width:88px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
         <td class="l-amount" style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap">${formatMoney(l.amount_minor, cur)}</td>
-        <td><button class="btn-ghost l-del" style="color:var(--color-danger);font-size:.75rem">✕</button></td>
+        <td><button class="btn-ghost l-del" aria-label="Delete line" title="Delete line" style="color:var(--color-danger);font-size:.75rem">✕</button></td>
       </tr>`).join('');
 
     const section = (kind, title, color) => `

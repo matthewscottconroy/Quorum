@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { moneyExponent, parseMoney, formatMoney, wordFrequencies } from './utils.js';
+import { moneyExponent, parseMoney, formatMoney, wordFrequencies, esc, renderPager } from './utils.js';
 
 test('moneyExponent: exponent by currency class', () => {
   // Default (2-decimal) currencies.
@@ -109,6 +109,46 @@ test('formatMoney: falls back gracefully for non-ISO codes', () => {
   // A free-text currency code makes Intl throw; we fall back to "<amount> <code>".
   const out = formatMoney(10000, 'POINTS');
   assert.equal(out, '100.00 POINTS');
+});
+
+test('formatMoney: escapes a malicious free-text currency code (no raw HTML)', () => {
+  const out = formatMoney(10000, '<img src=x onerror=alert(1)>');
+  assert.ok(!out.includes('<img'), 'raw tag must not survive');
+  assert.ok(out.includes('&lt;') && out.includes('&gt;'), 'angle brackets must be escaped');
+});
+
+test('esc: neutralizes HTML metacharacters', () => {
+  assert.equal(esc(`<a href="x">&'`), '&lt;a href=&quot;x&quot;&gt;&amp;&#39;');
+  assert.equal(esc(null), '');
+  assert.equal(esc(undefined), '');
+});
+
+test('renderPager: hides when everything fits on one page', () => {
+  const el = { innerHTML: 'x', querySelector: () => null };
+  renderPager(el, { offset: 0, limit: 50, total: 20, onNavigate: () => {} });
+  assert.equal(el.innerHTML, '');
+});
+
+test('renderPager: renders range and wires prev/next enablement', () => {
+  const listeners = {};
+  const buttons = {
+    prev: { disabled: null, addEventListener: (_e, fn) => { listeners.prev = fn; } },
+    next: { disabled: null, addEventListener: (_e, fn) => { listeners.next = fn; } },
+  };
+  const el = {
+    innerHTML: '',
+    querySelector: sel => sel.includes('prev') ? buttons.prev : buttons.next,
+  };
+  let navigated = -1;
+  renderPager(el, { offset: 0, limit: 50, total: 120, onNavigate: o => { navigated = o; } });
+  assert.ok(el.innerHTML.includes('1–50 of 120'), 'shows the visible range');
+  // On page 0, Prev is disabled and Next enabled.
+  listeners.next();
+  assert.equal(navigated, 50, 'Next advances by one page');
+
+  // Last page: Next disabled.
+  renderPager(el, { offset: 100, limit: 50, total: 120, onNavigate: () => {} });
+  assert.ok(el.innerHTML.includes('101–120 of 120'), 'clamps the upper bound to total');
 });
 
 test('formatMoney: non-numeric minor units treated as zero', () => {

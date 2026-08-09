@@ -440,7 +440,7 @@ class PageResources extends HTMLElement {
           </select>
           <span style="font-size:.75rem;color:var(--color-text-muted)">${f.resource_count}</span>
           <button class="btn-ghost fo-save" title="Save name/parent">💾</button>
-          <button class="btn-ghost fo-del" data-name="${esc(f.name)}" style="color:var(--color-danger)">✕</button>
+          <button class="btn-ghost fo-del" data-name="${esc(f.name)}" aria-label="Delete folder" title="Delete folder" style="color:var(--color-danger)">✕</button>
         </div>`).join('') || '<p style="font-size:.85rem">No folders yet.</p>';
 
       rows.querySelectorAll('[data-id]').forEach(row => {

@@ -208,7 +208,10 @@ export function formatMoney(minor, code) {
     }).format(major);
   } catch {
     // Intl throws RangeError on a non-ISO currency code (free-text input).
-    return `${major.toFixed(exp)} ${c}`.trim();
+    // Escape the code: this string is interpolated into innerHTML in many
+    // places, and currency is user-entered, so an un-escaped code would be a
+    // stored-XSS vector.
+    return esc(`${major.toFixed(exp)} ${c}`.trim());
   }
 }
 

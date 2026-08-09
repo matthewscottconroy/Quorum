@@ -299,3 +299,15 @@ dialog.modal::backdrop {
 dialog.modal {
   background-image: var(--screen-watermark, none);
 }
+
+/* Respect a user's reduced-motion preference: the spinner and toast slide-in
+   are the only motion, and neither conveys information, so disabling them is
+   safe. Keep a hair of duration so transitionend/animationend still fire. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

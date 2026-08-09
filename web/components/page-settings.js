@@ -11,7 +11,7 @@ function roleOptions(selected) {
   const roles = ['restricted','member','officer','admin'];
   if (isSuperadmin()) roles.push('superadmin');
   if (selected && !roles.includes(selected)) roles.push(selected);
-  return roles.map(r => `<option value="${r}" ${selected===r?'selected':''}>${r}</option>`).join('');
+  return roles.map(r => `<option value="${esc(r)}" ${selected===r?'selected':''}>${esc(r)}</option>`).join('');
 }
 
 /**
@@ -760,7 +760,7 @@ customElements.define('page-settings', PageSettings);
               <span style="flex:1;color:var(--color-text-muted)">${esc(r0.location)} — ${esc(r0.holder)}</span>
               <span style="font-size:.72rem;color:var(--color-text-muted)">${r0.last_verified_at ? 'verified ' + esc(new Date(r0.last_verified_at).toLocaleDateString()) + ' by ' + esc(r0.last_verified_by) : 'never verified'}</span>
               <button class="btn-ghost cu-attest" data-id="${esc(r0.id)}" title="I verified this copy exists today" style="font-size:.75rem">✓ attest</button>
-              <button class="btn-ghost cu-del" data-id="${esc(r0.id)}" style="color:var(--color-danger);padding:0 .3rem">✕</button>
+              <button class="btn-ghost cu-del" data-id="${esc(r0.id)}" aria-label="Delete custody record" title="Delete custody record" style="color:var(--color-danger);padding:0 .3rem">✕</button>
             </div>`).join('') || '<div style="font-size:.8rem;color:var(--color-text-muted)">Register where each critical secret lives (values never enter Quorum).</div>';
           box.querySelectorAll('.cu-attest').forEach(b => b.addEventListener('click', async () => {
             try { await api('POST', `/continuity/custody/${b.dataset.id}/attest`); loadCont(); }

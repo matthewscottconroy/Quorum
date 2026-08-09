@@ -104,7 +104,7 @@ class PageChat extends HTMLElement {
         <div class="msg-head">
           <b>${esc(m.author_name ?? 'former user')}</b>
           <span>${esc(new Date(m.created_at).toLocaleString())}</span>
-          ${canDel ? `<button class="btn-ghost msg-del" data-id="${esc(m.id)}" style="padding:0 .3rem;color:var(--color-danger)">✕</button>` : ''}
+          ${canDel ? `<button class="btn-ghost msg-del" data-id="${esc(m.id)}" aria-label="Delete message" title="Delete message" style="padding:0 .3rem;color:var(--color-danger)">✕</button>` : ''}
         </div>
         <div class="msg-body">${esc(m.body)}</div>
         ${m.resource_id ? `<div class="msg-doc" data-rid="${esc(m.resource_id)}"><span class="spinner" style="width:12px;height:12px"></span></div>` : ''}
@@ -140,7 +140,7 @@ class PageChat extends HTMLElement {
         <div class="chat-thread" id="thread">
           <div class="chat-top" style="padding:.4rem .6rem">
             <b style="font-size:.85rem">Thread</b>
-            <button class="btn-ghost" id="th-close" style="padding:0 .4rem">✕</button>
+            <button class="btn-ghost" id="th-close" aria-label="Close thread" title="Close thread" style="padding:0 .4rem">✕</button>
           </div>
           <div class="chat-msgs">
             ${this.msgHTML(this._thread, true)}
@@ -208,7 +208,7 @@ class PageChat extends HTMLElement {
     const renderChip = () => {
       chip.style.display = attached ? 'block' : 'none';
       chip.innerHTML = attached
-        ? `<span class="badge badge-none">📄 ${esc(attached.title)} <button class="btn-ghost" id="${prefix}-unattach" style="padding:0 .2rem">✕</button></span>` : '';
+        ? `<span class="badge badge-none">📄 ${esc(attached.title)} <button class="btn-ghost" id="${prefix}-unattach" aria-label="Remove attachment" title="Remove attachment" style="padding:0 .2rem">✕</button></span>` : '';
       chip.querySelector(`#${prefix}-unattach`)?.addEventListener('click', () => { attached = null; renderChip(); });
     };
     this.querySelector(`#${prefix}-attach`)?.addEventListener('click', async () => {

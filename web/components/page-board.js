@@ -139,9 +139,13 @@ class PageBoard extends HTMLElement {
 
     // Card open: officers edit; members view details + join the conversation.
     board.querySelectorAll('.board-card').forEach(card => {
-      card.addEventListener('click', () => {
+      const open = () => {
         const item = this._items.find(i => i.id === card.dataset.id);
         if (item) this.openCardModal(item, officer);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
 
@@ -185,6 +189,7 @@ class PageBoard extends HTMLElement {
     const [tb, tc] = TYPE_BADGE[i.card_type] ?? TYPE_BADGE.task;
     return `
       <div class="board-card ${officer ? 'board-card-edit' : ''}" data-id="${esc(i.id)}"
+           role="button" tabindex="0" aria-label="${officer ? 'Edit' : 'View'} card: ${esc(i.title)}"
            style="border-left:3px solid ${PRIORITY_COLOR[i.priority] ?? PRIORITY_COLOR.normal}">
         <div class="board-card-title">
           <span class="board-type" style="background:${tc}" title="${esc(i.card_type.replace('_', '-'))}">${tb}</span>
@@ -236,7 +241,7 @@ class PageBoard extends HTMLElement {
           <input class="col-name" value="${esc(c.name)}" style="flex:1">
           <span class="badge badge-none" style="font-size:.7rem">${c.maps_to_status ? '→ ' + esc(c.maps_to_status.replace('_', ' ')) : 'workflow'}</span>
           <button class="btn-ghost col-save" title="Save name">💾</button>
-          <button class="btn-ghost col-del" data-name="${esc(c.name)}" style="color:var(--color-danger)">✕</button>
+          <button class="btn-ghost col-del" data-name="${esc(c.name)}" aria-label="Delete column" title="Delete column" style="color:var(--color-danger)">✕</button>
         </div>`).join('') || '<p style="font-size:.85rem">No columns.</p>';
 
       rows.querySelectorAll('[data-id]').forEach(row => {
@@ -539,7 +544,7 @@ class PageBoard extends HTMLElement {
           <div style="display:flex;align-items:center;gap:.45rem;font-size:.85rem">
             <span class="badge badge-none" style="font-size:.68rem;min-width:92px;text-align:center">${esc(label)}</span>
             <span style="flex:1">${esc(other)}</span>
-            ${officer ? `<button class="btn-ghost lk-del" data-id="${esc(l.id)}" style="padding:0 .3rem;color:var(--color-danger)">✕</button>` : ''}
+            ${officer ? `<button class="btn-ghost lk-del" data-id="${esc(l.id)}" aria-label="Remove link" title="Remove link" style="padding:0 .3rem;color:var(--color-danger)">✕</button>` : ''}
           </div>`;
       }).join('') : '<div style="font-size:.8rem;color:var(--color-text-muted)">No relationships.</div>';
       list.querySelectorAll('.lk-del').forEach(btn => btn.addEventListener('click', async () => {

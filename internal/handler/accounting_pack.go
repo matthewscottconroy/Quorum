@@ -52,9 +52,23 @@ func (h *AccountingPackHandler) SetBills(b packBillsSource) { h.bills = b }
 func rulesCSV(rules []model.PostingRule) [][]string {
 	out := [][]string{{"rule_key", "account_code", "account_name"}}
 	for _, p := range rules {
-		out = append(out, []string{p.Key, p.AccountCode, p.AccountName})
+		out = append(out, []string{p.Key, p.AccountCode, csvSafe(p.AccountName)})
 	}
 	return out
+}
+
+// sanitizeTextCols applies csvSafe to the given column indexes of every data
+// row (skipping the header), leaving numeric/date/UUID columns untouched — a
+// blanket pass would corrupt a legitimately negative number into text.
+func sanitizeTextCols(rows [][]string, cols ...int) [][]string {
+	for i := 1; i < len(rows); i++ {
+		for _, c := range cols {
+			if c < len(rows[i]) {
+				rows[i][c] = csvSafe(rows[i][c])
+			}
+		}
+	}
+	return rows
 }
 
 func csvBytes(rows [][]string) []byte {
@@ -69,7 +83,7 @@ func balancesCSV(header string, rows []model.GLBalance) [][]string {
 	out := [][]string{{"code", "name", "type", "currency", "debits_minor", "credits_minor", "balance_minor"}}
 	_ = header
 	for _, b := range rows {
-		out = append(out, []string{b.Code, b.Name, b.Type, b.Currency,
+		out = append(out, []string{b.Code, csvSafe(b.Name), b.Type, b.Currency,
 			fmt.Sprint(b.Debits), fmt.Sprint(b.Credits), fmt.Sprint(b.Balance)})
 	}
 	return out
@@ -253,10 +267,10 @@ Verification tooling ships in the repository under ops/.
 	}{
 		{"statements.pdf", statementsPDF},
 		{"trial-balance.csv", csvBytes(balancesCSV("", tb))},
-		{"general-ledger.csv", csvBytes(ledger)},
+		{"general-ledger.csv", csvBytes(sanitizeTextCols(ledger, 4, 6))},
 		{"income-statement-accrual.csv", csvBytes(balancesCSV("", income))},
 		{"income-statement-cash.csv", csvBytes(balancesCSV("", cashIncome))},
-		{"purchases.csv", csvBytes(purchases)},
+		{"purchases.csv", csvBytes(sanitizeTextCols(purchases, 1, 2, 3, 7, 10))},
 		{"posting-rules.csv", csvBytes(rulesCSV(rules))},
 		{"balance-sheet.csv", csvBytes(balancesCSV("", position))},
 		{"funds.csv", csvBytes(fundsRows)},
