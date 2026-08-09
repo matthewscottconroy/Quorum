@@ -850,10 +850,24 @@ Three more areas, each self-explanatory in the app once you know they exist:
   single-use voting links, including **proxy** support — for decisions taken
   between meetings. Ballot casting is atomic: a vote counts exactly once.
 - **Budgets.** Scenario planning: draft a budget, **clone** it into a what-if
-  variant, adjust, and **compare** side by side before adopting one. Once a
-  period is underway, **Vs actual** compares any scenario's budgeted income and
-  expense against what's actually posted to the ledger over a date range, with
-  the variance called out — so you can see where you're over or under plan.
+  variant, adjust, and **compare** side by side before adopting one. Give a
+  scenario real **start/end dates** and link lines to **GL accounts** (the
+  Account column) and "Vs actual" becomes a true variance report: per-account
+  rows, accrual or cash basis to match your books, fiscal-year presets, and a
+  prorated "where you should be by now" line. It never mixes currencies —
+  ledger activity in other currencies is named and excluded. A scenario's
+  currency locks once it has lines; archived scenarios are read-only; deleting
+  one is admin-only and asks you to type its name. Seeding dues income warns
+  about every tier it could not project. When someone files a **purchase** or
+  a **bill** against a budgeted account, the form quietly shows how much of
+  that budget envelope is left.
+- **Plans that connect to work and money.** A plan can carry an estimated
+  cost, and Board cards can be tied to a plan (the Plan field on any card).
+  The plan's page then shows its linked work with a done/total progress bar,
+  and the Dashboard counts active plans — with an overdue flag once a plan
+  sails past its target date. The decision log stays an editable working
+  record by design; for immutable, database-frozen records use meeting
+  minutes (5.3.5).
 - **Analytics.** Dashboard charts of membership and receivables over time.
   Multi-currency organizations: totals are per-currency — mixed currencies
   are **flagged, never silently summed** — with explicit FX conversion where

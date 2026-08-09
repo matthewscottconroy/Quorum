@@ -309,9 +309,12 @@ These are organizational **records**, not access grants — the permission role 
 | `GET` | `/join-requests` | officer | Membership-application queue (`?status=pending\|approved\|rejected`) |
 | `POST` | `/join-requests/:id/approve` | officer | Approve — atomically creates a member (`{tier?}`) and returns `{member_id}` |
 | `POST` | `/join-requests/:id/reject` | officer | Decline an application |
-| `GET` | `/budgets/:id/vs-actual?from=&to=` | officer | Compare a budget scenario's totals to posted GL income/expense over a date range |
+| `GET` | `/budgets/:id/vs-actual?from=&to=&basis=` | officer | Budget vs. actual: scenario-currency-only (others reported, never summed), accrual or cash basis, per-account category rows for GL-linked lines, and straight-line proration when the scenario has dates |
+| `GET` | `/budgets/remaining?account_id=` | officer | Active-budget envelope for one GL account: budget, actuals over the scenario period, remaining — the read-only hint shown when filing purchases and bills |
 
 Recusals recorded against a motion or purchase are returned inline on that motion (`GET /meetings/:id/motions`) and purchase (`GET /purchases`), so the recusal is visible wherever the vote or approval is.
+
+**Budget guardrails**: a scenario's currency freezes once it has lines (409 — clone instead); `archived` scenarios are read-only except un-archiving; deleting a scenario is admin-only with `?confirm=<name>`; budget lines may link to income/expense GL accounts (kind-checked) which powers per-category variance and the spend-time remaining hint; dues seeding reports every tier it could NOT project (`skipped`) instead of dropping them silently. Plans carry an optional cost estimate, list their linked action items with a progress bar, and the dashboard counts active/overdue plans.
 
 ### Top Secret arcade
 
