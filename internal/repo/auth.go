@@ -3,6 +3,8 @@ package repo
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,6 +12,16 @@ import (
 
 	"quorum/internal/model"
 )
+
+// newOpaqueToken returns a 256-bit URL-safe hex token for feed/subscription
+// URLs — a scoped read credential, not a session token.
+func newOpaqueToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // AuthRepo provides PostgreSQL data access for records.
 type AuthRepo struct {
@@ -338,4 +350,37 @@ func (r *AuthRepo) RevokeOtherRefreshTokensForUser(ctx context.Context, userID, 
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// EnsureCalendarToken returns the user's calendar-subscription token, minting
+// one on first use. Idempotent.
+func (r *AuthRepo) EnsureCalendarToken(ctx context.Context, userID string) (string, error) {
+	var tok *string
+	if err := r.db.QueryRow(ctx, `SELECT calendar_token FROM users WHERE id = $1::uuid`, userID).Scan(&tok); err != nil {
+		return "", err
+	}
+	if tok != nil && *tok != "" {
+		return *tok, nil
+	}
+	return r.RotateCalendarToken(ctx, userID)
+}
+
+// RotateCalendarToken issues a fresh token (invalidating any existing feed URL).
+func (r *AuthRepo) RotateCalendarToken(ctx context.Context, userID string) (string, error) {
+	t, err := newOpaqueToken()
+	if err != nil {
+		return "", err
+	}
+	if _, err := r.db.Exec(ctx, `UPDATE users SET calendar_token = $1 WHERE id = $2::uuid`, t, userID); err != nil {
+		return "", err
+	}
+	return t, nil
+}
+
+// UserIDByCalendarToken resolves a calendar feed token to its user id, or
+// pgx.ErrNoRows if the token is unknown/revoked.
+func (r *AuthRepo) UserIDByCalendarToken(ctx context.Context, token string) (string, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `SELECT id::text FROM users WHERE calendar_token = $1`, token).Scan(&id)
+	return id, err
 }

@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"quorum/internal/model"
+	"quorum/internal/pdf"
 	"quorum/internal/repo"
 )
 
@@ -165,6 +167,92 @@ func (h *ExportHandler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Req
 		})
 	}
 	cw.Flush()
+}
+
+// ExportMyStatement renders the caller's annual member statement PDF: their
+// invoices and payments for a year, for reimbursement or donation records.
+// ?year=YYYY (defaults to the current year).
+func (h *ExportHandler) ExportMyStatement(w http.ResponseWriter, r *http.Request) {
+	user, err := h.auth.GetUserByID(r.Context(), userIDFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found", "not_found")
+		return
+	}
+	if user.MemberID == nil || *user.MemberID == "" {
+		writeError(w, http.StatusBadRequest, "your login isn't linked to a member record", "bad_request")
+		return
+	}
+	year := nowUTC(r).Year()
+	if y, perr := strconv.Atoi(r.URL.Query().Get("year")); perr == nil && y >= 2000 && y <= 3000 {
+		year = y
+	}
+	member, _ := h.members.Get(r.Context(), *user.MemberID)
+	invs, _ := h.allInvoices(r.Context(), *user.MemberID)
+	txns, _ := h.allTransactions(r.Context(), *user.MemberID)
+
+	name := user.Email
+	if member != nil {
+		name = member.DisplayName
+	}
+	d := pdf.New("Member statement")
+	d.Title("Member statement")
+	d.Line(fmt.Sprintf("%s — %d", name, year))
+	d.Space()
+
+	d.Heading("Invoices")
+	invCount := 0
+	for _, inv := range invs {
+		if inv.DueDate.Year() != year {
+			continue
+		}
+		invCount++
+		d.Line(fmt.Sprintf("%-14s %-22s %10s %-10s due %s",
+			inv.PeriodLabel, trunc(inv.MemberName, 22),
+			model.FormatMoney(inv.AmountMinor, inv.Currency), inv.Status,
+			inv.DueDate.Format("2006-01-02")))
+	}
+	if invCount == 0 {
+		d.Line("(no invoices this year)")
+	}
+	d.Space()
+
+	d.Heading("Payments")
+	var paid = map[string]int64{}
+	payCount := 0
+	for _, t := range txns {
+		if t.OccurredAt.Year() != year {
+			continue
+		}
+		payCount++
+		paid[t.Currency] += t.AmountMinor
+		d.Line(fmt.Sprintf("%s  %10s  via %s",
+			t.OccurredAt.Format("2006-01-02"), model.FormatMoney(t.AmountMinor, t.Currency), t.Provider))
+	}
+	if payCount == 0 {
+		d.Line("(no payments this year)")
+	}
+	d.Space()
+	d.Heading("Total paid")
+	if len(paid) == 0 {
+		d.Line("0")
+	}
+	for cur, amt := range paid {
+		d.Line(fmt.Sprintf("%s %s", model.FormatMoney(amt, cur), cur))
+	}
+	d.Watermark(fmt.Sprintf("Statement for %s — generated %s", name, nowUTC(r).Format("2006-01-02")))
+	body, _ := d.Finalize()
+
+	auditExport(r, h.audit, fmt.Sprintf("statement-%d.pdf", year), map[string]any{"year": year})
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fmt.Sprintf("member-statement-%d.pdf", year)))
+	_, _ = w.Write(body)
+}
+
+func trunc(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }
 
 // ExportMyData returns the authenticated user's own account, linked member

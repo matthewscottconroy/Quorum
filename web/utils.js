@@ -309,6 +309,23 @@ export function renderPager(container, { offset, limit, total, onNavigate }) {
   container.querySelector('[data-pg=next]').addEventListener('click', () => onNavigate(offset + limit));
 }
 
+/* ── Theme (light / dark / system) ────────────────────────────────────────── */
+
+// The chosen theme is a UI preference in localStorage: 'light', 'dark', or
+// 'system' (default — follow the OS). applyTheme() stamps data-theme on <html>
+// so base.css's token overrides take effect; 'system' removes the attribute
+// and lets the prefers-color-scheme media query decide.
+export function getTheme() {
+  try { return localStorage.getItem('quorum.theme') || 'system'; } catch { return 'system'; }
+}
+export function applyTheme(theme) {
+  const t = theme || getTheme();
+  const root = document.documentElement;
+  if (t === 'light' || t === 'dark') root.setAttribute('data-theme', t);
+  else root.removeAttribute('data-theme');
+  if (theme) { try { localStorage.setItem('quorum.theme', theme); } catch { /* private mode */ } }
+}
+
 /* ── Per-list filter memory ───────────────────────────────────────────────── */
 
 // List pages remember their last filters per browser so a return visit lands

@@ -1,6 +1,6 @@
 import { api, apiDownload, getUser, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, getTheme, applyTheme } from '../utils.js';
 
 /**
  * Builds <option> markup for the role ladder. `superadmin` is offered only to a
@@ -83,6 +83,22 @@ class PageSettings extends HTMLElement {
           <button class="btn-secondary" id="revoke-sessions-btn">Sign out other devices</button>
 
           <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
+          <h3 style="font-size:.9rem;margin-bottom:.5rem">Appearance</h3>
+          <div class="form-group" style="max-width:220px">
+            <label for="theme-sel">Theme</label>
+            <select id="theme-sel">
+              <option value="system">System (auto)</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
+          <h3 style="font-size:.9rem;margin-bottom:.5rem">Emailed report digests</h3>
+          <p style="font-size:.8rem;color:var(--color-text-muted);margin-bottom:.5rem">Get financial reports on a schedule. Weekly digests send Monday; monthly on the 1st.</p>
+          <div id="report-subs"></div>
+
+          <hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">
           <h3 style="font-size:.9rem;margin-bottom:.5rem">Export my data</h3>
           <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.75rem">Download your account, profile, dues and payments as a JSON file.</p>
           <button class="btn-secondary" id="export-me-btn">Download my data (JSON)</button>
@@ -108,6 +124,12 @@ class PageSettings extends HTMLElement {
           </div>
           <div class="form-group"><label for="og-pay">How to pay (shown to members)</label>
             <textarea id="og-pay" rows="3" placeholder="Zelle: treasurer@…  ·  Venmo: @org-handle  ·  Checks payable to …"></textarea></div>
+          <div class="form-group"><label for="og-paylink">Pay-now link template (optional)</label>
+            <input id="og-paylink" placeholder="https://pay.example.com/?amt={amount_major}&ref={reference}">
+            <div style="font-size:.72rem;color:var(--color-text-muted)">An https URL with optional {amount_major} and {reference} placeholders; a "Pay" button appears on each member's open invoice.</div></div>
+          <div class="form-group"><label for="og-vocab">Vocabulary overrides (optional JSON)</label>
+            <input id="og-vocab" placeholder='{"Dues":"Assessments","Members":"Residents"}'>
+            <div style="font-size:.72rem;color:var(--color-text-muted)">Rename UI labels to your org's terms. Takes effect on next load.</div></div>
           <div class="form-group"><label for="og-infra">Infrastructure facts (admin-only; feeds the continuity pack)</label>
             <textarea id="og-infra" rows="4" placeholder="Registrar: … · DNS: Route 53 · Cloud: AWS acct owner … · Server: … · Backup bucket: … · Password vault: …"></textarea></div>
           <div class="form-row">
@@ -232,6 +254,13 @@ class PageSettings extends HTMLElement {
       try { await apiDownload('/auth/me/export', 'my-quorum-data.json'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
+
+    const themeSel = this.querySelector('#theme-sel');
+    if (themeSel) {
+      themeSel.value = getTheme();
+      themeSel.addEventListener('change', e => applyTheme(e.target.value));
+    }
+    this._renderReportSubs();
 
     this.querySelector('#twofa-setup-btn')?.addEventListener('click', () => this.open2FASetup());
     this.querySelector('#twofa-disable-btn')?.addEventListener('click', () => this.open2FADisable());
@@ -695,6 +724,37 @@ class PageSettings extends HTMLElement {
       }
     }));
   }
+
+  /** Emailed report-digest subscriptions (officer+). Each report → cadence. */
+  async _renderReportSubs() {
+    const host = this.querySelector('#report-subs');
+    if (!host) return;
+    let subs = [];
+    try { subs = await api('GET', '/me/report-subscriptions') ?? []; }
+    catch { host.innerHTML = '<p style="font-size:.82rem;color:var(--color-text-muted)">Not available.</p>'; return; }
+    const current = {};
+    subs.forEach(s => { current[s.report] = s.cadence; });
+    const reports = [
+      ['ar_aging', 'Receivables aging'],
+      ['ap_aging', 'Payables aging'],
+      ['income_statement', 'Income statement'],
+    ];
+    host.innerHTML = reports.map(([key, label]) => `
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem">
+        <span style="flex:1;font-size:.88rem">${esc(label)}</span>
+        <select data-report="${key}" style="max-width:9rem">
+          <option value="off" ${!current[key] ? 'selected' : ''}>Off</option>
+          <option value="weekly" ${current[key] === 'weekly' ? 'selected' : ''}>Weekly</option>
+          <option value="monthly" ${current[key] === 'monthly' ? 'selected' : ''}>Monthly</option>
+        </select>
+      </div>`).join('');
+    host.querySelectorAll('select[data-report]').forEach(sel => sel.addEventListener('change', async () => {
+      try {
+        await api('PUT', '/me/report-subscriptions', { report: sel.dataset.report, cadence: sel.value });
+        toast('Saved', 'success');
+      } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
+    }));
+  }
 }
 customElements.define('page-settings', PageSettings);
 
@@ -720,6 +780,7 @@ customElements.define('page-settings', PageSettings);
         set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
         set('#og-2fa', st.require_2fa ?? 'off');
         set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
+        set('#og-paylink', st.payment_link_template); set('#og-vocab', st.vocab_overrides);
         set('#og-contacts', st.continuity_contacts);
       } catch { /* defaults are fine */ }
       this.querySelector('#og-save')?.addEventListener('click', async () => {
@@ -728,6 +789,8 @@ customElements.define('page-settings', PageSettings);
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
             require_2fa: this.querySelector('#og-2fa').value,
             how_to_pay: this.querySelector('#og-pay').value,
+            payment_link_template: this.querySelector('#og-paylink').value,
+            vocab_overrides: this.querySelector('#og-vocab').value || '{}',
             infrastructure_facts: this.querySelector('#og-infra').value,
             continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
             continuity_contacts: this.querySelector('#og-contacts').value,

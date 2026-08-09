@@ -9,7 +9,10 @@
  * every fetch with `credentials: 'same-origin'`.
  */
 
-import { setVocabOverrides } from './utils.js';
+import { setVocabOverrides, applyTheme } from './utils.js';
+
+// Apply the saved theme before first paint so there's no light-mode flash.
+applyTheme();
 
 // ─── Auth state (module-level, never touches the DOM) ───────────────────────
 let _token          = null;
@@ -361,6 +364,7 @@ const routes = {
   '#/discussions':     '<page-chat>',
   '#/funds':           '<page-funds>',
   '#/payables':        '<page-payables>',
+  '#/payment-reports': '<page-payment-reports>',
   '#/setup-2fa':       '<page-setup-2fa>',
   '#/accounting':      '<page-accounting>',
   '#/reports':         '<page-reports>',
@@ -420,6 +424,7 @@ import './components/page-board.js';
 import './components/page-chat.js';
 import './components/page-funds.js';
 import './components/page-payables.js';
+import './components/page-payment-reports.js';
 import './components/page-setup-2fa.js';
 import './components/page-accounting.js';
 import './components/page-reports.js';
@@ -441,7 +446,11 @@ async function loadVocab() {
   if (!isAuthenticated()) return;
   try {
     const st = await api('GET', '/settings/org');
-    if (st?.vocab_overrides) setVocabOverrides(JSON.parse(st.vocab_overrides));
+    if (st?.vocab_overrides) {
+      setVocabOverrides(JSON.parse(st.vocab_overrides));
+      // Nav/pages rendered before this resolved; nudge a re-render so overrides show.
+      document.dispatchEvent(new CustomEvent('route-changed', { detail: location.hash }));
+    }
   } catch { /* defaults are fine */ }
 }
 document.addEventListener('auth-changed', () => { loadVocab(); });

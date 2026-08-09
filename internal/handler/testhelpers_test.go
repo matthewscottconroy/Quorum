@@ -394,6 +394,15 @@ func (m *mockMeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userI
 func (m *mockMeetingsRepo) Upcoming(ctx context.Context, n int) ([]model.Meeting, error) {
 	return m.UpcomingFn(ctx, n)
 }
+func (m *mockMeetingsRepo) SetRSVP(ctx context.Context, meetingID, memberID, response string) error {
+	return nil
+}
+func (m *mockMeetingsRepo) RSVPSummary(ctx context.Context, meetingID, memberID string) (model.RSVPSummary, error) {
+	return model.RSVPSummary{}, nil
+}
+func (m *mockMeetingsRepo) RSVPYesMemberIDs(ctx context.Context, meetingID string) ([]string, error) {
+	return []string{}, nil
+}
 
 // ---- mockActionItemsRepo ----
 

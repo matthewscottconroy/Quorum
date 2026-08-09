@@ -542,6 +542,38 @@ type Page[T any] struct {
 	Offset int `json:"offset"`
 }
 
+// ReportSubscription is a user's opt-in to a scheduled report digest.
+type ReportSubscription struct {
+	Report  string `json:"report"`  // ar_aging | ap_aging | income_statement
+	Cadence string `json:"cadence"` // weekly | monthly
+}
+
+// PaymentReport is a member's self-reported payment awaiting officer
+// confirmation (the confirmation queue).
+type PaymentReport struct {
+	ID          string    `json:"id"`
+	InvoiceID   string    `json:"invoice_id"`
+	MemberID    string    `json:"member_id,omitempty"`
+	MemberName  string    `json:"member_name"`
+	Method      string    `json:"method"`
+	Reference   string    `json:"reference,omitempty"`
+	Note        string    `json:"note,omitempty"`
+	Status      string    `json:"status"`
+	ReportedAt  time.Time `json:"reported_at"`
+	AmountMinor int64     `json:"amount_minor"`
+	Currency    string    `json:"currency"`
+	PeriodLabel string    `json:"period_label"`
+}
+
+// RSVPSummary is the per-response tally for a meeting plus the caller's own
+// response (empty string if none).
+type RSVPSummary struct {
+	Yes   int    `json:"yes"`
+	No    int    `json:"no"`
+	Maybe int    `json:"maybe"`
+	Mine  string `json:"mine"`
+}
+
 // ActivityEvent is one entry in the dashboard's recent-activity feed: a short
 // human summary and when it happened. Org-visible only — no amounts or PII.
 type ActivityEvent struct {

@@ -20,6 +20,7 @@ const GROUPS = [
     key: 'money', label: 'Money', links: [
       { hash: '#/dues',       label: 'Dues',       icon: '💳', minRole: 'officer' },
       { hash: '#/payables',   label: 'Payables',   icon: '🧾', minRole: 'officer' },
+      { hash: '#/payment-reports', label: 'Confirmations', icon: '✅', minRole: 'officer' },
       { hash: '#/funds',      label: 'Funds',      icon: '🏦', minRole: 'member' },
       { hash: '#/accounting', label: 'Accounting', icon: '📒', minRole: 'officer' },
       { hash: '#/budget',     label: 'Budget',     icon: '📊', minRole: 'officer' },

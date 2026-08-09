@@ -1,6 +1,6 @@
 import { api, apiDownload, getUser, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, fmtDate, formatMoney } from '../utils.js';
+import { esc, fmtDate, formatMoney, openModal, guardButton } from '../utils.js';
 
 /**
  * `<page-my-account>` — self-service, read-only view of the signed-in user's own
@@ -11,23 +11,48 @@ import { esc, fmtDate, formatMoney } from '../utils.js';
  */
 class PageMyAccount extends HTMLElement {
   connectedCallback() {
-    this._loadHowToPay();
     this.render();
+  }
+
+  _renderHowToPay(text) {
+    if (!text) return;
+    const box = document.createElement('div');
+    box.className = 'card';
+    box.style.cssText = 'padding:1rem;margin-top:1rem';
+    box.innerHTML = `<h3 style="margin:0 0 .4rem;font-size:.95rem">💳 How to pay</h3>
+      <div style="white-space:pre-wrap;font-size:.88rem">${esc(text)}</div>`;
+    this.appendChild(box);
   }
 
   async render() {
     const user = getUser();
     const memberId = currentMemberId();
+    // Org pay info (template drives Pay links, how_to_pay is a footer card).
+    // Loaded here so a single render has everything — no second pass.
+    try {
+      const st = await api('GET', '/settings/org');
+      this._payTemplate = st?.payment_link_template || '';
+      this._howToPay = st?.how_to_pay || '';
+    } catch { this._payTemplate = ''; this._howToPay = ''; }
 
     this.innerHTML = `
       <div class="page-header">
         <h1>My Account</h1>
-        <button class="btn-secondary" id="export-me-btn">Export my data</button>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn-secondary" id="statement-btn">Statement (PDF)</button>
+          <button class="btn-secondary" id="calendar-btn">Subscribe to calendar</button>
+          <button class="btn-secondary" id="export-me-btn">Export my data</button>
+        </div>
       </div>`;
     this.querySelector('#export-me-btn').addEventListener('click', async () => {
       try { await apiDownload('/auth/me/export', 'my-quorum-data.json'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
+    this.querySelector('#statement-btn').addEventListener('click', async () => {
+      try { await apiDownload(`/auth/me/statement.pdf?year=${new Date().getFullYear()}`, 'member-statement.pdf'); }
+      catch (err) { toast(err.error ?? 'Could not build statement', 'error'); }
+    });
+    this.querySelector('#calendar-btn').addEventListener('click', () => this._openCalendarModal());
 
     if (!memberId) {
       this.innerHTML += `
@@ -82,15 +107,22 @@ class PageMyAccount extends HTMLElement {
           : invoices.length === 0
           ? '<p class="empty-state" style="padding:1rem">No invoices.</p>'
           : `<table>
-              <thead><tr><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th></tr></thead>
+              <thead><tr><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th><th></th></tr></thead>
               <tbody>
-                ${invoices.map(inv => `
+                ${invoices.map(inv => {
+                  const open = inv.status !== 'paid' && inv.status !== 'waived';
+                  return `
                   <tr>
                     <td>${esc(inv.period_label)}</td>
                     <td>${formatMoney(inv.amount_minor, inv.currency)}</td>
                     <td>${fmtDate(inv.due_date)}</td>
                     <td><span class="badge badge-${esc(inv.status)}">${esc(inv.status)}</span></td>
-                  </tr>`).join('')}
+                    <td style="text-align:right;white-space:nowrap">
+                      ${open && this._payTemplate ? `<a class="btn-secondary" style="font-size:.75rem;padding:.2rem .5rem" href="${esc(this._payLink(inv))}" target="_blank" rel="noopener">Pay</a>` : ''}
+                      ${open ? `<button class="btn-ghost report-pay" data-id="${esc(inv.id)}" data-period="${esc(inv.period_label)}" style="font-size:.75rem">I've paid</button>` : ''}
+                    </td>
+                  </tr>`;
+                }).join('')}
               </tbody>
              </table>`}
       </section>
@@ -115,20 +147,93 @@ class PageMyAccount extends HTMLElement {
              </table>`}
       </section>
     `;
+
+    body.querySelectorAll('.report-pay').forEach(btn => {
+      btn.addEventListener('click', () => this._openReportModal(btn.dataset.id, btn.dataset.period));
+    });
+    this._renderHowToPay(this._howToPay);
+  }
+
+  /** Builds the configured pay-link for an invoice, filling placeholders. */
+  _payLink(inv) {
+    const major = (Number(inv.amount_minor) || 0) / 100;
+    return (this._payTemplate || '')
+      .replace('{amount_major}', encodeURIComponent(major.toFixed(2)))
+      .replace('{reference}', encodeURIComponent(inv.id));
+  }
+
+  /** "I've paid" self-report: files a pending report for officer confirmation. */
+  _openReportModal(invoiceID, period) {
+    const { dialog, close } = openModal({
+      title: `Report a payment — ${period}`,
+      maxWidth: '440px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-top:0">
+            Let the treasurer know you've sent payment (Zelle, check, etc.). They'll
+            confirm it against the account; this doesn't mark the invoice paid on its own.</p>
+          <div class="form-group"><label for="rp-method">How did you pay? *</label>
+            <input id="rp-method" placeholder="Zelle, check, Venmo…"></div>
+          <div class="form-group"><label for="rp-ref">Reference / confirmation # (optional)</label>
+            <input id="rp-ref"></div>
+          <div class="form-group"><label for="rp-note">Note (optional)</label>
+            <textarea id="rp-note" rows="2"></textarea></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="rp-cancel">Cancel</button>
+          <button class="btn-primary" id="rp-send">Send</button>
+        </div>`,
+    });
+    dialog.querySelector('#rp-cancel').addEventListener('click', close);
+    const send = dialog.querySelector('#rp-send');
+    send.addEventListener('click', guardButton(send, async () => {
+      const method = dialog.querySelector('#rp-method').value.trim();
+      if (!method) { toast('Tell us how you paid', 'error'); return; }
+      try {
+        await api('POST', `/dues/${invoiceID}/report-payment`, {
+          method,
+          reference: dialog.querySelector('#rp-ref').value.trim(),
+          note: dialog.querySelector('#rp-note').value.trim(),
+        });
+        toast('Thanks — the treasurer will confirm it', 'success');
+        close();
+      } catch (err) { toast(err.error ?? 'Could not send', 'error'); }
+    }));
+  }
+
+  /** Shows the personal calendar-subscription URL (created on demand). */
+  async _openCalendarModal() {
+    let url = '';
+    try { url = (await api('POST', '/calendar/subscription'))?.url ?? ''; }
+    catch { toast('Could not create your calendar feed', 'error'); return; }
+    const { dialog, close } = openModal({
+      title: 'Subscribe to the meeting calendar',
+      maxWidth: '520px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.88rem">Add this URL as a <strong>subscribed calendar</strong> in Google
+            Calendar, Apple Calendar, or Outlook — meetings then appear and stay up to date automatically.</p>
+          <input id="cal-url" readonly value="${esc(url)}" style="font-family:monospace;font-size:.8rem">
+          <p style="font-size:.78rem;color:var(--color-text-muted)">Keep this URL private — anyone with it can see the meeting schedule.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-ghost" id="cal-rotate" style="color:var(--color-danger)">Reset link</button>
+          <button class="btn-secondary" id="cal-copy">Copy</button>
+          <button class="btn-primary" id="cal-done">Done</button>
+        </div>`,
+    });
+    dialog.querySelector('#cal-done').addEventListener('click', close);
+    dialog.querySelector('#cal-copy').addEventListener('click', () => {
+      navigator.clipboard?.writeText(url).then(() => toast('Copied', 'success')).catch(() => {});
+    });
+    dialog.querySelector('#cal-rotate').addEventListener('click', async () => {
+      try {
+        const res = await api('POST', '/calendar/rotate');
+        dialog.querySelector('#cal-url').value = res.url;
+        url = res.url;
+        toast('New link generated — the old one no longer works', 'success');
+      } catch { toast('Could not reset', 'error'); }
+    });
   }
 }
-PageMyAccount.prototype._loadHowToPay = async function () {
-  try {
-    const st = await (await import('../app.js')).api('GET', '/settings/org');
-    if (!st?.how_to_pay) return;
-    const esc = (await import('../utils.js')).esc;
-    const box = document.createElement('div');
-    box.className = 'card';
-    box.style.cssText = 'padding:1rem;margin-top:1rem';
-    box.innerHTML = `<h3 style="margin:0 0 .4rem;font-size:.95rem">💳 How to pay</h3>
-      <div style="white-space:pre-wrap;font-size:.88rem">${esc(st.how_to_pay)}</div>`;
-    this.appendChild(box);
-  } catch { /* optional panel */ }
-};
-
 customElements.define('page-my-account', PageMyAccount);

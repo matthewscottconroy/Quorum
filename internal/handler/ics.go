@@ -98,6 +98,33 @@ func writeICS(w http.ResponseWriter, meetings []model.Meeting, filename string) 
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// writeICSInline renders a VCALENDAR for live subscription feeds: same body
+// as writeICS but Content-Disposition inline, so a subscribing calendar app
+// renders it instead of downloading a file.
+func writeICSInline(w http.ResponseWriter, meetings []model.Meeting) {
+	rec := &icsRecorder{}
+	writeICS(rec, meetings, "")
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", "inline")
+	_, _ = w.Write(rec.body)
+}
+
+// icsRecorder captures writeICS output (which writes Content-Disposition:
+// attachment) so writeICSInline can re-send it inline. Only the body matters.
+type icsRecorder struct {
+	body   []byte
+	header http.Header
+}
+
+func (r *icsRecorder) Header() http.Header {
+	if r.header == nil {
+		r.header = http.Header{}
+	}
+	return r.header
+}
+func (r *icsRecorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
+func (r *icsRecorder) WriteHeader(int)             {}
+
 // ExportICS serves the org's meeting schedule as an importable .ics file:
 // everything from 30 days back onward (older history is noise in a calendar).
 func (h *MeetingsHandler) ExportICS(w http.ResponseWriter, r *http.Request) {

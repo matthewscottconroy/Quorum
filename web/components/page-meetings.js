@@ -211,6 +211,8 @@ class PageMeetings extends HTMLElement {
                 </div>
                 <button class="btn-secondary" id="add-decision-btn" style="width:100%">+ Add decision</button>
               </div>`:''}
+            <h3 style="margin:1rem 0 .5rem;font-size:.95rem">RSVP</h3>
+            <div id="rsvp-section"><span class="spinner"></span></div>
             <h3 style="margin:1rem 0 .5rem;font-size:.95rem">Attendance</h3>
             <div id="attendance-section"><span class="spinner"></span></div>
           </div>
@@ -260,6 +262,7 @@ class PageMeetings extends HTMLElement {
     };
 
     renderDecisions(mt.decisions);
+    this.renderRSVP(dialog, id);
     this.renderAttendance(dialog, id, mt);
     this.renderGovernance(dialog, id);
     this.renderMinutes(dialog, id, mt);
@@ -427,7 +430,32 @@ class PageMeetings extends HTMLElement {
       // Keep an existing present/absent flag; newly added people default to present.
       present: attending.get(id) ?? true,
     }));
-    return { roster, recount };
+    return { roster, recount, check: addIDs };
+  }
+
+  /** RSVP panel: everyone sees the tally and sets their own; officers get a
+   *  count. Members without a linked record can view but not respond. */
+  async renderRSVP(dialog, meetingId) {
+    const host = dialog.querySelector('#rsvp-section');
+    if (!host) return;
+    let s;
+    try { s = await api('GET', `/meetings/${meetingId}/rsvp`); }
+    catch { host.innerHTML = '<p style="font-size:.85rem;color:var(--color-text-muted)">RSVP unavailable.</p>'; return; }
+    if (!dialog.isConnected) return;
+    const canRespond = !!currentMemberId();
+    const btn = (val, label) => `<button class="btn-secondary rsvp-btn" data-r="${val}"
+        style="font-size:.8rem;${s.mine === val ? 'background:var(--color-primary);color:#fff' : ''}" ${canRespond ? '' : 'disabled'}>${label}</button>`;
+    host.innerHTML = `
+      <div style="font-size:.82rem;color:var(--color-text-muted);margin-bottom:.4rem">
+        Going: <strong>${s.yes}</strong> · Maybe: <strong>${s.maybe}</strong> · No: <strong>${s.no}</strong></div>
+      <div style="display:flex;gap:.35rem">${btn('yes', 'Going')}${btn('maybe', 'Maybe')}${btn('no', "Can't")}</div>
+      ${canRespond ? '' : '<div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.3rem">Link your login to a member record to RSVP.</div>'}`;
+    host.querySelectorAll('.rsvp-btn').forEach(b => b.addEventListener('click', async () => {
+      try {
+        await api('PUT', `/meetings/${meetingId}/rsvp`, { response: b.dataset.r });
+        this.renderRSVP(dialog, meetingId);
+      } catch (err) { toast(err.error ?? 'RSVP failed', 'error'); }
+    }));
   }
 
   /** The meeting editor's attendance panel: the picker plus its own Save. */
@@ -451,7 +479,14 @@ class PageMeetings extends HTMLElement {
 
     const picker = this.mountRosterPicker(host, data.members, data.groups, attending);
     host.querySelector('.att-actions').innerHTML =
+      '<button class="btn-secondary att-rsvp" style="font-size:.8rem" title="Check everyone who RSVP&apos;d yes">From RSVPs</button> ' +
       '<button class="btn-primary att-save" style="font-size:.8rem">Save attendance</button>';
+    host.querySelector('.att-rsvp').addEventListener('click', async () => {
+      try {
+        const res = await api('GET', `/meetings/${meetingId}/rsvp-yes`);
+        picker.check(res.member_ids ?? []);
+      } catch { toast('Could not load RSVPs', 'error'); }
+    });
     const saveBtn = host.querySelector('.att-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       try {

@@ -252,6 +252,61 @@ func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+// GetRSVP returns the RSVP tally for a meeting plus the caller's own response.
+func (h *MeetingsHandler) GetRSVP(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	s, err := h.repo.RSVPSummary(r.Context(), id, memberIDFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// SetRSVP records the caller's RSVP (member+; requires a linked member record).
+func (h *MeetingsHandler) SetRSVP(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	memberID := memberIDFromCtx(r)
+	if memberID == "" {
+		writeError(w, http.StatusForbidden, "your login isn't linked to a member record", "forbidden")
+		return
+	}
+	var body struct {
+		Response string `json:"response"`
+	}
+	if err := decodeJSON(r, &body); err != nil ||
+		(body.Response != "yes" && body.Response != "no" && body.Response != "maybe") {
+		writeError(w, http.StatusBadRequest, "response must be yes, no, or maybe", "bad_request")
+		return
+	}
+	if err := h.repo.SetRSVP(r.Context(), id, memberID, body.Response); err != nil {
+		writeError(w, http.StatusInternalServerError, "save error", "internal_error")
+		return
+	}
+	s, _ := h.repo.RSVPSummary(r.Context(), id, memberID)
+	writeJSON(w, http.StatusOK, s)
+}
+
+// RSVPYes returns the member IDs who said yes, to seed the roster (officer+).
+func (h *MeetingsHandler) RSVPYes(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	ids, err := h.repo.RSVPYesMemberIDs(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"member_ids": ids})
+}
+
 // SetAttendees replaces a meeting's attendance roster.
 func (h *MeetingsHandler) SetAttendees(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")

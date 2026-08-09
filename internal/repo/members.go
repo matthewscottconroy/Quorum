@@ -388,3 +388,54 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 	}
 	return tx.Commit(ctx)
 }
+
+// ExistingEmails returns the set of member emails already on file (lowercased),
+// so an import can flag duplicates before inserting.
+func (r *MembersRepo) ExistingEmails(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.Query(ctx, `SELECT lower(email) FROM members WHERE email IS NOT NULL AND email <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			return nil, err
+		}
+		set[e] = true
+	}
+	return set, rows.Err()
+}
+
+// BatchCreate inserts many members in one transaction, returning the count.
+// Used by CSV import after the handler has validated and de-duplicated rows.
+func (r *MembersRepo) BatchCreate(ctx context.Context, members []*model.Member) (int, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	n := 0
+	for _, m := range members {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO members (display_name, email, phone, address, tier, status, joined_at, notes)
+			VALUES ($1, nullif($2,''), nullif($3,''), nullif($4,''), $5, $6, $7, nullif($8,''))`,
+			m.DisplayName, deref(m.Email), deref(m.Phone), deref(m.Address),
+			m.Tier, m.Status, m.JoinedAt, deref(m.Notes)); err != nil {
+			return 0, err
+		}
+		n++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}

@@ -1,4 +1,4 @@
-import { api, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
+import { api, apiDownload, apiUpload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, confirmDelete, renderPager, loadFilters, saveFilters } from '../utils.js';
 
@@ -34,6 +34,7 @@ class PageMembers extends HTMLElement {
         <h1>Members</h1>
         <div style="display:flex;gap:.5rem">
           <button class="btn-secondary" id="export-btn">Export CSV</button>
+          ${isAdmin() ? '<button class="btn-secondary" id="import-btn">Import CSV</button>' : ''}
           ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Add member</button>' : ''}
         </div>
       </div>
@@ -70,6 +71,53 @@ class PageMembers extends HTMLElement {
       try { await apiDownload('/export/members.csv', 'members.csv'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
+    this.querySelector('#import-btn')?.addEventListener('click', () => this.openImportModal());
+  }
+
+  /** CSV import: upload → dry-run report → commit. */
+  openImportModal() {
+    const { dialog, close } = openModal({
+      title: 'Import members from CSV',
+      maxWidth: '620px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-top:0">
+            Columns (case-insensitive): <code>name</code> (required), email, phone,
+            address, tier, status, joined_at (YYYY-MM-DD). We'll preview before importing.</p>
+          <input type="file" id="imp-file" accept=".csv,text/csv">
+          <div id="imp-report" style="margin-top:.8rem"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="imp-cancel">Cancel</button>
+          <button class="btn-secondary" id="imp-dry" disabled>Preview</button>
+          <button class="btn-primary" id="imp-commit" disabled>Import</button>
+        </div>`,
+    });
+    dialog.querySelector('#imp-cancel').addEventListener('click', close);
+    const fileInput = dialog.querySelector('#imp-file');
+    const dryBtn = dialog.querySelector('#imp-dry');
+    const commitBtn = dialog.querySelector('#imp-commit');
+    const report = dialog.querySelector('#imp-report');
+    fileInput.addEventListener('change', () => { dryBtn.disabled = !fileInput.files.length; commitBtn.disabled = true; });
+
+    const run = async commit => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      try {
+        const res = await apiUpload('/members/import' + (commit ? '?commit=true' : ''), file);
+        report.innerHTML = `
+          <div class="card" style="padding:.7rem .9rem">
+            <div style="font-size:.9rem"><strong>${res.new}</strong> new · <strong>${res.duplicate}</strong> duplicate · <strong>${res.invalid}</strong> invalid</div>
+            ${res.committed ? `<div style="color:var(--color-success,#137333);margin-top:.3rem">✓ Imported ${res.imported}</div>` : ''}
+            ${(res.rows || []).filter(r => r.problem || r.duplicate).slice(0, 8).map(r =>
+              `<div style="font-size:.78rem;color:var(--color-text-muted)">line ${r.line}: ${esc(r.name || '(no name)')} — ${r.problem ? esc(r.problem) : 'duplicate email'}</div>`).join('')}
+          </div>`;
+        commitBtn.disabled = res.committed || res.new === 0;
+        if (res.committed) { toast(`Imported ${res.imported} members`, 'success'); this.load(); setTimeout(close, 800); }
+      } catch (err) { toast(err.error ?? 'Import failed', 'error'); }
+    };
+    dryBtn.addEventListener('click', () => run(false));
+    commitBtn.addEventListener('click', guardButton(commitBtn, () => run(true)));
   }
 
   async load() {

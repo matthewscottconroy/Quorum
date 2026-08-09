@@ -148,8 +148,14 @@ func main() {
 	dashH := handler.NewDashboardHandler(duesRepo, membersRepo, meetingsRepo, actionItemsRepo)
 	activityH := handler.NewActivityHandler(repo.NewActivityRepo(pool))
 	membersH := handler.NewMembersHandler(membersRepo, actionItemsRepo, duesRepo)
+	memberImportH := handler.NewMemberImportHandler(membersRepo)
 	duesH := handler.NewDuesHandler(duesRepo)
 	meetingsH := handler.NewMeetingsHandler(meetingsRepo)
+	calendarH := handler.NewCalendarHandler(authRepo, meetingsRepo, cfg.BaseURL)
+	payReportsRepo := repo.NewPaymentReportsRepo(pool)
+	payReportsH := handler.NewPaymentReportsHandler(payReportsRepo, duesRepo)
+	reportSubsRepo := repo.NewReportSubsRepo(pool)
+	reportSubsH := handler.NewReportSubsHandler(reportSubsRepo)
 	plansH := handler.NewPlansHandler(plansRepo)
 	contactsH := handler.NewContactsHandler(contactsRepo)
 	resourcesH := handler.NewResourcesHandler(resourcesRepo)
@@ -223,6 +229,38 @@ func main() {
 	packH.SetBills(billsRepo)
 	dashH.SetOpenBills(billsRepo)
 	dashH.SetSetupDeps(orgSettingsRepo, duesRepo, cfg.SMTPHost != "")
+	// Scheduled report digests: weekly on Monday, monthly on the 1st. Each
+	// subscriber gets a plain-text summary of the report they chose.
+	duesSvc.SetReportHook(func(ctx context.Context) {
+		if cfg.SMTPHost == "" {
+			return
+		}
+		now := time.Now()
+		var cadences []string
+		if now.Weekday() == time.Monday {
+			cadences = append(cadences, "weekly")
+		}
+		if now.Day() == 1 {
+			cadences = append(cadences, "monthly")
+		}
+		if len(cadences) == 0 {
+			return
+		}
+		asOf := now.Format("2006-01-02")
+		yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+		for _, cadence := range cadences {
+			for _, report := range []string{"ar_aging", "ap_aging", "income_statement"} {
+				recips, err := reportSubsRepo.DueRecipients(ctx, report, cadence)
+				if err != nil || len(recips) == 0 {
+					continue
+				}
+				subject, body := buildReportDigest(ctx, report, cadence, asOf, yearStart, glRepo, billsRepo)
+				if err := emailSvc.Send(recips, subject, body); err != nil {
+					log.Printf("report digest %s/%s: send error: %v", report, cadence, err)
+				}
+			}
+		}
+	})
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
@@ -353,6 +391,10 @@ func main() {
 		r.Post("/webhooks/stripe", webhooksH.Stripe)
 		r.Post("/webhooks/paypal", webhooksH.PayPal)
 
+		// Public tokenized calendar feed: a per-user opaque token in the URL
+		// authorizes a read-only ICS subscription (meetings are member-visible).
+		r.Get("/calendar/{token}", calendarH.Feed)
+
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth)
 			r.Use(mw.APIRateLimit) // after Auth: keyed per user, before audit writes
@@ -374,6 +416,7 @@ func main() {
 
 			// Personal-data export: any authenticated user may export their own data.
 			r.Get("/auth/me/export", exportH.ExportMyData)
+			r.Get("/auth/me/statement.pdf", exportH.ExportMyStatement)
 
 			// Notifications are personal: any authenticated user manages their own
 			// (no role gate — a restricted member still receives dues notices).
@@ -403,11 +446,23 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/dashboard", dashH.Summary)
 			r.With(mw.RequireRole("admin")).Get("/setup-status", dashH.SetupStatus)
 			r.With(mw.RequireRole("member")).Get("/activity", activityH.Recent)
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/rsvp", meetingsH.GetRSVP)
+			r.With(mw.RequireRole("member")).Put("/meetings/{id}/rsvp", meetingsH.SetRSVP)
+			r.With(mw.RequireRole("officer")).Get("/meetings/{id}/rsvp-yes", meetingsH.RSVPYes)
+			r.With(mw.RequireRole("member")).Post("/calendar/subscription", calendarH.Subscription)
+			r.With(mw.RequireRole("member")).Post("/calendar/rotate", calendarH.Rotate)
+			r.With(mw.RequireRole("member")).Post("/dues/{id}/report-payment", payReportsH.Create)
+			r.With(mw.RequireRole("officer")).Get("/payment-reports", payReportsH.ListPending)
+			r.With(mw.RequireRole("officer")).Post("/payment-reports/{id}/confirm", payReportsH.Confirm)
+			r.With(mw.RequireRole("officer")).Post("/payment-reports/{id}/dismiss", payReportsH.Dismiss)
+			r.With(mw.RequireRole("officer")).Get("/me/report-subscriptions", reportSubsH.List)
+			r.With(mw.RequireRole("officer")).Put("/me/report-subscriptions", reportSubsH.Set)
 
 			r.With(mw.RequireRole("member")).Get("/members", membersH.List)
 			r.With(mw.RequireRole("officer")).Get("/members/ids", membersH.IDsByRole)
 			r.With(mw.RequireRole("officer")).Post("/members", membersH.Create)
 			r.With(mw.RequireRole("officer")).Post("/members/batch", membersH.BatchUpdate)
+			r.With(mw.RequireRole("admin")).Post("/members/import", memberImportH.Import)
 			r.Get("/members/{id}", membersH.Get) // ownership-scoped
 			r.With(mw.RequireRole("officer")).Patch("/members/{id}", membersH.Update)
 			r.With(mw.RequireRole("admin")).Delete("/members/{id}", membersH.Delete) // soft-delete

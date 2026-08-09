@@ -470,3 +470,72 @@ func (r *MeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userID st
 	}
 	return nil
 }
+
+// SetRSVP records or updates a member's RSVP for a meeting ('yes'/'no'/'maybe').
+func (r *MeetingsRepo) SetRSVP(ctx context.Context, meetingID, memberID, response string) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO meeting_rsvps (meeting_id, member_id, response, updated_at)
+		VALUES ($1::uuid, $2::uuid, $3, now())
+		ON CONFLICT (meeting_id, member_id)
+		DO UPDATE SET response = EXCLUDED.response, updated_at = now()`,
+		meetingID, memberID, response)
+	return err
+}
+
+// RSVPSummary returns per-response counts plus the caller's own response
+// (empty if they haven't RSVP'd). memberID may be "" for a caller with no
+// linked member record.
+func (r *MeetingsRepo) RSVPSummary(ctx context.Context, meetingID, memberID string) (model.RSVPSummary, error) {
+	var s model.RSVPSummary
+	rows, err := r.db.Query(ctx,
+		`SELECT response, count(*) FROM meeting_rsvps WHERE meeting_id = $1::uuid GROUP BY response`, meetingID)
+	if err != nil {
+		return s, err
+	}
+	for rows.Next() {
+		var resp string
+		var n int
+		if err := rows.Scan(&resp, &n); err != nil {
+			rows.Close()
+			return s, err
+		}
+		switch resp {
+		case "yes":
+			s.Yes = n
+		case "no":
+			s.No = n
+		case "maybe":
+			s.Maybe = n
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return s, err
+	}
+	if memberID != "" {
+		_ = r.db.QueryRow(ctx,
+			`SELECT response FROM meeting_rsvps WHERE meeting_id = $1::uuid AND member_id = $2::uuid`,
+			meetingID, memberID).Scan(&s.Mine)
+	}
+	return s, nil
+}
+
+// RSVPYesMemberIDs returns member IDs who RSVP'd yes — used to seed the
+// attendance roster from expected attendees.
+func (r *MeetingsRepo) RSVPYesMemberIDs(ctx context.Context, meetingID string) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT member_id::text FROM meeting_rsvps WHERE meeting_id = $1::uuid AND response = 'yes'`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

@@ -85,6 +85,7 @@ type DuesService struct {
 	// legal one), so deployments can set it via QUORUM_AUDIT_RETENTION_DAYS.
 	auditRetention time.Duration
 	postHook       func(context.Context)
+	reportHook     func(context.Context)
 
 	// lastSuccessUnix is the wall-clock time (unix seconds) the nightly job
 	// last completed, for the observability gauge and startup catch-up. 0 until
@@ -104,6 +105,10 @@ func (s *DuesService) LastSuccessUnix() int64 { return s.lastSuccessUnix.Load() 
 // SetPostHook attaches an optional step run at the end of each nightly job
 // under the same leader lock (used by the continuity watchdog).
 func (s *DuesService) SetPostHook(fn func(context.Context)) { s.postHook = fn }
+
+// SetReportHook attaches the scheduled-report digest sender, run at the end of
+// each nightly job under the leader lock (it decides its own cadence by date).
+func (s *DuesService) SetReportHook(fn func(context.Context)) { s.reportHook = fn }
 
 // SetAuditRetention overrides how long audit entries are kept. A non-positive
 // value keeps the default.
@@ -152,6 +157,9 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 
 	if s.postHook != nil {
 		s.postHook(ctx)
+	}
+	if s.reportHook != nil {
+		s.reportHook(ctx)
 	}
 
 	s.lastSuccessUnix.Store(time.Now().Unix())

@@ -134,6 +134,8 @@ All API routes are under `/api/v1`. Authenticated routes require `Authorization:
 | `GET` | `/members/:id/dues` | member¹ | Member's invoices |
 | `GET` | `/members/:id/action-items` | member¹ | Member's action items |
 | `GET` | `/members/ids?min_role=` | officer | Active member IDs whose linked user holds at least the given role (feeds roster bulk-select) |
+| `POST` | `/members/batch` | officer | Bulk-set `status`/`tier` on `{ids}` |
+| `POST` | `/members/import?commit=` | admin | CSV import: dry-run report (default) or `commit=true` to insert (multipart `file`, or text/csv body) |
 
 ¹ A `restricted` user may call these three endpoints, but only for their own linked member record (the id must match their account's member link); `member` and above may view any member.
 
@@ -148,6 +150,10 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `GET` | `/dues/:id` | officer | Get invoice + transactions |
 | `PATCH` | `/dues/:id` | officer | Update invoice status |
 | `POST` | `/dues/:id/transactions` | officer | Record a payment |
+| `POST` | `/dues/batch` | officer | Bulk-set status on `{ids}` (waive / re-open) |
+| `POST` | `/dues/:id/report-payment` | member¹ | Member self-reports a manual payment (Zelle/check) for officer confirmation |
+| `GET` | `/payment-reports` | officer | Pending payment-report queue |
+| `POST` | `/payment-reports/:id/confirm` \| `/dismiss` | officer | Confirm (records the payment) or dismiss a report |
 | `GET` | `/dues/transactions` | officer | List transactions |
 
 Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints above are the officer-facing billing views.
@@ -158,6 +164,18 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 
 **Invoicing an outside customer**: pass `contact_id` (a Contacts entry) instead of `member_ids`. The invoice posts to the `income.services` rule instead of `income.dues`, and payments/waivers work exactly as for member invoices. An invoice has exactly one counterparty — member or contact — enforced by a DB CHECK.
 
+### Dashboard, activity & personal
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/dashboard` | member | Home-screen counts and recent items |
+| `GET` | `/setup-status` | admin | First-run checklist state (members/schedule/how-to-pay/SMTP/2FA/meeting) |
+| `GET` | `/activity` | member | Recent org-visible activity feed |
+| `GET` | `/auth/me/statement.pdf?year=` | member¹ | The caller's annual member statement (invoices + payments) |
+| `POST` | `/calendar/subscription` \| `/calendar/rotate` | member | Get / rotate the personal ICS subscription URL |
+| `GET` | `/calendar/:token.ics` | — (token) | Public read-only meeting calendar feed |
+| `GET` / `PUT` | `/me/report-subscriptions` | officer | Scheduled report digests (ar_aging/ap_aging/income_statement × weekly/monthly) |
+
 ### Meetings
 
 | Method | Path | Min role | Description |
@@ -167,7 +185,9 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` | `/meetings/:id` | member | Get meeting + attendees + decisions |
 | `PATCH` | `/meetings/:id` | officer | Update meeting |
 | `DELETE` | `/meetings/:id` | superadmin | Delete meeting — requires `?confirm=<title>`, notifies admins |
-| `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list (UI offers all/none/officers+/tier/group bulk-select) |
+| `PUT` | `/meetings/:id/attendees` | officer | Replace full attendance list (UI offers all/none/officers+/tier/group/RSVP bulk-select) |
+| `GET` / `PUT` | `/meetings/:id/rsvp` | member | Read the RSVP tally + own response / set own response (yes/no/maybe) |
+| `GET` | `/meetings/:id/rsvp-yes` | officer | Member IDs who RSVP'd yes (seed the roster) |
 | `POST` | `/meetings/:id/decisions` | officer | Add a decision |
 | `PATCH` | `/meetings/:id/decisions/:did` | officer | Update a decision |
 | `DELETE` | `/meetings/:id/decisions/:did` | officer | Delete a decision |

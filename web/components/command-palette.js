@@ -38,7 +38,6 @@ class CommandPalette extends HTMLElement {
   }
 
   onGlobalKey(e) {
-    // ⌘K / Ctrl-K opens; "/" opens when not already typing in a field.
     const mod = e.metaKey || e.ctrlKey;
     if (mod && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
@@ -46,6 +45,40 @@ class CommandPalette extends HTMLElement {
       return;
     }
     if (this._open && e.key === 'Escape') { this.close(); return; }
+    if (this._open) return;
+
+    // Bare-key shortcuts only when not typing in a field and no modifier held.
+    const el = document.activeElement;
+    const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+    if (typing || mod || e.altKey) return;
+
+    if (e.key === '/') { e.preventDefault(); this.open(); return; }
+    if (e.key === '?') { e.preventDefault(); this.showHelp(); return; }
+
+    // "g" then a letter jumps to a section (Gmail-style). A short window after g.
+    if (e.key === 'g') { this._gPending = Date.now(); return; }
+    if (this._gPending && Date.now() - this._gPending < 1200) {
+      const dest = { d: '#/dashboard', b: '#/board', m: '#/members', u: '#/dues', e: '#/meetings', p: '#/plans', r: '#/resources' }[e.key];
+      this._gPending = 0;
+      if (dest && hasRole(dest === '#/dues' ? 'officer' : 'member')) { e.preventDefault(); navigate(dest); }
+    }
+  }
+
+  showHelp() {
+    this._open = true;
+    this.render();
+    const box = this.querySelector('#cmdk-results');
+    if (box) {
+      box.innerHTML = `
+        <div class="cmdk-group-title">Keyboard shortcuts</div>
+        <div style="padding:.3rem .6rem;font-size:.88rem;line-height:1.9">
+          <div><kbd>⌘K</kbd> / <kbd>Ctrl-K</kbd> — search everything</div>
+          <div><kbd>/</kbd> — open search · <kbd>?</kbd> — this help</div>
+          <div><kbd>g</kbd> then <kbd>d/b/m/u/e/p/r</kbd> — go to Dashboard/Board/Members/Dues/Meetings/Plans/Resources</div>
+        </div>`;
+      const inp = this.querySelector('#cmdk-input');
+      if (inp) inp.placeholder = 'Type to search, or Esc to close…';
+    }
   }
 
   toggle() { this._open ? this.close() : this.open(); }

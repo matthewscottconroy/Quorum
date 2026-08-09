@@ -93,6 +93,9 @@ type meetingsRepo interface {
 	UpdateMinutesEntry(ctx context.Context, meetingID, entryID, kind, body string, motionID *string) (*model.MinutesEntry, error)
 	DeleteMinutesEntry(ctx context.Context, meetingID, entryID string) error
 	FinalizeMinutes(ctx context.Context, meetingID, userID string) error
+	SetRSVP(ctx context.Context, meetingID, memberID, response string) error
+	RSVPSummary(ctx context.Context, meetingID, memberID string) (model.RSVPSummary, error)
+	RSVPYesMemberIDs(ctx context.Context, meetingID string) ([]string, error)
 }
 
 // plansRepo is satisfied by *repo.PlansRepo.
