@@ -119,9 +119,10 @@ impl HexBoard {
         out
     }
 
-    /// Applies a move for the current player; returns converted-cell count.
+    /// Applies a move for the current player; returns the indices of every
+    /// converted enemy cell (for the UI's conversion pulses).
     /// The caller must pass a move from `moves_for(self.turn)`.
-    pub fn apply(&mut self, m: HexMove) -> u32 {
+    pub fn apply(&mut self, m: HexMove) -> Vec<usize> {
         let p = self.turn;
         let d = self.coords[m.from].dist(self.coords[m.to]);
         debug_assert!(self.cells[m.from] == Some(p) && self.cells[m.to].is_none() && d <= 2);
@@ -129,13 +130,13 @@ impl HexBoard {
             self.cells[m.from] = None; // jump: vacate the origin
         }
         self.cells[m.to] = Some(p);
-        let mut converted = 0;
+        let mut converted = Vec::new();
         for n in self.coords[m.to].neighbors() {
             if let Some(idx) = self.index(n) {
                 if let Some(owner) = self.cells[idx] {
                     if owner != p {
                         self.cells[idx] = Some(p);
-                        converted += 1;
+                        converted.push(idx);
                     }
                 }
             }
@@ -181,8 +182,38 @@ impl HexBoard {
         v
     }
 
-    /// A greedy bot move: maximizes conversions, prefers cloning over jumping
-    /// (clones grow the swarm), breaks ties toward the board center.
+    /// How exposed player `p`'s blobs are: for every empty cell an enemy can
+    /// reach (within jump range of any enemy blob), count the `p` blobs it
+    /// touches, and return the worst single landing. An approximation of the
+    /// opponent's best immediate counter-conversion.
+    fn exposure(&self, p: u8) -> i32 {
+        let mut worst = 0;
+        for (e, &cell) in self.cells.iter().enumerate() {
+            if cell.is_some() {
+                continue;
+            }
+            let mine_adjacent = self.coords[e]
+                .neighbors()
+                .iter()
+                .filter_map(|&n| self.index(n))
+                .filter(|&i| self.cells[i] == Some(p))
+                .count() as i32;
+            if mine_adjacent <= worst {
+                continue;
+            }
+            let enemy_reaches = self.cells.iter().enumerate().any(|(i, &c)| {
+                matches!(c, Some(o) if o != p) && self.coords[i].dist(self.coords[e]) <= 2
+            });
+            if enemy_reaches {
+                worst = mine_adjacent;
+            }
+        }
+        worst
+    }
+
+    /// The bot move: maximize immediate conversions, prefer cloning over
+    /// jumping (clones grow the swarm), and avoid landings that hand the
+    /// next player a fat counter-conversion. Ties break toward the center.
     pub fn bot_move(&self, p: u8) -> Option<HexMove> {
         let moves = self.moves_for(p);
         moves.into_iter().max_by_key(|&m| {
@@ -193,8 +224,11 @@ impl HexBoard {
                 .filter(|&i| matches!(self.cells[i], Some(o) if o != p))
                 .count() as i32;
             let clone_bonus = if self.coords[m.from].dist(self.coords[m.to]) == 1 { 1 } else { 0 };
+            let mut sim = self.clone();
+            sim.apply(m);
+            let risk = sim.exposure(p);
             let centrality = -self.coords[m.to].dist(Hex { q: 0, r: 0 });
-            (gain * 4 + clone_bonus * 2) * 100 + centrality
+            (gain * 4 + clone_bonus * 2 - risk * 3) * 100 + centrality
         })
     }
 }
@@ -257,7 +291,7 @@ mod tests {
         b.cells[src] = Some(0); // our blob one step away
         b.turn = 0;
         let converted = b.apply(HexMove { from: src, to: center });
-        assert_eq!(converted, 1);
+        assert_eq!(converted, vec![adj]);
         assert_eq!(b.cells[adj], Some(0), "adjacent enemy converts");
     }
 
@@ -275,6 +309,44 @@ mod tests {
         b.apply(m);
         assert!(b.out[1]);
         assert_eq!(b.turn, 2, "turn skips the eliminated player");
+    }
+
+    #[test]
+    fn bot_declines_a_reckless_landing() {
+        // No conversion is available anywhere (the enemy wall is out of
+        // reach), so every move gains zero. Eastward landings sit inside the
+        // enemy's counter-jump range; westward ones are safe. Without the
+        // exposure term the centrality tie-break walks the bot straight
+        // toward the wall — with it, the bot must stay west.
+        let mut b = HexBoard::new(2);
+        for c in b.cells.iter_mut() {
+            *c = None;
+        }
+        b.turn = 0;
+        b.out = vec![false, false];
+        let mine = b.index(Hex { q: -1, r: 0 }).unwrap();
+        let wall = [
+            b.index(Hex { q: 3, r: 0 }).unwrap(),
+            b.index(Hex { q: 4, r: -1 }).unwrap(),
+            b.index(Hex { q: 4, r: 0 }).unwrap(),
+        ];
+        b.cells[mine] = Some(0);
+        for w in wall {
+            b.cells[w] = Some(1);
+        }
+        let m = b.bot_move(0).expect("moves exist");
+        let dest = b.coords[m.to];
+        // The landing is safe iff no empty cell adjacent to it can be reached
+        // by an enemy jump (dist ≤ 2 from any enemy blob).
+        let exposed = dest.neighbors().iter().any(|&n| {
+            b.index(n).is_some_and(|ni| {
+                b.cells[ni].is_none()
+                    && b.cells.iter().enumerate().any(|(ei, &c)| {
+                        c == Some(1) && b.coords[ei].dist(n) <= 2
+                    })
+            })
+        });
+        assert!(!exposed, "bot landed in counter-jump range at {:?}", dest);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, DIM, PLAYER_COLORS, WHITE};
 use crate::rng::Rng;
-use crate::shell::net_send;
+use crate::shell::{net_send, sfx};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 /// Relayed move. Bots have no seat online: the host computes their moves and
@@ -27,6 +27,23 @@ pub const BLURB: &[&str] = &[
 
 const BOARD_X: f32 = -80.0;
 
+/// Material handles created once at setup. The old code allocated a fresh
+/// ColorMaterial for every cell every frame (~5k asset inserts a second);
+/// this is the entire fix.
+#[derive(Resource)]
+struct HexFx {
+    empty: Handle<ColorMaterial>,
+    players: Vec<Handle<ColorMaterial>>,
+    selected: Vec<Handle<ColorMaterial>>,
+    targets: Vec<Handle<ColorMaterial>>,
+    pulse_mesh: Handle<Mesh>,
+    pulse_mat: Handle<ColorMaterial>,
+}
+
+/// A conversion pulse: a bright ring that swells and dies over a blink.
+#[derive(Component)]
+struct Pulse(Timer);
+
 #[derive(Resource)]
 struct Dish {
     board: HexBoard,
@@ -37,6 +54,7 @@ struct Dish {
     over_wait: Option<Timer>,
     final_score: u32,
     skip_flash: Option<(u8, Timer)>,
+    last_turn: Option<u8>,
 }
 
 #[derive(Component)]
@@ -52,8 +70,13 @@ pub struct HexPlugin;
 
 impl Plugin for HexPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup)
-            .add_systems(Update, (net_apply, human_clicks, bot_turns, paint, hud, endgame).chain().run_if(in_state(Phase::Playing)));
+        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
+            Update,
+            (net_apply, human_clicks, bot_turns, turn_splash, splash_fade, pulse_fade, paint, hud, endgame)
+                .chain()
+                .run_if(in_state(Phase::Playing))
+                .run_if(crate::unpaused),
+        );
     }
 }
 
@@ -79,6 +102,15 @@ fn setup(
     let cell_mesh = meshes.add(RegularPolygon::new(cell_size * 0.94, 6));
     let blob_mesh = meshes.add(RegularPolygon::new(cell_size * 0.55, 6));
     let empty_mat = materials.add(Color::srgb(0.07, 0.08, 0.13));
+    let fx = HexFx {
+        empty: empty_mat.clone(),
+        players: (0..12).map(|i| materials.add(PLAYER_COLORS[i])).collect(),
+        selected: (0..12).map(|i| materials.add(PLAYER_COLORS[i].with_alpha(0.5))).collect(),
+        targets: (0..12).map(|i| materials.add(PLAYER_COLORS[i].with_alpha(0.22))).collect(),
+        pulse_mesh: meshes.add(RegularPolygon::new(cell_size * 0.8, 6)),
+        pulse_mat: materials.add(Color::srgba(1.0, 1.0, 1.0, 0.35)),
+    };
+    commands.insert_resource(fx);
 
     for i in 0..board.cells.len() {
         let p = cell_world(&board, i, cell_size);
@@ -108,6 +140,7 @@ fn setup(
         over_wait: None,
         final_score: 0,
         skip_flash: None,
+        last_turn: None,
     });
     let hud = text(&mut commands, "", 22.0, WHITE, Vec3::new(255.0, 150.0, 3.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -167,11 +200,38 @@ fn end_check_for(dish: &mut Dish, my_seat: u8) {
     dish.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
 }
 
+/// Spawns a swell-and-fade ring on every converted cell.
+fn spawn_pulses(commands: &mut Commands, dish: &Dish, fx: &HexFx, cells: &[usize]) {
+    for &i in cells {
+        let p = cell_world(&dish.board, i, dish.cell_size);
+        commands.spawn((
+            Mesh2d(fx.pulse_mesh.clone()),
+            MeshMaterial2d(fx.pulse_mat.clone()),
+            Transform::from_xyz(p.x, p.y, 3.0),
+            Pulse(Timer::from_seconds(0.35, TimerMode::Once)),
+            GameTag,
+        ));
+    }
+}
+
+fn pulse_fade(time: Res<Time>, mut commands: Commands, mut pulses: Query<(Entity, &mut Pulse, &mut Transform)>) {
+    for (e, mut pulse, mut tf) in &mut pulses {
+        if pulse.0.tick(time.delta()).finished() {
+            commands.entity(e).despawn();
+        } else {
+            let t = pulse.0.fraction();
+            tf.scale = Vec3::splat(1.0 + t * 0.6);
+        }
+    }
+}
+
 fn human_clicks(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     net: Res<NetMode>,
+    mut commands: Commands,
+    fx: Res<HexFx>,
     mut dish: ResMut<Dish>,
 ) {
     if dish.over_wait.is_some() || !is_local_human(&dish, &net, dish.board.turn) {
@@ -206,7 +266,9 @@ fn human_clicks(
             .into_iter()
             .any(|m| m.from == from && m.to == cell);
         if legal {
-            dish.board.apply(HexMove { from, to: cell });
+            let converted = dish.board.apply(HexMove { from, to: cell });
+            sfx(if converted.is_empty() { "place" } else { "capture" });
+            spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
                 if let Ok(w) = serde_json::to_string(&WireHexMove { t: "mv".into(), from, to: cell }) {
                     net_send(&w);
@@ -219,7 +281,14 @@ fn human_clicks(
     }
 }
 
-fn bot_turns(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut rng: ResMut<Rng>) {
+fn bot_turns(
+    time: Res<Time>,
+    net: Res<NetMode>,
+    mut commands: Commands,
+    fx: Res<HexFx>,
+    mut dish: ResMut<Dish>,
+    mut rng: ResMut<Rng>,
+) {
     let seat = dish.board.turn;
     if dish.over_wait.is_some() || is_any_human(&dish, &net, seat) {
         return;
@@ -246,7 +315,8 @@ fn bot_turns(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut rng
     };
     match mv {
         Some(m) => {
-            dish.board.apply(m);
+            let converted = dish.board.apply(m);
+            spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
                 if let Ok(w) = serde_json::to_string(&WireHexMove { t: "mv".into(), from: m.from, to: m.to }) {
                     net_send(&w);
@@ -263,7 +333,13 @@ fn bot_turns(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut rng
 /// whose turn it is AND the sender is entitled to make it: the seat itself,
 /// or the host on behalf of a bot seat. Departed humans become host-driven
 /// bots so the dish never stalls.
-fn net_apply(mut events: EventReader<NetIn>, mut net: ResMut<NetMode>, mut dish: ResMut<Dish>) {
+fn net_apply(
+    mut events: EventReader<NetIn>,
+    mut net: ResMut<NetMode>,
+    mut commands: Commands,
+    fx: Res<HexFx>,
+    mut dish: ResMut<Dish>,
+) {
     if net.0.is_none() {
         events.clear();
         return;
@@ -297,7 +373,9 @@ fn net_apply(mut events: EventReader<NetIn>, mut net: ResMut<NetMode>, mut dish:
             .into_iter()
             .any(|m| m.from == wire.from && m.to == wire.to);
         if legal {
-            dish.board.apply(HexMove { from: wire.from, to: wire.to });
+            let converted = dish.board.apply(HexMove { from: wire.from, to: wire.to });
+            sfx(if converted.is_empty() { "place" } else { "capture" });
+            spawn_pulses(&mut commands, &dish, &fx, &converted);
             let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
             end_check_for(&mut dish, my_seat);
         }
@@ -308,7 +386,7 @@ fn net_apply(mut events: EventReader<NetIn>, mut net: ResMut<NetMode>, mut dish:
 fn paint(
     dish: Res<Dish>,
     net: Res<NetMode>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    fx: Res<HexFx>,
     mut cells: Query<(&CellHex, &mut MeshMaterial2d<ColorMaterial>), Without<BlobHex>>,
     mut blobs: Query<(&BlobHex, &mut MeshMaterial2d<ColorMaterial>, &mut Visibility)>,
 ) {
@@ -321,27 +399,81 @@ fn paint(
             }
         }
     }
-    let turn_color = PLAYER_COLORS[dish.board.turn as usize % 12];
+    let seat = dish.board.turn as usize % 12;
     for (cell, mut mat) in &mut cells {
         let want = if Some(cell.0) == dish.selected {
-            turn_color.with_alpha(0.5)
+            &fx.selected[seat]
         } else if target_of[cell.0] {
-            turn_color.with_alpha(0.22)
+            &fx.targets[seat]
         } else {
-            Color::srgb(0.07, 0.08, 0.13)
+            &fx.empty
         };
-        // Cheap enough at 91 cells: a fresh material per repaint tick.
-        mat.0 = materials.add(want);
+        if mat.0 != *want {
+            mat.0 = want.clone();
+        }
     }
     for (blob, mut mat, mut vis) in &mut blobs {
         match dish.board.cells[blob.0] {
             Some(p) => {
-                mat.0 = materials.add(PLAYER_COLORS[p as usize % 12]);
+                let want = &fx.players[p as usize % 12];
+                if mat.0 != *want {
+                    mat.0 = want.clone();
+                }
                 *vis = Visibility::Inherited;
             }
             None => {
                 *vis = Visibility::Hidden;
             }
+        }
+    }
+}
+
+/// A big between-turns banner so pass-the-mouse play always knows whose go
+/// it is. Online, it only announces YOUR turn.
+#[derive(Component)]
+struct Splash(Timer);
+
+fn turn_splash(
+    net: Res<NetMode>,
+    mut commands: Commands,
+    mut dish: ResMut<Dish>,
+) {
+    let turn = dish.board.turn;
+    if dish.last_turn == Some(turn) || dish.over_wait.is_some() {
+        return;
+    }
+    dish.last_turn = Some(turn);
+    let (announce, label) = match &net.0 {
+        Some(cfg) => (turn == cfg.seat, "YOUR TURN".to_string()),
+        None => (
+            is_local_human(&dish, &net, turn) && dish.humans > 1,
+            format!("SEAT {} - GO", turn + 1),
+        ),
+    };
+    if !announce {
+        return;
+    }
+    sfx("tick");
+    let e = crate::retro::text(
+        &mut commands,
+        &label,
+        44.0,
+        PLAYER_COLORS[turn as usize % 12],
+        Vec3::new(-80.0, 0.0, 20.0),
+    );
+    commands.entity(e).insert((Splash(Timer::from_seconds(0.85, TimerMode::Once)), GameTag));
+}
+
+fn splash_fade(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut splashes: Query<(Entity, &mut Splash, &mut TextColor)>,
+) {
+    for (e, mut sp, mut color) in &mut splashes {
+        if sp.0.tick(time.delta()).finished() {
+            commands.entity(e).despawn();
+        } else {
+            color.0.set_alpha(sp.0.fraction_remaining());
         }
     }
 }

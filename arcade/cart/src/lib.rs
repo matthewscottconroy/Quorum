@@ -43,6 +43,15 @@ pub struct FinalScore(pub u32);
 #[derive(Component)]
 pub struct GameTag;
 
+/// Esc pause (local rounds only — a networked simulation waits for no one).
+#[derive(Resource, Default)]
+pub struct Paused(pub bool);
+
+/// Run condition for the real-time games' update tuples.
+pub fn unpaused(paused: Res<Paused>) -> bool {
+    !paused.0
+}
+
 /// Networked-round configuration, provided by the page when a room starts.
 /// `present[s]` is true when seat s is a live human somewhere on the network;
 /// absent seats are bots, driven by the host (seat 0) and relayed like moves.
@@ -90,6 +99,7 @@ pub fn run() {
     .insert_resource(CabinetConfig { players: 1, humans: 1 })
     .init_resource::<FinalScore>()
     .init_resource::<NetMode>()
+    .init_resource::<Paused>()
     .add_event::<NetIn>()
     .insert_resource(rng::Rng::seeded())
     .init_state::<Phase>();

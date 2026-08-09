@@ -24,39 +24,112 @@ import { esc } from '../utils.js';
  */
 const CABINETS = [
   {
-    id: 'chess', name: 'CHESS', tag: 'The old game. Two players, one board, no mercy.',
-    players: '2P hotseat or online', controls: 'Mouse — click a piece, then a destination. Promotion offers a picker.',
+    id: 'chess', name: 'CHESS', tag: 'The old game. Take on the machine, a friend, or the network.',
+    players: '1P vs machine · 2P hotseat · online', controls: 'Mouse — click a piece, then a destination. R twice resigns. Draws: 50-move, repetition, bare kings.',
   },
   {
     id: 'go', name: 'GO', tag: 'Surround territory on a 9×9 board. Two passes end it.',
-    players: '2P hotseat or online', controls: 'Mouse — click to place a stone. P to pass.',
+    players: '2P hotseat or online', controls: 'Mouse places a stone · P passes · U undoes (hotseat). Capture dead stones before passing.',
   },
   {
-    id: 'comet-buster', name: 'COMET BUSTER', tag: 'Vector rocks, one ship, zero friction.',
-    players: '1P', controls: '← → rotate · ↑ thrust · Space fire · H hyperspace.',
+    id: 'comet-buster', name: 'COMET BUSTER', tag: 'Vector rocks, one ship, and now a saucer with opinions.',
+    players: '1P', controls: '← → rotate · ↑ thrust · Space fire · H hyperspace · Esc pause.',
   },
   {
     id: 'penny-pincher', name: 'PENNY PINCHER', tag: 'Grab every coin. The auditors want a word.',
-    players: '1P', controls: 'Arrow keys or WASD. Gold bars turn the tables.',
+    players: '1P', controls: 'Arrows or WASD · Esc pause. Gold bars turn the tables — they blink when time runs short.',
   },
   {
     id: 'brickfall', name: 'BRICKFALL', tag: 'Four-square bricks fall. Lines pay out. Speed climbs.',
-    players: '1P', controls: '← → move · ↑/X rotate · ↓ soft drop · Space hard drop.',
+    players: '1P', controls: '← → move · ↑/X rotate · ↓ soft drop · Space hard drop · Esc pause.',
   },
   {
     id: 'powder-keg', name: 'POWDER KEG', tag: 'Kegs, fuses, and up to a dozen rivals in the cellar.',
-    players: 'up to 12 — local + bots, or online', controls: 'P1: WASD + Space. P2 (local): arrows + Enter. Online: either set.',
+    players: 'up to 12 — local + bots, or online', controls: 'P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). White perk kicks kegs.',
   },
   {
     id: 'hexfection', name: 'HEXFECTION', tag: 'Spread across the hex dish. Convert your neighbours.',
-    players: 'up to 12 — hotseat, bots, or online', controls: 'Mouse — click your blob, then a target cell.',
+    players: 'up to 12 — hotseat, bots, or online', controls: 'Mouse — click your blob, then a target cell. Step 1 splits, jump 2 leaps; landing converts neighbours.',
   },
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
 const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 } };
+// Local mode pickers: fixed seat count, choice of how many humans sit down.
+const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
 const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 } };
+
+/**
+ * A tiny WebAudio chip synth for the cartridges (window.__arcadeSfx).
+ * The context is created lazily on the first effect — always after the
+ * coin-click gesture, so autoplay policy never mutes it. Square waves and
+ * one noise burst; no samples, no network.
+ */
+let _actx = null;
+function _ctx() {
+  if (!_actx) {
+    try { _actx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
+  }
+  if (_actx.state === 'suspended') _actx.resume().catch(() => {});
+  return _actx;
+}
+function _tone(f0, f1, dur, delay = 0, vol = 0.08, type = 'square') {
+  const ctx = _ctx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(f0, t0);
+  if (f1 !== f0) osc.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.02);
+}
+function _noise(dur, delay = 0, vol = 0.1) {
+  const ctx = _ctx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime + delay;
+  const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const filt = ctx.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 900;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(vol, t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(filt).connect(gain).connect(ctx.destination);
+  src.start(t0);
+}
+const SFX = {
+  coin:    () => { _tone(880, 880, 0.06); _tone(1320, 1320, 0.09, 0.07); },
+  place:   () => _tone(220, 220, 0.05),
+  capture: () => _tone(330, 165, 0.09),
+  tick:    () => _tone(660, 660, 0.03, 0, 0.04),
+  clear:   () => { _tone(440, 440, 0.06); _tone(587, 587, 0.06, 0.07); _tone(880, 880, 0.1, 0.14); },
+  drop:    () => _tone(150, 110, 0.06),
+  boom:    () => _noise(0.25),
+  death:   () => { _tone(392, 392, 0.09); _tone(311, 311, 0.09, 0.1); _tone(196, 98, 0.22, 0.2); },
+  power:   () => _tone(400, 950, 0.16),
+  eat:     () => _tone(500, 950, 0.07),
+  fire:    () => _tone(720, 280, 0.06, 0, 0.05),
+  hyper:   () => { _tone(300, 900, 0.08); _tone(900, 300, 0.08, 0.09); },
+  saucer:  () => { _tone(520, 640, 0.1, 0, 0.05); _tone(640, 520, 0.1, 0.11, 0.05); },
+  extra:   () => { for (let i = 0; i < 4; i++) _tone(523 * (1 + i * 0.25), 523 * (1 + i * 0.25), 0.08, i * 0.09); },
+  over:    () => { _tone(523, 523, 0.12); _tone(392, 392, 0.12, 0.13); _tone(311, 311, 0.12, 0.26); _tone(262, 131, 0.4, 0.39); },
+  pause:   () => _tone(440, 440, 0.05, 0, 0.05),
+};
+window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
+
+// Cabinets steered by keys: these get the click-to-refocus overlay.
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';
@@ -181,8 +254,18 @@ class PageArcade extends HTMLElement {
         </div>
         <div class="tsc-cols">
           <div>
-            <div class="tsc-bezel"><canvas id="arcade-canvas" width="720" height="640"></canvas></div>
+            <div class="tsc-bezel" style="position:relative">
+              <canvas id="arcade-canvas" width="720" height="640"></canvas>
+              <div id="focus-veil" style="display:none;position:absolute;inset:14px;background:rgba(0,0,0,.55);
+                   color:#ffd166;font-size:.95rem;letter-spacing:.15em;cursor:pointer;z-index:5;
+                   align-items:center;justify-content:center;text-align:center">CLICK TO RESUME CONTROL</div>
+            </div>
             <div class="tsc-slot">
+              ${MODES[cab.id] ? `
+                <label class="tsc-note">MODE
+                  <select id="sel-mode" class="tsc-sel">${MODES[cab.id].map((m, i) =>
+                    `<option value="${m.humans}" ${i === 0 ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
+                </label>` : ''}
               ${multi ? `
                 <label class="tsc-note">PLAYERS
                   <select id="sel-players" class="tsc-sel">${Array.from({ length: multi.max - multi.min + 1 },
@@ -257,6 +340,9 @@ class PageArcade extends HTMLElement {
       } catch { /* unscored play is fine */ }
       try { this._ws?.close(); } catch { /* fine */ }
       this._ws = null;
+      this._playing = false;
+      const veil = this.querySelector('#focus-veil');
+      if (veil) veil.style.display = 'none';
       this.loadScores(cab.id);
       const c = this.querySelector('#coin');
       if (c) c.disabled = false;
@@ -294,16 +380,37 @@ class PageArcade extends HTMLElement {
     this._wasmStarted = true;
     this._mod = mod;
     if (note) note.textContent = '';
+    // Keyboard cabinets: when the canvas loses focus the keys go dead — say
+    // so instead of letting the player mash a silent keyboard.
+    if (KEY_GAMES.has(cab.id)) {
+      const canvas = this.querySelector('#arcade-canvas');
+      const veil = this.querySelector('#focus-veil');
+      if (canvas && veil) {
+        this._playing = false;
+        canvas.addEventListener('blur', () => {
+          if (this._playing) veil.style.display = 'flex';
+        });
+        canvas.addEventListener('focus', () => { veil.style.display = 'none'; });
+        veil.addEventListener('click', () => {
+          veil.style.display = 'none';
+          canvas.focus();
+        });
+      }
+    }
     if (coin) {
       coin.disabled = false;
       coin.addEventListener('click', async () => {
         coin.disabled = true;
-        const players = Number(this.querySelector('#sel-players')?.value ?? 1);
-        const humans = Math.min(players, Number(this.querySelector('#sel-humans')?.value ?? 1));
+        const mode = this.querySelector('#sel-mode');
+        const players = mode ? 2 : Number(this.querySelector('#sel-players')?.value ?? 1);
+        const humans = mode
+          ? Number(mode.value)
+          : Math.min(players, Number(this.querySelector('#sel-humans')?.value ?? 1));
         try {
           const res = await api('POST', `/arcade/${cab.id}/credit`);
           toast(`Credit ${res.credits} logged. Go!`, 'success');
           mod.arcade_insert_credit(players, humans);
+          this._playing = true;
           this.querySelector('#arcade-canvas')?.focus();
           this.loadScores(cab.id);
         } catch (err) {
@@ -407,6 +514,7 @@ class PageArcade extends HTMLElement {
             this._mod.arcade_start_net(JSON.stringify({
               seat: m.seat, seats: m.seats, present: m.present ?? [],
             }));
+            this._playing = true;
             this.querySelector('#arcade-canvas')?.focus();
             this.loadScores(cab.id);
             break;

@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 use crate::retro::{text, AMBER, DIM, GREEN, WHITE};
 use crate::rng::Rng;
+use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -102,10 +103,90 @@ pub struct BrickPlugin;
 
 impl Plugin for BrickPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (steer, gravity, paint).chain().run_if(in_state(Phase::Playing)),
-        );
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(OnExit(Phase::Attract), rain_out)
+            .add_systems(Update, attract_rain.run_if(in_state(Phase::Attract)))
+            .add_systems(
+                Update,
+                (steer, gravity, flash_fade, paint)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
+    }
+}
+
+/// A cleared row's send-off: a white bar that burns out in a fifth of a second.
+#[derive(Component)]
+struct FlashRow(Timer);
+
+fn spawn_flashes(commands: &mut Commands, rows: &[usize]) {
+    for &row in rows {
+        commands.spawn((
+            Sprite {
+                color: Color::srgba(1.0, 1.0, 1.0, 0.85),
+                custom_size: Some(Vec2::new(CELL * COLS as f32, CELL - 2.0)),
+                ..default()
+            },
+            Transform::from_translation(
+                Vec3::new(X0 + CELL * COLS as f32 / 2.0, Y0 - row as f32 * CELL - CELL / 2.0, 6.0),
+            ),
+            FlashRow(Timer::from_seconds(0.22, TimerMode::Once)),
+            GameTag,
+        ));
+    }
+}
+
+fn flash_fade(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut flashes: Query<(Entity, &mut FlashRow, &mut Sprite)>,
+) {
+    for (e, mut f, mut sprite) in &mut flashes {
+        if f.0.tick(time.delta()).finished() {
+            commands.entity(e).despawn();
+        } else {
+            sprite.color.set_alpha(0.85 * f.0.fraction_remaining());
+        }
+    }
+}
+
+/// Attract-mode set dressing: a slow rain of lone bricks behind the title.
+#[derive(Component)]
+struct RainBrick(f32); // fall speed
+
+fn attract_rain(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut rng: ResMut<Rng>,
+    mut clock: Local<f32>,
+    mut drops: Query<(Entity, &RainBrick, &mut Transform)>,
+) {
+    *clock += time.delta_secs();
+    if *clock > 0.35 {
+        *clock = 0.0;
+        let x = rng.between(-340.0, 340.0);
+        commands.spawn((
+            Sprite {
+                color: GREEN.with_alpha(rng.between(0.12, 0.35)),
+                custom_size: Some(Vec2::splat(CELL - 4.0)),
+                ..default()
+            },
+            Transform::from_xyz(x, 340.0, 0.5),
+            RainBrick(rng.between(50.0, 130.0)),
+        ));
+    }
+    for (e, brick, mut tf) in &mut drops {
+        tf.translation.y -= brick.0 * time.delta_secs();
+        if tf.translation.y < -340.0 {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn rain_out(mut commands: Commands, drops: Query<Entity, With<RainBrick>>) {
+    for e in &drops {
+        commands.entity(e).despawn();
     }
 }
 
@@ -226,7 +307,12 @@ fn collides(w: &Well, kind: usize, rot: usize, x: i32, y: i32) -> bool {
     })
 }
 
-fn lock_piece(w: &mut Well, rng: &mut Rng, score_out: &mut Option<u32>) {
+fn lock_piece(
+    w: &mut Well,
+    rng: &mut Rng,
+    score_out: &mut Option<u32>,
+    cleared_rows: &mut Vec<usize>,
+) {
     for &(dx, dy) in &PIECES[w.kind][w.rot] {
         let (cx, cy) = (w.x + dx, w.y + dy);
         if cy < 0 {
@@ -241,6 +327,7 @@ fn lock_piece(w: &mut Well, rng: &mut Rng, score_out: &mut Option<u32>) {
     for row in 0..ROWS as usize {
         if w.grid[row].iter().all(|&c| c) {
             cleared += 1;
+            cleared_rows.push(row);
             for r in (1..=row).rev() {
                 w.grid[r] = w.grid[r - 1];
             }
@@ -248,10 +335,13 @@ fn lock_piece(w: &mut Well, rng: &mut Rng, score_out: &mut Option<u32>) {
         }
     }
     if cleared > 0 {
+        sfx("clear");
         let base = [0u32, 40, 100, 300, 1200][cleared.min(4)];
         w.score += base * (level(w.lines) + 1);
         w.lines += cleared as u32;
         w.fall.set_duration(std::time::Duration::from_secs_f32(fall_secs(w.lines)));
+    } else {
+        sfx("place");
     }
     // Next piece.
     w.kind = w.next;
@@ -267,12 +357,14 @@ fn lock_piece(w: &mut Well, rng: &mut Rng, score_out: &mut Option<u32>) {
 fn steer(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    mut commands: Commands,
     mut w: ResMut<Well>,
     mut rng: ResMut<Rng>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
 ) {
     let mut over = None;
+    let mut cleared_rows = Vec::new();
 
     // Horizontal with delayed auto-shift.
     let dir = i32::from(keys.pressed(KeyCode::ArrowRight)) - i32::from(keys.pressed(KeyCode::ArrowLeft));
@@ -321,12 +413,14 @@ fn steer(
 
     // Hard drop.
     if keys.just_pressed(KeyCode::Space) {
+        sfx("drop");
         while !collides(&w, w.kind, w.rot, w.x, w.y + 1) {
             w.y += 1;
         }
-        lock_piece(&mut w, &mut rng, &mut over);
+        lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows);
     }
 
+    spawn_flashes(&mut commands, &cleared_rows);
     if let Some(score) = over {
         final_score.0 = score;
         next.set(Phase::GameOver);
@@ -335,6 +429,7 @@ fn steer(
 
 fn gravity(
     time: Res<Time>,
+    mut commands: Commands,
     mut w: ResMut<Well>,
     mut rng: ResMut<Rng>,
     mut final_score: ResMut<FinalScore>,
@@ -342,13 +437,15 @@ fn gravity(
 ) {
     w.fall.tick(time.delta());
     let mut over = None;
+    let mut cleared_rows = Vec::new();
     for _ in 0..w.fall.times_finished_this_tick() {
         if collides(&w, w.kind, w.rot, w.x, w.y + 1) {
-            lock_piece(&mut w, &mut rng, &mut over);
+            lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows);
             break;
         }
         w.y += 1;
     }
+    spawn_flashes(&mut commands, &cleared_rows);
     if let Some(score) = over {
         final_score.0 = score;
         next.set(Phase::GameOver);

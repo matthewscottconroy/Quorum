@@ -6,6 +6,7 @@ use bevy::prelude::*;
 
 use crate::retro::{text, AMBER, CYAN, GREEN, MAGENTA, RED, WHITE};
 use crate::rng::Rng;
+use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -110,7 +111,8 @@ impl Plugin for PennyPlugin {
             Update,
             (steer, advance, auditor_brains, munch, draw_hud)
                 .chain()
-                .run_if(in_state(Phase::Playing)),
+                .run_if(in_state(Phase::Playing))
+                .run_if(crate::unpaused),
         );
     }
 }
@@ -358,7 +360,9 @@ fn auditor_brains(
                 continue;
             }
             let nx = (r.tile.x + d.x + W) % W;
-            let dist = (nx - target.x).abs().min((target.x - nx).abs()) + (r.tile.y + d.y - target.y).abs();
+            // Wrap-aware horizontal distance so auditors use the tunnels too.
+            let dx = (nx - target.x).abs();
+            let dist = dx.min(W - dx) + (r.tile.y + d.y - target.y).abs();
             if best.map(|(bd, _)| dist < bd).unwrap_or(true) {
                 best = Some((dist, d));
             }
@@ -424,6 +428,7 @@ fn munch(
 
     // Coin pickup at the current tile.
     let idx = (pr.tile.y * W + pr.tile.x) as usize;
+    let mut reverse_auditors = false;
     if let Some(coin) = maze.coins[idx].take() {
         commands.entity(coin).despawn();
         maze.coins_left -= 1;
@@ -431,9 +436,14 @@ fn munch(
             maze.score += 50;
             maze.frightened = true;
             maze.chain = 0;
+            let secs = (FRIGHT_SECS - 0.5 * (maze.level - 1) as f32).max(2.5);
+            maze.fright.set_duration(std::time::Duration::from_secs_f32(secs));
             maze.fright.reset();
+            reverse_auditors = true;
+            sfx("power");
         } else {
             maze.score += 10;
+            sfx("coin");
         }
         if maze.coins_left == 0 {
             // Board cleared — next shift, a touch faster.
@@ -441,7 +451,7 @@ fn munch(
             maze.level += 1;
             final_score.0 = maze.score; // provisional, in case they bail
             respawn_board(&mut commands, &mut maze);
-            pr.speed = SPEED * (1.0 + 0.08 * (maze.level - 1) as f32);
+            pr.speed = SPEED * (1.0 + 0.08 * (maze.level - 1) as f32).min(1.25);
             pr.tile = IVec2::new(10, 12);
             pr.dir = IVec2::ZERO;
             pr.want = IVec2::ZERO;
@@ -450,8 +460,15 @@ fn munch(
     }
 
     // Contact with auditors.
+    let fright_ending = maze.frightened && maze.fright.remaining_secs() < 1.8;
+    let blink_on = (time.elapsed_secs() * 6.0) as i32 % 2 == 0;
     let ppos = ptf.translation.truncate();
     for (mut ar, mut aud, mut sprite, atf) in &mut auditors {
+        if reverse_auditors && !aud.dead && ar.dir != IVec2::ZERO {
+            // Mode change: every auditor snaps around. The classic tell.
+            ar.want = -ar.dir;
+            ar.dir = -ar.dir;
+        }
         if aud.dead {
             // Reached the office? Back to work.
             if ar.tile.y == 10 && (6..=15).contains(&ar.tile.x) {
@@ -467,8 +484,10 @@ fn munch(
                 aud.dead = true;
                 ar.speed = SPEED * 1.4;
                 sprite.color.set_alpha(0.35);
+                sfx("eat");
             } else {
                 maze.lives -= 1;
+                sfx("death");
                 if maze.lives <= 0 {
                     final_score.0 = maze.score;
                     next.set(Phase::GameOver);
@@ -479,11 +498,12 @@ fn munch(
                 return;
             }
         } else if !maze.frightened {
-            ar.speed = SPEED * (0.92 + 0.05 * (maze.level - 1) as f32).min(1.15);
+            ar.speed = SPEED * (0.92 + 0.06 * (maze.level - 1) as f32).min(1.30);
             sprite.color.set_alpha(1.0);
         } else {
             ar.speed = SPEED * 0.6; // frightened auditors shuffle
-            sprite.color.set_alpha(0.6);
+            // Blink during the final stretch: the tables are about to turn back.
+            sprite.color.set_alpha(if fright_ending && blink_on { 1.0 } else { 0.6 });
         }
     }
 }

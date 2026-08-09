@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use serde::Deserialize;
 
 use crate::retro::{self, text, AMBER, DIM, GREEN, MAGENTA};
-use crate::{CabinetConfig, FinalScore, GameTag, NetCfg, NetIn, NetMode, Phase};
+use crate::{CabinetConfig, FinalScore, GameTag, NetCfg, NetIn, NetMode, Paused, Phase};
 
 /// Credit mailbox: JavaScript pushes (players, humans) when the user feeds
 /// the coin slot; the shell polls it once per frame. A Mutex is overkill on
@@ -34,6 +34,25 @@ pub fn push_net_start(cfg: String) {
 
 pub fn push_net_event(msg: String) {
     NET_IN.lock().unwrap().push(msg);
+}
+
+/// Fires a named chip-synth sound effect. The page owns the WebAudio
+/// context (it can only start after a user gesture, which the coin click
+/// provides); missing handler or muted page is a silent no-op.
+pub fn sfx(name: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeSfx".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &name.into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = name;
+    }
 }
 
 /// Sends a game payload to the room (host relays state; players relay moves).
@@ -109,7 +128,8 @@ impl Plugin for ShellPlugin {
             .add_systems(Startup, boot)
             .add_systems(OnEnter(Phase::Attract), attract_in)
             .add_systems(OnExit(Phase::Attract), shell_out)
-            .add_systems(OnEnter(Phase::GameOver), game_over_in)
+            .add_systems(OnEnter(Phase::GameOver), (game_over_in, clear_pause))
+            .add_systems(OnEnter(Phase::Playing), clear_pause)
             .add_systems(OnExit(Phase::GameOver), (shell_out, clear_game_entities))
             .add_systems(
                 Update,
@@ -118,8 +138,47 @@ impl Plugin for ShellPlugin {
                     poll_credit.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
                     poll_net_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
                     pump_net_events.run_if(in_state(Phase::Playing)),
+                    toggle_pause.run_if(in_state(Phase::Playing)),
                 ),
             );
+    }
+}
+
+#[derive(Component)]
+struct PauseTag;
+
+/// Esc pauses local rounds. Networked rounds never pause: the host's
+/// simulation and the relay wait for nobody.
+fn toggle_pause(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: Res<NetMode>,
+    mut paused: ResMut<Paused>,
+    mut commands: Commands,
+    overlay: Query<Entity, With<PauseTag>>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) || net.0.is_some() {
+        return;
+    }
+    paused.0 = !paused.0;
+    sfx("pause");
+    if paused.0 {
+        commands.spawn((
+            Sprite {
+                color: Color::srgba(0.0, 0.0, 0.0, 0.6),
+                custom_size: Some(Vec2::new(retro::SCREEN_W, retro::SCREEN_H)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 60.0),
+            PauseTag,
+        ));
+        let t = text(&mut commands, "PAUSED", 48.0, AMBER, Vec3::new(0.0, 20.0, 61.0));
+        commands.entity(t).insert(PauseTag);
+        let hint = text(&mut commands, "ESC TO RESUME", 20.0, DIM, Vec3::new(0.0, -40.0, 61.0));
+        commands.entity(hint).insert(PauseTag);
+    } else {
+        for e in &overlay {
+            commands.entity(e).despawn();
+        }
     }
 }
 
@@ -199,6 +258,7 @@ fn attract_in(mut commands: Commands, card: Res<CabinetCard>) {
 }
 
 fn game_over_in(mut commands: Commands, score: Res<FinalScore>) {
+    sfx("over");
     report_score(score.0);
     // Dim scrim so the final board stays faintly visible underneath.
     commands.spawn((
@@ -266,6 +326,20 @@ fn poll_credit(
         net.0 = None; // the plain coin slot always starts a LOCAL round
         config.players = players.clamp(1, 12);
         config.humans = humans.clamp(1, config.players);
+        sfx("coin");
         next.set(Phase::Playing);
+    }
+}
+
+/// Any phase change unpauses and clears the overlay (a game over while
+/// paused must not leave a stuck scrim).
+fn clear_pause(
+    mut paused: ResMut<Paused>,
+    mut commands: Commands,
+    overlay: Query<Entity, With<PauseTag>>,
+) {
+    paused.0 = false;
+    for e in &overlay {
+        commands.entity(e).despawn();
     }
 }

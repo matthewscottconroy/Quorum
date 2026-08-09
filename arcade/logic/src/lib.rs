@@ -2,5 +2,6 @@
 //! No engine, no I/O — just rules, so the tests run anywhere in milliseconds.
 
 pub mod chess;
+pub mod chess_bot;
 pub mod go;
 pub mod hex;

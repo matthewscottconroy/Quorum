@@ -58,6 +58,8 @@ pub struct Board {
     pub castle: [bool; 4],
     /// En-passant target square (the square a capturing pawn lands on).
     pub ep: Option<Square>,
+    /// Plies since the last capture or pawn move (fifty-move rule; 100 = draw).
+    pub halfmove: u32,
 }
 
 pub const fn file(sq: Square) -> usize {
@@ -79,7 +81,7 @@ impl Board {
             cells[48 + f] = Some((Black, Pawn));
             cells[56 + f] = Some((Black, back[f]));
         }
-        Board { cells, turn: White, castle: [true; 4], ep: None }
+        Board { cells, turn: White, castle: [true; 4], ep: None, halfmove: 0 }
     }
 
     pub fn king_square(&self, c: Color) -> Square {
@@ -306,6 +308,13 @@ impl Board {
     pub fn apply(&mut self, m: Move) {
         let us = self.turn;
         let piece = self.cells[m.from].expect("moving an existing piece").1;
+        let is_capture = self.cells[m.to].is_some()
+            || (piece == Piece::Pawn && Some(m.to) == self.ep);
+        if piece == Piece::Pawn || is_capture {
+            self.halfmove = 0;
+        } else {
+            self.halfmove += 1;
+        }
         // En passant capture removes the bypassed pawn.
         if piece == Piece::Pawn && Some(m.to) == self.ep && self.cells[m.to].is_none() {
             let dir: i32 = if us == Color::White { -1 } else { 1 };
@@ -364,14 +373,76 @@ impl Board {
     }
 
     pub fn status(&self) -> Status {
-        if !self.legal_moves().is_empty() {
-            return Status::Ongoing;
+        if self.legal_moves().is_empty() {
+            return if self.in_check(self.turn) {
+                Status::Checkmate { winner: self.turn.other() }
+            } else {
+                Status::Stalemate
+            };
         }
-        if self.in_check(self.turn) {
-            Status::Checkmate { winner: self.turn.other() }
-        } else {
-            Status::Stalemate
+        if self.halfmove >= 100 {
+            return Status::Draw(DrawKind::FiftyMove);
         }
+        if self.insufficient_material() {
+            return Status::Draw(DrawKind::InsufficientMaterial);
+        }
+        Status::Ongoing
+    }
+
+    /// Neither side can possibly deliver mate: bare kings, a lone minor
+    /// piece, or same-colored bishops only.
+    pub fn insufficient_material(&self) -> bool {
+        let mut knights = 0;
+        let mut bishops_light = 0;
+        let mut bishops_dark = 0;
+        for (sq, cell) in self.cells.iter().enumerate() {
+            match cell {
+                None => {}
+                Some((_, Piece::King)) => {}
+                Some((_, Piece::Knight)) => knights += 1,
+                Some((_, Piece::Bishop)) => {
+                    if (file(sq) + rank(sq)) % 2 == 0 {
+                        bishops_dark += 1;
+                    } else {
+                        bishops_light += 1;
+                    }
+                }
+                Some(_) => return false, // any pawn, rook, or queen can mate
+            }
+        }
+        let minors = knights + bishops_light + bishops_dark;
+        // K vs K, or a single minor piece on the whole board.
+        if minors <= 1 {
+            return true;
+        }
+        // Only bishops, all living on the same square color.
+        knights == 0 && (bishops_light == 0 || bishops_dark == 0)
+    }
+
+    /// A position fingerprint for threefold-repetition tracking (FNV-1a over
+    /// occupancy, side to move, castling rights, and the ep square). Kept out
+    /// of Board state so cloning stays cheap for search.
+    pub fn position_hash(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |byte: u8| {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for cell in &self.cells {
+            let code = match cell {
+                None => 0u8,
+                Some((c, p)) => {
+                    1 + (*p as u8) + if *c == Color::White { 0 } else { 6 }
+                }
+            };
+            mix(code);
+        }
+        mix(if self.turn == Color::White { 1 } else { 2 });
+        for &c in &self.castle {
+            mix(c as u8);
+        }
+        mix(self.ep.map(|e| e as u8 + 1).unwrap_or(0));
+        h
     }
 
     /// Material balance from `c`'s point of view (positive = ahead).
@@ -389,6 +460,14 @@ pub enum Status {
     Ongoing,
     Checkmate { winner: Color },
     Stalemate,
+    Draw(DrawKind),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DrawKind {
+    FiftyMove,
+    InsufficientMaterial,
+    Repetition, // detected by the caller via position_hash history
 }
 
 #[cfg(test)]
@@ -484,6 +563,59 @@ mod tests {
     }
 
     #[test]
+    fn fifty_move_rule_draws_but_mate_takes_precedence() {
+        let mut b = Board::start();
+        b.halfmove = 100;
+        assert_eq!(b.status(), Status::Draw(DrawKind::FiftyMove));
+        // A pawn move resets the clock.
+        b.halfmove = 40;
+        let m = b.legal_moves().into_iter().find(|m| m.from == 12).unwrap();
+        b.apply(m);
+        assert_eq!(b.halfmove, 0);
+    }
+
+    #[test]
+    fn insufficient_material_positions() {
+        let make = |pieces: &[(usize, Color, Piece)]| {
+            let mut cells: [Option<(Color, Piece)>; 64] = [None; 64];
+            for &(sq, c, p) in pieces {
+                cells[sq] = Some((c, p));
+            }
+            Board { cells, turn: Color::White, castle: [false; 4], ep: None, halfmove: 0 }
+        };
+        use Color::*;
+        use Piece::*;
+        assert!(make(&[(4, White, King), (60, Black, King)]).insufficient_material());
+        assert!(make(&[(4, White, King), (60, Black, King), (27, White, Knight)]).insufficient_material());
+        assert!(make(&[(4, White, King), (60, Black, King), (27, White, Bishop)]).insufficient_material());
+        // Same-color bishops cannot mate; opposite-color can (helpmate).
+        // c1 (2) and f4 (29) are both dark squares under (file+rank)%2==0.
+        assert!(make(&[(4, White, King), (60, Black, King), (2, White, Bishop), (29, Black, Bishop)])
+            .insufficient_material());
+        assert!(!make(&[(4, White, King), (60, Black, King), (8, White, Pawn)]).insufficient_material());
+        assert!(!make(&[(4, White, King), (60, Black, King), (0, White, Rook)]).insufficient_material());
+    }
+
+    #[test]
+    fn position_hash_tracks_repetition() {
+        let mut b = Board::start();
+        let start = b.position_hash();
+        let mv = |b: &mut Board, from: usize, to: usize| {
+            let m = b.legal_moves().into_iter().find(|m| m.from == from && m.to == to).unwrap();
+            b.apply(m);
+        };
+        // Knights out and back: same position, same hash.
+        mv(&mut b, 6, 21);
+        mv(&mut b, 62, 45);
+        mv(&mut b, 21, 6);
+        mv(&mut b, 45, 62);
+        assert_eq!(b.position_hash(), start);
+        // Different position hashes differently.
+        mv(&mut b, 12, 28);
+        assert_ne!(b.position_hash(), start);
+    }
+
+    #[test]
     fn stalemate_detected() {
         // Classic minimal stalemate: black king a8, white queen c7 guarding
         // every escape but giving no check, white king to move elsewhere.
@@ -491,7 +623,7 @@ mod tests {
         cells[56] = Some((Color::Black, Piece::King)); // a8
         cells[50] = Some((Color::White, Piece::Queen)); // c7
         cells[42] = Some((Color::White, Piece::King)); // c6
-        let b = Board { cells, turn: Color::Black, castle: [false; 4], ep: None };
+        let b = Board { cells, turn: Color::Black, castle: [false; 4], ep: None, halfmove: 0 };
         assert_eq!(b.status(), Status::Stalemate);
     }
 }

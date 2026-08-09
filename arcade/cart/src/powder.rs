@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, PLAYER_COLORS, AMBER, RED, WHITE};
 use crate::rng::Rng;
-use crate::shell::net_send;
+use crate::shell::{net_send, sfx};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -82,6 +82,7 @@ enum Perk {
     Range,
     Bombs,
     Speed,
+    Kick, // walk into a keg to send it sliding
 }
 
 #[derive(Resource)]
@@ -101,6 +102,9 @@ struct Arena {
     death_order: Vec<usize>,
     net_timer: Timer, // host snapshot cadence
     end_sent: bool,
+    /// Once the walls stop, this fuse burns toward a declared draw so two
+    /// cowards in the final chamber cannot stall the cabinet forever.
+    settle: Timer,
 }
 
 impl Arena {
@@ -138,6 +142,7 @@ struct Fighter {
     alive: bool,
     kills: u32,
     wants_bomb: bool,
+    kick: bool,
     think: Timer,
 }
 
@@ -173,10 +178,12 @@ impl Plugin for PowderPlugin {
                 finish,
                 guest_input,
                 guest_apply,
+                guest_smooth,
                 hud,
             )
                 .chain()
-                .run_if(in_state(Phase::Playing)),
+                .run_if(in_state(Phase::Playing))
+                .run_if(crate::unpaused),
         );
     }
 }
@@ -289,6 +296,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
         death_order: Vec::new(),
         net_timer: Timer::from_seconds(0.05, TimerMode::Repeating),
         end_sent: false,
+        settle: Timer::from_seconds(20.0, TimerMode::Once),
     });
     commands.init_resource::<GuestFx>();
 
@@ -321,6 +329,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
                     alive: true,
                     kills: 0,
                     wants_bomb: false,
+                    kick: false,
                     think: Timer::from_seconds(0.12 + 0.013 * seat as f32, TimerMode::Repeating),
                 },
                 Sprite {
@@ -559,14 +568,78 @@ fn bot_brains(
     }
 }
 
+/// Slides a kicked keg from `from` along `dir` until something stops it:
+/// walls, crates, another keg, or a fighter standing in the lane.
+fn slide_bomb(
+    arena: &mut Arena,
+    bomb_tfs: &mut Query<&mut Transform, (With<BombSprite>, Without<Fighter>)>,
+    occupied: &[IVec2],
+    from: usize,
+    dir: IVec2,
+) -> bool {
+    let (mut c, mut r) = ((from as i32) % COLS, (from as i32) / COLS);
+    let mut moved = false;
+    loop {
+        let (nc, nr) = (c + dir.x, r + dir.y);
+        if nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS {
+            break;
+        }
+        let j = Arena::idx(nc, nr);
+        if arena.tiles[j] != Tile::Empty
+            || arena.bombs[j].is_some()
+            || arena.flames[j] > 0.0
+            || occupied.contains(&IVec2::new(nc, nr))
+        {
+            break;
+        }
+        c = nc;
+        r = nr;
+        moved = true;
+    }
+    if moved {
+        let to = Arena::idx(c, r);
+        let bomb = arena.bombs[from].take();
+        if let Some((e, fuse, range, owner)) = bomb {
+            let p = world(c, r);
+            if let Ok(mut tf) = bomb_tfs.get_mut(e) {
+                tf.translation.x = p.x;
+                tf.translation.y = p.y;
+            }
+            arena.bombs[to] = Some((e, fuse, range, owner));
+        }
+        sfx("drop");
+    }
+    moved
+}
+
+#[allow(clippy::type_complexity)]
 fn movement(
     time: Res<Time>,
-    arena: Res<Arena>,
+    mut arena: ResMut<Arena>,
     net: Res<NetMode>,
-    mut fighters: Query<(&mut Fighter, &mut Transform)>,
+    mut fighters: Query<(&mut Fighter, &mut Transform), Without<BombSprite>>,
+    mut bomb_tfs: Query<&mut Transform, (With<BombSprite>, Without<Fighter>)>,
 ) {
     if net_guest(&net) {
         return;
+    }
+    // Kick pass: a fighter with the perk shoves the keg in their way.
+    let occupied: Vec<IVec2> = fighters.iter().filter(|(f, _)| f.alive).map(|(f, _)| f.tile).collect();
+    for (f, _) in &fighters {
+        if !f.alive || !f.kick || f.want == IVec2::ZERO {
+            continue;
+        }
+        if f.dir != IVec2::ZERO && f.progress > f32::EPSILON {
+            continue; // only shove from a standstill at a tile center
+        }
+        let target = f.tile + f.want;
+        if target.x < 0 || target.x >= COLS || target.y < 0 || target.y >= ROWS {
+            continue;
+        }
+        let j = Arena::idx(target.x, target.y);
+        if arena.bombs[j].is_some() {
+            slide_bomb(&mut arena, &mut bomb_tfs, &occupied, j, f.want);
+        }
     }
     let dt = time.delta_secs();
     for (mut f, mut tf) in &mut fighters {
@@ -614,7 +687,7 @@ fn bombs_and_flames(
     mut rng: ResMut<Rng>,
     mut fighters: Query<(&mut Fighter, &mut Sprite), (Without<TileSprite>, Without<FlameSprite>)>,
     mut tiles_q: Query<(&TileSprite, &mut Sprite), Without<FlameSprite>>,
-    mut flames_q: Query<(Entity, &mut FlameSprite)>,
+    mut flames_q: Query<(Entity, &mut FlameSprite, &mut Sprite), (Without<Fighter>, Without<TileSprite>)>,
 ) {
     if net_guest(&net) {
         return;
@@ -642,21 +715,26 @@ fn bombs_and_flames(
                 .id();
             arena.bombs[i] = Some((e, FUSE, f.range, f.seat));
             f.live_bombs += 1;
+            sfx("place");
         }
     }
 
-    // Tick fuses; collect exploding cells (chain reactions same frame).
-    let mut exploding: Vec<usize> = Vec::new();
+    // Tick fuses; collect exploding cells. Chained kegs blame the player
+    // whose keg STARTED the chain — the classic credit rule.
+    let mut exploding: Vec<(usize, Option<usize>)> = Vec::new(); // cell, initiator
     for i in 0..arena.bombs.len() {
         if let Some((_, fuse, _, _)) = arena.bombs[i].as_mut() {
             *fuse -= dt;
             if *fuse <= 0.0 {
-                exploding.push(i);
+                exploding.push((i, None));
             }
         }
     }
-    let mut burst: Vec<(usize, i32, usize)> = Vec::new(); // cell, range, owner
-    while let Some(i) = exploding.pop() {
+    if !exploding.is_empty() {
+        sfx("boom");
+    }
+    let mut burst: Vec<(usize, i32, usize)> = Vec::new(); // cell, range, credited seat
+    while let Some((i, initiator)) = exploding.pop() {
         let Some((e, _, range, owner)) = arena.bombs[i].take() else { continue };
         commands.entity(e).despawn();
         // Give the owner their slot back.
@@ -665,8 +743,9 @@ fn bombs_and_flames(
                 f.live_bombs = (f.live_bombs - 1).max(0);
             }
         }
-        burst.push((i, range, owner));
-        // Chain: any bomb in this blast goes off now.
+        let credited = initiator.unwrap_or(owner);
+        burst.push((i, range, credited));
+        // Chain: any bomb in this blast goes off now, on the initiator's tab.
         let (c0, r0) = ((i as i32) % COLS, (i as i32) / COLS);
         for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
             for k in 1..=range {
@@ -678,8 +757,8 @@ fn bombs_and_flames(
                 if arena.tiles[j] == Tile::Solid {
                     break;
                 }
-                if arena.bombs[j].is_some() && !exploding.contains(&j) {
-                    exploding.push(j);
+                if arena.bombs[j].is_some() && !exploding.iter().any(|&(cell, _)| cell == j) {
+                    exploding.push((j, Some(credited)));
                 }
                 if arena.tiles[j] == Tile::Crate {
                     break;
@@ -690,22 +769,28 @@ fn bombs_and_flames(
     // Apply bursts: flames, crate destruction, perk reveals.
     for (i, range, owner) in burst {
         let (c0, r0) = ((i as i32) % COLS, (i as i32) / COLS);
-        let lay_flame = |arena: &mut Arena, commands: &mut Commands, c: i32, r: i32| {
+        let lay_flame = |arena: &mut Arena, commands: &mut Commands, c: i32, r: i32, dir: (i32, i32)| {
             let j = Arena::idx(c, r);
             arena.flames[j] = FLAME_SECS;
             arena.flame_owner[j] = owner;
             if let Some((_, e)) = arena.perks[j].take() {
                 commands.entity(e).despawn(); // flames eat loose perks
             }
+            // Cross-shaped blast: a fat core, slim arms along the blast axis.
+            let size = match dir {
+                (0, 0) => Vec2::splat(CELL - 6.0),
+                (_, 0) => Vec2::new(CELL - 2.0, CELL * 0.45),
+                _ => Vec2::new(CELL * 0.45, CELL - 2.0),
+            };
             let p = world(c, r);
             commands.spawn((
-                Sprite { color: AMBER, custom_size: Some(Vec2::splat(CELL - 6.0)), ..default() },
+                Sprite { color: AMBER, custom_size: Some(size), ..default() },
                 Transform::from_xyz(p.x, p.y, 5.0),
                 FlameSprite { ttl: Timer::from_seconds(FLAME_SECS, TimerMode::Once) },
                 GameTag,
             ));
         };
-        lay_flame(&mut arena, &mut commands, c0, r0);
+        lay_flame(&mut arena, &mut commands, c0, r0, (0, 0));
         for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
             for k in 1..=range {
                 let (c, r) = (c0 + dc * k, r0 + dr * k);
@@ -721,16 +806,18 @@ fn bombs_and_flames(
                     arena.tiles[j] = Tile::Empty;
                     // A third of crates hide an upgrade.
                     if rng.chance(0.34) {
-                        let perk = match rng.range(3) {
-                            0 => Perk::Range,
-                            1 => Perk::Bombs,
-                            _ => Perk::Speed,
+                        let perk = match rng.range(7) {
+                            0 | 1 => Perk::Range,
+                            2 | 3 => Perk::Bombs,
+                            4 | 5 => Perk::Speed,
+                            _ => Perk::Kick,
                         };
                         let p = world(c, r);
                         let color = match perk {
                             Perk::Range => RED,
                             Perk::Bombs => Color::srgb(0.3, 0.6, 1.0),
                             Perk::Speed => Color::srgb(0.55, 1.0, 0.3),
+                            Perk::Kick => WHITE,
                         };
                         let e = commands
                             .spawn((
@@ -742,7 +829,7 @@ fn bombs_and_flames(
                         arena.perks[j] = Some((perk, e));
                     }
                 }
-                lay_flame(&mut arena, &mut commands, c, r);
+                lay_flame(&mut arena, &mut commands, c, r, (dc, dr));
                 if was_crate {
                     break;
                 }
@@ -766,9 +853,11 @@ fn bombs_and_flames(
             arena.flames[i] -= dt;
         }
     }
-    for (e, mut fs) in &mut flames_q {
+    for (e, mut fs, mut sprite) in &mut flames_q {
         if fs.ttl.tick(time.delta()).finished() {
             commands.entity(e).despawn();
+        } else {
+            sprite.color.set_alpha(0.35 + 0.65 * fs.ttl.fraction_remaining());
         }
     }
 
@@ -795,6 +884,7 @@ fn bombs_and_flames(
         if let Some(owner) = hit {
             f.alive = false;
             sprite.color.set_alpha(0.15);
+            sfx("death");
             arena.death_order.push(f.seat);
             if owner != f.seat && owner != usize::MAX {
                 kill_credit.push((f.seat, owner));
@@ -830,7 +920,9 @@ fn pickups(
                 Perk::Range => f.range = (f.range + 1).min(7),
                 Perk::Bombs => f.max_bombs = (f.max_bombs + 1).min(6),
                 Perk::Speed => f.speed = (f.speed + 0.45).min(6.5),
+                Perk::Kick => f.kick = true,
             }
+            sfx("power");
         }
     }
 }
@@ -848,11 +940,23 @@ fn closing_walls(
     if arena.clock < SUDDEN_DEATH_AT || arena.finished {
         return;
     }
-    if !arena.spiral_timer.tick(time.delta()).just_finished() {
+    // Once the walls stop at the final chamber, a settle fuse starts: when
+    // it burns out, everyone still standing goes down together (draw).
+    if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
+        if arena.settle.tick(time.delta()).just_finished() {
+            for (mut f, mut sprite) in &mut fighters {
+                if f.alive {
+                    f.alive = false;
+                    sprite.color.set_alpha(0.15);
+                    let seat = f.seat;
+                    arena.death_order.push(seat);
+                }
+            }
+            sfx("death");
+        }
         return;
     }
-    // Leave a small final chamber.
-    if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
+    if !arena.spiral_timer.tick(time.delta()).just_finished() {
         return;
     }
     let i = arena.spiral[arena.spiral_next];
@@ -954,6 +1058,9 @@ fn hud(arena: Res<Arena>, fighters: Query<&Fighter>, mut hud: Query<&mut Text2d,
         let to_walls = (SUDDEN_DEATH_AT - arena.clock).max(0.0);
         let s = if to_walls > 0.0 {
             format!("{alive} STANDING   WALLS IN {to_walls:.0}s")
+        } else if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
+            let settle = (arena.settle.duration().as_secs_f32() - arena.settle.elapsed_secs()).max(0.0);
+            format!("{alive} STANDING   SETTLE IT IN {settle:.0}s")
         } else {
             format!("{alive} STANDING   THE WALLS ARE COMING")
         };
@@ -1062,6 +1169,7 @@ fn host_broadcast(
                         Perk::Range => 0u8,
                         Perk::Bombs => 1,
                         Perk::Speed => 2,
+                        Perk::Kick => 3,
                     })
                 })
             })
@@ -1125,6 +1233,17 @@ fn guest_apply(
     // Only the newest snapshot matters; ends are processed immediately.
     let mut latest_state: Option<WireState> = None;
     for ev in events.read() {
+        if ev.left && ev.seat == 0 {
+            // The simulation left the building. Bank what we know and end it.
+            let kills = fighters
+                .iter()
+                .find(|(f, _, _)| f.seat == my_seat)
+                .map(|(f, _, _)| f.kills)
+                .unwrap_or(0);
+            final_score.0 = kills * 100;
+            next.set(Phase::GameOver);
+            return;
+        }
         if ev.left || ev.seat != 0 {
             continue; // only the host speaks state
         }
@@ -1183,9 +1302,9 @@ fn guest_apply(
     }
     arena.clock = st.clk as f32 / 10.0;
 
-    // Fighters.
+    // Fighters: update targets; guest_smooth eases the sprites over.
     for wf in &st.f {
-        for (mut f, mut sprite, mut tf) in &mut fighters {
+        for (mut f, mut sprite, _) in &mut fighters {
             if f.seat != wf.0 as usize {
                 continue;
             }
@@ -1197,12 +1316,8 @@ fn guest_apply(
             f.kills = wf.7;
             if was_alive && !f.alive {
                 sprite.color.set_alpha(0.15);
+                sfx("death");
             }
-            let from = world(f.tile.x, f.tile.y);
-            let to = world(f.tile.x + f.dir.x, f.tile.y + f.dir.y);
-            let p = from.lerp(to, f.progress);
-            tf.translation.x = p.x;
-            tf.translation.y = p.y;
         }
     }
 
@@ -1218,6 +1333,9 @@ fn guest_apply(
     });
     for &(cell, _) in &st.b {
         let cell = cell as usize;
+        if !fx.bombs.contains_key(&cell) {
+            sfx("place");
+        }
         fx.bombs.entry(cell).or_insert_with(|| {
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
             commands
@@ -1239,8 +1357,12 @@ fn guest_apply(
             false
         }
     });
+    let mut new_flames = false;
     for &cell in &st.fl {
         let cell = cell as usize;
+        if !fx.flames.contains_key(&cell) {
+            new_flames = true;
+        }
         fx.flames.entry(cell).or_insert_with(|| {
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
             commands
@@ -1251,6 +1373,9 @@ fn guest_apply(
                 ))
                 .id()
         });
+    }
+    if new_flames {
+        sfx("boom");
     }
     let want_perks: std::collections::HashSet<usize> = st.p.iter().map(|&(c, _)| c as usize).collect();
     fx.perks.retain(|cell, e| {
@@ -1267,7 +1392,8 @@ fn guest_apply(
             let color = match kind {
                 0 => RED,
                 1 => Color::srgb(0.3, 0.6, 1.0),
-                _ => Color::srgb(0.55, 1.0, 0.3),
+                2 => Color::srgb(0.55, 1.0, 0.3),
+                _ => WHITE,
             };
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
             commands
@@ -1278,5 +1404,32 @@ fn guest_apply(
                 ))
                 .id()
         });
+    }
+}
+
+/// Guest render smoothing: ease each fighter toward its latest snapshot
+/// target instead of teleporting between 20 Hz frames. Snaps across large
+/// jumps (spawn, respawn) so easing never smears the arena.
+fn guest_smooth(
+    time: Res<Time>,
+    net: Res<NetMode>,
+    mut fighters: Query<(&Fighter, &mut Transform)>,
+) {
+    if !net_guest(&net) {
+        return;
+    }
+    let blend = 1.0 - (-14.0 * time.delta_secs()).exp();
+    for (f, mut tf) in &mut fighters {
+        let from = world(f.tile.x, f.tile.y);
+        let to = world(f.tile.x + f.dir.x, f.tile.y + f.dir.y);
+        let target = from.lerp(to, f.progress);
+        let here = tf.translation.truncate();
+        let next = if here.distance(target) > CELL * 2.5 {
+            target // teleport-scale jump: snap
+        } else {
+            here.lerp(target, blend)
+        };
+        tf.translation.x = next.x;
+        tf.translation.y = next.y;
     }
 }

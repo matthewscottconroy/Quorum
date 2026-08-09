@@ -28,7 +28,22 @@ pub struct GoBoard {
     pub captures_black: u32,
     pub captures_white: u32,
     pub passes_in_a_row: u32,
+    /// The most recently placed stone, for the UI's last-move marker.
+    pub last: Option<usize>,
     /// Simple ko: a board position (cells only) that the next move may not recreate.
+    ko_forbidden: Option<[Option<Stone>; CELLS]>,
+    /// Undo history: one snapshot per play/pass (hotseat courtesy undo).
+    history: Vec<GoSnapshot>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct GoSnapshot {
+    cells: [Option<Stone>; CELLS],
+    turn: Stone,
+    captures_black: u32,
+    captures_white: u32,
+    passes_in_a_row: u32,
+    last: Option<usize>,
     ko_forbidden: Option<[Option<Stone>; CELLS]>,
 }
 
@@ -66,7 +81,9 @@ impl GoBoard {
             captures_black: 0,
             captures_white: 0,
             passes_in_a_row: 0,
+            last: None,
             ko_forbidden: None,
+            history: Vec::new(),
         }
     }
 
@@ -98,10 +115,37 @@ impl GoBoard {
         (group, liberty)
     }
 
+    fn snapshot(&self) -> GoSnapshot {
+        GoSnapshot {
+            cells: self.cells,
+            turn: self.turn,
+            captures_black: self.captures_black,
+            captures_white: self.captures_white,
+            passes_in_a_row: self.passes_in_a_row,
+            last: self.last,
+            ko_forbidden: self.ko_forbidden,
+        }
+    }
+
+    /// Reverts the most recent play or pass. Returns false when there is
+    /// nothing to undo. Hotseat courtesy — network games never call this.
+    pub fn undo(&mut self) -> bool {
+        let Some(snap) = self.history.pop() else { return false };
+        self.cells = snap.cells;
+        self.turn = snap.turn;
+        self.captures_black = snap.captures_black;
+        self.captures_white = snap.captures_white;
+        self.passes_in_a_row = snap.passes_in_a_row;
+        self.last = snap.last;
+        self.ko_forbidden = snap.ko_forbidden;
+        true
+    }
+
     pub fn pass(&mut self) {
         if self.over() {
             return;
         }
+        self.history.push(self.snapshot());
         self.passes_in_a_row += 1;
         self.ko_forbidden = None;
         self.turn = self.turn.other();
@@ -150,6 +194,7 @@ impl GoBoard {
                 return Err(PlayError::Ko);
             }
         }
+        self.history.push(self.snapshot());
         // Ko arises when exactly one stone is captured by a single new stone.
         self.ko_forbidden = if captured == 1 { Some(self.cells) } else { None };
         match me {
@@ -158,6 +203,7 @@ impl GoBoard {
         }
         self.cells = next;
         self.passes_in_a_row = 0;
+        self.last = Some(pos);
         self.turn = me.other();
         Ok(())
     }
@@ -261,6 +307,37 @@ mod tests {
         b.play(at(8, 8)).unwrap(); // B elsewhere
         b.play(at(7, 8)).unwrap(); // W answers
         assert!(b.play(at(2, 1)).is_ok());
+    }
+
+    #[test]
+    fn undo_reverts_captures_ko_and_turn() {
+        let mut b = GoBoard::new();
+        b.play(at(1, 0)).unwrap(); // B
+        b.play(at(1, 1)).unwrap(); // W (victim)
+        b.play(at(0, 1)).unwrap(); // B
+        b.play(at(8, 8)).unwrap(); // W
+        b.play(at(2, 1)).unwrap(); // B
+        b.play(at(8, 7)).unwrap(); // W
+        let before = b.clone();
+        b.play(at(1, 2)).unwrap(); // B captures
+        assert_eq!(b.captures_black, 1);
+        assert!(b.undo());
+        assert!(b.cells == before.cells && b.turn == before.turn);
+        assert_eq!(b.captures_black, 0);
+        assert_eq!(b.last, Some(at(8, 7)));
+        // Replay works identically after the undo.
+        b.play(at(1, 2)).unwrap();
+        assert_eq!(b.captures_black, 1);
+    }
+
+    #[test]
+    fn last_move_marker_follows_plays() {
+        let mut b = GoBoard::new();
+        assert_eq!(b.last, None);
+        b.play(at(4, 4)).unwrap();
+        assert_eq!(b.last, Some(at(4, 4)));
+        b.pass();
+        assert_eq!(b.last, Some(at(4, 4)), "a pass leaves the marker in place");
     }
 
     #[test]

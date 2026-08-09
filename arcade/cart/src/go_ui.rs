@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, AMBER, DIM, GREEN, MAGENTA, WHITE};
-use crate::shell::net_send;
+use crate::shell::{net_send, sfx};
 use crate::{FinalScore, GameTag, NetIn, NetMode, Phase};
 
 /// Relayed play: seat 0 is Black, seat 1 is White.
@@ -28,8 +28,9 @@ fn seat_stone(seat: u8) -> Stone {
 
 pub const BLURB: &[&str] = &[
     "SURROUND TERRITORY. 9x9. TWO PLAYERS.",
-    "CLICK TO PLACE  /  P TO PASS",
+    "CLICK TO PLACE / P TO PASS / U UNDOES (HOTSEAT)",
     "TWO PASSES END IT. AREA SCORING, KOMI 5.5",
+    "CAPTURE DEAD STONES BEFORE YOU PASS",
 ];
 
 const CELL: f32 = 58.0;
@@ -60,7 +61,13 @@ pub struct GoPlugin;
 impl Plugin for GoPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup)
-            .add_systems(Update, (net_apply, input, grid, hud, endgame).chain().run_if(in_state(Phase::Playing)));
+            .add_systems(
+                Update,
+                (net_apply, input, grid, hud, endgame)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
     }
 }
 
@@ -77,7 +84,7 @@ fn setup(mut commands: Commands) {
     commands.entity(hud).insert((Hud, GameTag));
     let help = text(
         &mut commands,
-        "BLACK: GREEN\nWHITE: MAGENTA\n\nP = PASS",
+        "BLACK: GREEN\nWHITE: MAGENTA\n\nP = PASS\nU = UNDO (HOTSEAT)",
         18.0,
         DIM,
         Vec3::new(250.0, -140.0, 2.0),
@@ -85,8 +92,8 @@ fn setup(mut commands: Commands) {
     commands.entity(help).insert(GameTag);
 }
 
-/// Board lines and star points, drawn fresh each frame with gizmos.
-fn grid(mut gizmos: Gizmos) {
+/// Board lines, star points, and the last-move ring, drawn with gizmos.
+fn grid(mut gizmos: Gizmos, table: Res<Table>) {
     let c = Color::srgb(0.28, 0.34, 0.30);
     for i in 0..SIZE {
         gizmos.line_2d(point(0, i), point(SIZE - 1, i), c);
@@ -94,6 +101,10 @@ fn grid(mut gizmos: Gizmos) {
     }
     for &(x, y) in &[(2, 2), (6, 2), (4, 4), (2, 6), (6, 6)] {
         gizmos.circle_2d(point(x, y), 3.0, c);
+    }
+    if let Some(last) = table.board.last {
+        let p = point(last % SIZE, last / SIZE);
+        gizmos.circle_2d(p, CELL * 0.44, crate::retro::WHITE);
     }
 }
 
@@ -148,6 +159,7 @@ fn input(
     }
     if keys.just_pressed(KeyCode::KeyP) {
         table.board.pass();
+        sfx("tick");
         if net.0.is_some() {
             if let Ok(w) = serde_json::to_string(&WirePlay { t: "pass".into(), pos: 0 }) {
                 net_send(&w);
@@ -155,6 +167,14 @@ fn input(
         }
         if table.board.over() {
             settle(&mut table);
+        }
+        return;
+    }
+    // Courtesy undo, hotseat only — the agreement happens across the table.
+    if keys.just_pressed(KeyCode::KeyU) && net.0.is_none() {
+        if table.board.undo() {
+            sfx("tick");
+            repaint(&mut commands, &table, &stones);
         }
         return;
     }
@@ -175,8 +195,11 @@ fn input(
         return;
     }
     let pos = gy as usize * SIZE + gx as usize;
+    let before = table.board.captures_black + table.board.captures_white;
     match table.board.play(pos) {
         Ok(()) => {
+            let after = table.board.captures_black + table.board.captures_white;
+            sfx(if after > before { "capture" } else { "place" });
             if net.0.is_some() {
                 if let Ok(w) = serde_json::to_string(&WirePlay { t: "mv".into(), pos }) {
                     net_send(&w);
@@ -232,6 +255,7 @@ fn net_apply(
             "mv" => {
                 if wire.pos < SIZE * SIZE && table.board.play(wire.pos).is_ok() {
                     table.dirty = true;
+                    sfx("place");
                 }
             }
             _ => {}

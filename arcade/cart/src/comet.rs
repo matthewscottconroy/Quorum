@@ -5,7 +5,9 @@ use bevy::prelude::*;
 
 use crate::retro::{text, AMBER, GREEN, SCREEN_H, SCREEN_W, WHITE};
 use crate::rng::Rng;
+use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
+use crate::retro::MAGENTA;
 
 pub const BLURB: &[&str] = &[
     "ROCKS DRIFT. YOU DON'T HAVE TO.",
@@ -31,6 +33,7 @@ struct Game {
     waiting_wave: bool,
     hyper_cooldown: Timer,
     next_extra_life: u32,
+    saucer_clock: Timer,
 }
 
 #[derive(Component)]
@@ -61,6 +64,30 @@ struct Shard {
     dir: Vec2,
 }
 
+/// The hunter: drifts across the field taking pot shots. Big and sloppy
+/// early; small and personal once your score says you can handle it.
+#[derive(Component)]
+struct Saucer {
+    vel: Vec2,
+    small: bool,
+    fire: Timer,
+    wobble: Timer,
+}
+
+#[derive(Component)]
+struct EnemyBullet {
+    vel: Vec2,
+    ttl: Timer,
+}
+
+/// Attract-mode set dressing: rocks drifting behind the title card.
+#[derive(Component)]
+struct AttractRock {
+    vel: Vec2,
+    spin: f32,
+    shape: Vec<Vec2>,
+}
+
 #[derive(Component)]
 struct Hud;
 
@@ -68,12 +95,20 @@ pub struct CometPlugin;
 
 impl Plugin for CometPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (control, physics, collide, waves, draw)
-                .chain()
-                .run_if(in_state(Phase::Playing)),
-        );
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(OnEnter(Phase::Attract), attract_in)
+            .add_systems(OnExit(Phase::Attract), attract_out)
+            .add_systems(
+                Update,
+                (attract_drift, draw_attract).run_if(in_state(Phase::Attract)),
+            )
+            .add_systems(
+                Update,
+                (control, physics, saucer_run, collide, waves, draw)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
     }
 }
 
@@ -96,16 +131,29 @@ fn rock_radius(size: u8) -> f32 {
     }
 }
 
-fn spawn_rock(commands: &mut Commands, rng: &mut Rng, pos: Vec2, size: u8, level: u32) {
-    let speed = rng.between(40.0, 90.0) + 12.0 * level as f32 + (2 - size) as f32 * 30.0;
-    let dir = rng.between(0.0, std::f32::consts::TAU);
+fn spawn_rock(
+    commands: &mut Commands,
+    rng: &mut Rng,
+    pos: Vec2,
+    size: u8,
+    level: u32,
+    parent_vel: Option<Vec2>,
+) {
+    let vel = match parent_vel {
+        // Fragments inherit the parent's momentum, deflected and hotter.
+        Some(pv) => {
+            let angle = pv.y.atan2(pv.x) + rng.between(-1.1, 1.1);
+            let speed = pv.length() * rng.between(1.15, 1.5);
+            Vec2::new(angle.cos(), angle.sin()) * speed
+        }
+        None => {
+            let speed = rng.between(40.0, 90.0) + 12.0 * level as f32 + (2 - size) as f32 * 30.0;
+            let dir = rng.between(0.0, std::f32::consts::TAU);
+            Vec2::new(dir.cos(), dir.sin()) * speed
+        }
+    };
     commands.spawn((
-        Rock {
-            size,
-            vel: Vec2::new(dir.cos(), dir.sin()) * speed,
-            spin: rng.between(-1.6, 1.6),
-            shape: rock_shape(rng, rock_radius(size)),
-        },
+        Rock { size, vel, spin: rng.between(-1.6, 1.6), shape: rock_shape(rng, rock_radius(size)) },
         Transform::from_xyz(pos.x, pos.y, 3.0),
         GameTag,
     ));
@@ -128,7 +176,7 @@ fn spawn_wave(commands: &mut Commands, rng: &mut Rng, level: u32, avoid: Vec2) {
                 break;
             }
         }
-        spawn_rock(commands, rng, pos, 2, level);
+        spawn_rock(commands, rng, pos, 2, level, None);
     }
 }
 
@@ -143,6 +191,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         waiting_wave: false,
         hyper_cooldown: Timer::from_seconds(1.0, TimerMode::Once),
         next_extra_life: 10_000,
+        saucer_clock: Timer::from_seconds(16.0, TimerMode::Once),
     });
     commands.spawn((
         Ship { vel: Vec2::ZERO, angle: std::f32::consts::FRAC_PI_2, invuln: Timer::from_seconds(2.0, TimerMode::Once) },
@@ -176,6 +225,7 @@ fn control(
     }
 
     if keys.just_pressed(KeyCode::Space) && bullets.iter().count() < MAX_BULLETS {
+        sfx("fire");
         let dir = Vec2::new(ship.angle.cos(), ship.angle.sin());
         commands.spawn((
             Bullet {
@@ -189,6 +239,7 @@ fn control(
 
     // Hyperspace: instant relocation, one-in-eight chance the drive eats you.
     if keys.just_pressed(KeyCode::KeyH) && game.hyper_cooldown.finished() {
+        sfx("hyper");
         game.hyper_cooldown.reset();
         tf.translation.x = rng.between(-330.0, 330.0);
         tf.translation.y = rng.between(-290.0, 290.0);
@@ -251,6 +302,7 @@ fn physics(
 }
 
 fn explode_ship(commands: &mut Commands, rng: &mut Rng, pos: Vec2, game: &mut Game) {
+    sfx("death");
     game.lives -= 1;
     game.waiting_spawn = true;
     game.respawn.reset();
@@ -278,6 +330,8 @@ fn collide(
     ships: Query<(Entity, &Ship, &Transform)>,
     rocks: Query<(Entity, &Rock, &Transform)>,
     bullets: Query<(Entity, &Transform), With<Bullet>>,
+    saucers: Query<(Entity, &Saucer, &Transform)>,
+    enemy_bullets: Query<(Entity, &EnemyBullet, &Transform)>,
 ) {
     // Bullets vs rocks.
     let mut dead_rocks: Vec<Entity> = Vec::new();
@@ -292,6 +346,7 @@ fn collide(
             if btf.translation.truncate().distance(rp) < rr {
                 dead_rocks.push(re);
                 dead_bullets.push(be);
+                sfx("boom");
                 game.score += match rock.size {
                     2 => 20,
                     1 => 50,
@@ -299,9 +354,24 @@ fn collide(
                 };
                 if rock.size > 0 {
                     for _ in 0..2 {
-                        spawn_rock(&mut commands, &mut rng, rp, rock.size - 1, game.level);
+                        spawn_rock(&mut commands, &mut rng, rp, rock.size - 1, game.level, Some(rock.vel));
                     }
                 }
+            }
+        }
+    }
+    // Bullets vs the saucer.
+    for (se, saucer, stf) in &saucers {
+        let sp = stf.translation.truncate();
+        for (be, btf) in &bullets {
+            if dead_bullets.contains(&be) {
+                continue;
+            }
+            if btf.translation.truncate().distance(sp) < if saucer.small { 14.0 } else { 24.0 } {
+                dead_bullets.push(be);
+                commands.entity(se).despawn();
+                sfx("boom");
+                game.score += if saucer.small { 1000 } else { 200 };
             }
         }
     }
@@ -309,23 +379,37 @@ fn collide(
     if game.score >= game.next_extra_life {
         game.lives += 1;
         game.next_extra_life += 10_000;
+        sfx("extra");
     }
-    // Ship vs rocks.
+    // Ship vs rocks and hostile fire.
     if let Ok((se, ship, stf)) = ships.single() {
         if ship.invuln.finished() && !game.waiting_spawn {
             let sp = stf.translation.truncate();
+            let mut hit = false;
             for (re, rock, rtf) in &rocks {
                 if dead_rocks.contains(&re) {
                     continue;
                 }
                 if rtf.translation.truncate().distance(sp) < rock_radius(rock.size) + 10.0 {
-                    commands.entity(se).despawn();
-                    explode_ship(&mut commands, &mut rng, sp, &mut game);
-                    if game.lives <= 0 {
-                        final_score.0 = game.score;
-                        next.set(Phase::GameOver);
-                    }
+                    hit = true;
                     break;
+                }
+            }
+            if !hit {
+                for (ee, _, etf) in &enemy_bullets {
+                    if etf.translation.truncate().distance(sp) < 10.0 {
+                        commands.entity(ee).despawn();
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if hit {
+                commands.entity(se).despawn();
+                explode_ship(&mut commands, &mut rng, sp, &mut game);
+                if game.lives <= 0 {
+                    final_score.0 = game.score;
+                    next.set(Phase::GameOver);
                 }
             }
         }
@@ -371,6 +455,7 @@ fn waves(
         game.clear.tick(time.delta());
         if game.clear.finished() {
             game.waiting_wave = false;
+            game.score += 300 + 100 * game.level; // wave-clear bonus
             game.level += 1;
             let avoid = ships.single().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
             let level = game.level;
@@ -389,6 +474,8 @@ fn draw(
     rocks: Query<(&Rock, &Transform)>,
     bullets: Query<&Transform, With<Bullet>>,
     shards: Query<(&Shard, &Transform)>,
+    saucers: Query<(&Saucer, &Transform)>,
+    enemy_bullets: Query<&Transform, With<EnemyBullet>>,
     mut hud: Query<&mut Text2d, With<Hud>>,
 ) {
     // Ship: a classic three-line dart, blinking while invulnerable.
@@ -431,6 +518,19 @@ fn draw(
         let p = tf.translation.truncate();
         gizmos.line_2d(p - shard.dir * 5.0, p + shard.dir * 5.0, GREEN);
     }
+    for (saucer, tf) in &saucers {
+        let p = tf.translation.truncate();
+        gizmos.linestrip_2d(saucer_outline(p, saucer.small), MAGENTA);
+        let s = if saucer.small { 0.6 } else { 1.0 };
+        gizmos.line_2d(p + Vec2::new(-10.0, 8.0) * s, p + Vec2::new(-5.0, 14.0) * s, MAGENTA);
+        gizmos.line_2d(p + Vec2::new(10.0, 8.0) * s, p + Vec2::new(5.0, 14.0) * s, MAGENTA);
+        gizmos.line_2d(p + Vec2::new(-5.0, 14.0) * s, p + Vec2::new(5.0, 14.0) * s, MAGENTA);
+    }
+    for tf in &enemy_bullets {
+        let p = tf.translation.truncate();
+        gizmos.line_2d(p - Vec2::splat(2.0), p + Vec2::splat(2.0), MAGENTA);
+        gizmos.line_2d(p + Vec2::new(-2.0, 2.0), p + Vec2::new(2.0, -2.0), MAGENTA);
+    }
     // Lives as little ship glyphs under the score.
     for i in 0..game.lives.max(0) {
         let x = -262.0 + i as f32 * 22.0;
@@ -452,3 +552,153 @@ fn draw(
         }
     }
 }
+
+// ---- the saucer ----
+
+/// Spawns, steers, and fires the saucer. It exists to punish camping: sit
+/// still and the shots start landing.
+fn saucer_run(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut rng: ResMut<Rng>,
+    mut game: ResMut<Game>,
+    mut saucers: Query<(Entity, &mut Saucer, &mut Transform), Without<Ship>>,
+    ships: Query<&Transform, With<Ship>>,
+    mut enemy_bullets: Query<(Entity, &mut EnemyBullet, &mut Transform), (Without<Saucer>, Without<Ship>)>,
+) {
+    let dt = time.delta_secs();
+    // Spawn cadence: one saucer at a time, on a randomized timer.
+    if saucers.is_empty() {
+        game.saucer_clock.tick(time.delta());
+        if game.saucer_clock.finished() {
+            game.saucer_clock =
+                Timer::from_seconds(rng.between(14.0, 24.0), TimerMode::Once);
+            let small = game.score >= 10_000 || rng.chance(0.25);
+            let from_left = rng.chance(0.5);
+            let y = rng.between(-220.0, 220.0);
+            commands.spawn((
+                Saucer {
+                    vel: Vec2::new(if from_left { 90.0 } else { -90.0 }, 0.0),
+                    small,
+                    fire: Timer::from_seconds(1.15, TimerMode::Repeating),
+                    wobble: Timer::from_seconds(1.6, TimerMode::Repeating),
+                },
+                Transform::from_xyz(if from_left { -380.0 } else { 380.0 }, y, 3.5),
+                GameTag,
+            ));
+            sfx("saucer");
+        }
+    }
+    for (e, mut saucer, mut tf) in &mut saucers {
+        // Occasional vertical lurch so it isn't a shooting-gallery duck.
+        if saucer.wobble.tick(time.delta()).just_finished() {
+            saucer.vel.y = rng.between(-60.0, 60.0);
+        }
+        tf.translation += (saucer.vel * dt).extend(0.0);
+        // Leaves the far side rather than wrapping.
+        if tf.translation.x.abs() > 400.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        if tf.translation.y > 300.0 || tf.translation.y < -300.0 {
+            saucer.vel.y = -saucer.vel.y;
+        }
+        if saucer.fire.tick(time.delta()).just_finished() {
+            let origin = tf.translation.truncate();
+            let dir = if saucer.small {
+                // Aimed, with a little scatter that shrinks nothing: personal.
+                match ships.single() {
+                    Ok(stf) => {
+                        let to = (stf.translation.truncate() - origin).normalize_or_zero();
+                        let a = to.y.atan2(to.x) + rng.between(-0.18, 0.18);
+                        Vec2::new(a.cos(), a.sin())
+                    }
+                    Err(_) => {
+                        let a = rng.between(0.0, std::f32::consts::TAU);
+                        Vec2::new(a.cos(), a.sin())
+                    }
+                }
+            } else {
+                let a = rng.between(0.0, std::f32::consts::TAU);
+                Vec2::new(a.cos(), a.sin())
+            };
+            commands.spawn((
+                EnemyBullet {
+                    vel: dir * 300.0,
+                    ttl: Timer::from_seconds(1.6, TimerMode::Once),
+                },
+                Transform::from_translation(tf.translation + (dir * 20.0).extend(0.0)),
+                GameTag,
+            ));
+        }
+    }
+    for (e, mut b, mut tf) in &mut enemy_bullets {
+        tf.translation += (b.vel * dt).extend(0.0);
+        wrap(&mut tf.translation);
+        if b.ttl.tick(time.delta()).finished() {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn saucer_outline(p: Vec2, small: bool) -> [Vec2; 7] {
+    let s = if small { 0.6 } else { 1.0 };
+    [
+        p + Vec2::new(-24.0, 0.0) * s,
+        p + Vec2::new(-10.0, 8.0) * s,
+        p + Vec2::new(10.0, 8.0) * s,
+        p + Vec2::new(24.0, 0.0) * s,
+        p + Vec2::new(10.0, -8.0) * s,
+        p + Vec2::new(-10.0, -8.0) * s,
+        p + Vec2::new(-24.0, 0.0) * s,
+    ]
+}
+
+// ---- attract-mode set dressing ----
+
+fn attract_in(mut commands: Commands, mut rng: ResMut<Rng>) {
+    for _ in 0..5 {
+        let pos = Vec2::new(rng.between(-340.0, 340.0), rng.between(-300.0, -80.0));
+        let a = rng.between(0.0, std::f32::consts::TAU);
+        let radius = rng.between(18.0, 42.0);
+        commands.spawn((
+            AttractRock {
+                vel: Vec2::new(a.cos(), a.sin()) * rng.between(20.0, 55.0),
+                spin: rng.between(-0.8, 0.8),
+                shape: rock_shape(&mut rng, radius),
+            },
+            Transform::from_xyz(pos.x, pos.y, 1.0),
+        ));
+    }
+}
+
+fn attract_out(mut commands: Commands, rocks: Query<Entity, With<AttractRock>>) {
+    for e in &rocks {
+        commands.entity(e).despawn();
+    }
+}
+
+fn attract_drift(time: Res<Time>, mut rocks: Query<(&AttractRock, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (rock, mut tf) in &mut rocks {
+        tf.translation += (rock.vel * dt).extend(0.0);
+        tf.rotate_z(rock.spin * dt);
+        wrap(&mut tf.translation);
+    }
+}
+
+fn draw_attract(mut gizmos: Gizmos, rocks: Query<(&AttractRock, &Transform)>) {
+    for (rock, tf) in &rocks {
+        let p = tf.translation.truncate();
+        let (s, c) = tf.rotation.to_euler(EulerRot::ZYX).0.sin_cos();
+        let pts: Vec<Vec2> = rock
+            .shape
+            .iter()
+            .chain(std::iter::once(&rock.shape[0]))
+            .map(|v| Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c) + p)
+            .collect();
+        gizmos.linestrip_2d(pts, DIM_ROCK);
+    }
+}
+
+const DIM_ROCK: Color = Color::srgb(0.35, 0.35, 0.42);
