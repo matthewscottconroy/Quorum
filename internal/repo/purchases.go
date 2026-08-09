@@ -255,7 +255,7 @@ func (r *PurchasesRepo) Complete(ctx context.Context, requestID string) (*model.
 	if err := tx.QueryRow(ctx, `
 		SELECT pr.status, pr.fund_id::text, f.cash_account_id::text, pr.currency, pr.payee, pr.amount
 		FROM purchase_requests pr JOIN funds f ON f.id = pr.fund_id
-		WHERE pr.id = $1::uuid FOR UPDATE OF pr`, requestID).
+		WHERE pr.id = $1::uuid FOR UPDATE OF pr, f`, requestID).
 		Scan(&status, &fundID, &fundAcct, &currency, &payee, &amount); err != nil {
 		return nil, err
 	}

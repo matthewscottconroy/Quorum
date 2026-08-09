@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,11 @@ import (
 
 	"quorum/internal/model"
 )
+
+// ErrInvoiceNotPayable is returned when a payment is recorded against an
+// invoice whose status can't accept one (waived or already fully paid):
+// posting would drive the GL receivable wrong and break reconciliation.
+var ErrInvoiceNotPayable = errors.New("invoice is not in a payable state")
 
 // DuesRepo provides PostgreSQL data access for invoices.
 type DuesRepo struct {
@@ -97,8 +103,11 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		return nil, 0, err
 	}
 	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	// LEFT JOIN (not INNER) so contact invoices — which have no member_id — are
+	// still counted; an INNER join here undercounts the total when paging past
+	// the end without a member filter.
 	if len(invoices) == 0 && f.Offset > 0 {
-		countQuery := "SELECT count(*) FROM dues_invoices di JOIN members m ON m.id = di.member_id " + where
+		countQuery := "SELECT count(*) FROM dues_invoices di LEFT JOIN members m ON m.id = di.member_id " + where
 		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
 			return nil, 0, err
 		}
@@ -347,6 +356,22 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	}
 	if tag.RowsAffected() == 0 {
 		return true, nil
+	}
+
+	// A payment posting onto a waived invoice would credit a receivable that
+	// gl_post_waive already wrote to zero, driving GL A/R negative and breaking
+	// reconciliation permanently. Claim the event (so the provider stops
+	// retrying) but refuse to record: this is an exceptional case an operator
+	// must resolve (un-waive then re-apply, or refund). Committing keeps the
+	// claim; the caller logs ErrInvoiceNotPayable for follow-up.
+	if t.InvoiceID != nil {
+		var st string
+		if err := tx.QueryRow(ctx, `SELECT status FROM dues_invoices WHERE id = $1::uuid`, *t.InvoiceID).Scan(&st); err == nil && st == "waived" {
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return false, cerr
+			}
+			return false, ErrInvoiceNotPayable
+		}
 	}
 
 	if _, err := tx.Exec(ctx, `

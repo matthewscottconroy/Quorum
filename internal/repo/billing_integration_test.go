@@ -8,6 +8,7 @@ package repo_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -315,3 +316,46 @@ func TestIntegration_VendorBills_FundPayAndVoid(t *testing.T) {
 		t.Fatal("void of a void bill was accepted")
 	}
 }
+
+func TestIntegration_WaivedInvoicePaymentRefused(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	dues := repo.NewDuesRepo(pool)
+	gl := repo.NewGLRepo(pool)
+
+	member, invID := makeInvoice(t, pool, 10000, "USD", uniq("WV"))
+	_ = member
+	// Waive it: receivable is written to zero.
+	if err := dues.UpdateInvoiceStatus(ctx, invID, "waived", nil); err != nil {
+		t.Fatalf("waive: %v", err)
+	}
+
+	// A webhook payment landing on the waived invoice must be refused (claimed,
+	// not recorded) rather than corrupting the GL receivable.
+	already, err := dues.RecordWebhookPayment(ctx, uniq("evt"), &model.Transaction{
+		InvoiceID: &invID, AmountMinor: 10000, Currency: "USD", Provider: "stripe",
+		ProviderStatus: strptr("succeeded"), OccurredAt: time.Now(),
+	})
+	if !errors.Is(err, repo.ErrInvoiceNotPayable) {
+		t.Fatalf("payment on waived invoice: err=%v already=%v, want ErrInvoiceNotPayable", err, already)
+	}
+
+	// No transaction was recorded, and the GL still reconciles (A/R not driven
+	// negative).
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM transactions WHERE invoice_id = $1::uuid`, invID).Scan(&n); err != nil {
+		t.Fatalf("count tx: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("a transaction was recorded against a waived invoice (%d)", n)
+	}
+	rows, err := gl.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("GL stopped reconciling after waived-invoice payment attempt: %+v", rows)
+	}
+}
+
+func strptr(s string) *string { return &s }

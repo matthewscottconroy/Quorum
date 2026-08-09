@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 // WebhooksHandler processes inbound payment-provider webhook events.
@@ -187,6 +188,12 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 		PaymentMethodType:   &pmType,
 		OccurredAt:          time.Now(),
 	})
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		// Payment arrived for a waived invoice — acknowledged to the provider
+		// (no retry storm) but not posted; an officer must reconcile it.
+		log.Printf("stripe: payment for waived invoice %v needs manual reconciliation (provider ref %s)", invPtr, providerID)
+		return nil
+	}
 	return err
 }
 
@@ -289,6 +296,10 @@ func (h *WebhooksHandler) handlePayPalCapture(r *http.Request, eventID string, r
 		PaymentMethodType:   &pmType,
 		OccurredAt:          time.Now(),
 	})
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		log.Printf("paypal: payment for waived invoice %v needs manual reconciliation (provider ref %s)", invoiceID, providerID)
+		return nil
+	}
 	return err
 }
 

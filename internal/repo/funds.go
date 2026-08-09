@@ -247,6 +247,12 @@ func (r *FundsRepo) Transfer(ctx context.Context, fundID, direction string, amou
 	}
 	var srcAcct string
 	if direction == "in" {
+		// Serialize operating-cash draws (transfers into different funds lock
+		// different fund rows, so without this two inbound transfers could both
+		// pass the operating-balance check and overdraw it).
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('quorum.cash.operating'))`); err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `SELECT gl_rule('cash.operating')::text`).Scan(&srcAcct); err != nil {
 			return err
 		}

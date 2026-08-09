@@ -242,12 +242,27 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "transaction currency must match the invoice currency", "bad_request")
 		return
 	}
+	// A waived invoice's receivable was already written to zero; posting a
+	// payment against it would drive GL A/R negative and break reconciliation.
+	// Un-waive it first if the payment is genuine.
+	if inv.Status == "waived" {
+		writeError(w, 409, "invoice is waived: un-waive it before recording a payment", "conflict")
+		return
+	}
 	status := "succeeded"
 	providerStr := &status
 
+	// Contact (outside-customer) invoices have no member; GetInvoice coalesces
+	// their member_id to "". Pass nil so the transaction's member_id is NULL
+	// rather than failing the uuid cast.
+	var memberPtr *string
+	if inv.MemberID != "" {
+		memberPtr = &inv.MemberID
+	}
+
 	tx, err := h.repo.CreateTransaction(r.Context(), &model.Transaction{
 		InvoiceID:           &invoiceID,
-		MemberID:            &inv.MemberID,
+		MemberID:            memberPtr,
 		AmountMinor:         body.AmountMinor,
 		Currency:            currency,
 		Provider:            body.Provider,

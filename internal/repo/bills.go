@@ -145,8 +145,10 @@ func (r *BillsRepo) Pay(ctx context.Context, id, fundID, provider string) (*mode
 
 	var cashAcct string
 	if fundID != "" {
+		// Lock the fund row so a concurrent pay/complete/transfer on the same
+		// fund can't read the same pre-spend balance and both overdraw it.
 		if err := tx.QueryRow(ctx,
-			`SELECT cash_account_id::text FROM funds WHERE id = $1::uuid`, fundID).Scan(&cashAcct); err != nil {
+			`SELECT cash_account_id::text FROM funds WHERE id = $1::uuid FOR UPDATE`, fundID).Scan(&cashAcct); err != nil {
 			return nil, err
 		}
 		var bal int64
