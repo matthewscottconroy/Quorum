@@ -88,6 +88,7 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		       m.display_name,
 		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
 		       ai.story_points, ai.card_type, ai.parent_id::text, par.title,
+		       coalesce(rm.display_name, ru.email, ''),
 		       (SELECT coalesce(json_agg(json_build_object('member_id', cb.member_id::text, 'member_name', cm.display_name) ORDER BY cm.display_name), '[]'::json)
 		        FROM action_item_contributors cb JOIN members cm ON cm.id = cb.member_id
 		        WHERE cb.action_item_id = ai.id)
@@ -95,6 +96,8 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
 		LEFT JOIN action_items par ON par.id = ai.parent_id
+		LEFT JOIN users ru ON ru.id = ai.created_by
+		LEFT JOIN members rm ON rm.id = ru.member_id
 		%s
 		ORDER BY
 			CASE ai.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
@@ -119,7 +122,7 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 			&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&item.AssigneeName, &item.CommentCount,
 			&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
-			&item.Contributors,
+			&item.ReporterName, &item.Contributors,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -148,6 +151,7 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 		       m.display_name,
 		       (SELECT count(*) FROM action_item_comments c WHERE c.action_item_id = ai.id)::int,
 		       ai.story_points, ai.card_type, ai.parent_id::text, par.title,
+		       coalesce(rm.display_name, ru.email, ''),
 		       (SELECT coalesce(json_agg(json_build_object('member_id', cb.member_id::text, 'member_name', cm.display_name) ORDER BY cm.display_name), '[]'::json)
 		        FROM action_item_contributors cb JOIN members cm ON cm.id = cb.member_id
 		        WHERE cb.action_item_id = ai.id)
@@ -155,6 +159,8 @@ func (r *ActionItemsRepo) Get(ctx context.Context, id string) (*model.ActionItem
 		LEFT JOIN members m ON m.id = ai.assignee_id
 		LEFT JOIN sprints sp ON sp.id = ai.sprint_id
 		LEFT JOIN action_items par ON par.id = ai.parent_id
+		LEFT JOIN users ru ON ru.id = ai.created_by
+		LEFT JOIN members rm ON rm.id = ru.member_id
 		WHERE ai.id = $1::uuid`, id)
 	item, err := scanActionItem(row)
 	if err != nil {
@@ -168,24 +174,22 @@ func (r *ActionItemsRepo) Create(ctx context.Context, item *model.ActionItem, cr
 	if item.CardType == "" {
 		item.CardType = "task"
 	}
-	row := r.db.QueryRow(ctx, `
+	// Insert, then read back through Get so derived fields (sprint name,
+	// reporter name — resolved via joins RETURNING cannot express) are
+	// populated identically to every other read path.
+	var id string
+	if err := r.db.QueryRow(ctx, `
 		INSERT INTO action_items
 		    (title, description, assignee_id, meeting_id, plan_id, due_date, status, priority, sprint_id,
 		     story_points, card_type, parent_id, created_by)
 		VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10, $11, $12::uuid, $13::uuid)
-		RETURNING id::text, title, description, assignee_id::text,
-		          meeting_id::text, plan_id::text, due_date,
-		          status, priority, sprint_id::text, NULL::text, column_id::text,
-		          created_by::text, created_at, updated_at, NULL::text, 0,
-		          story_points, card_type, parent_id::text, NULL::text, '[]'::json`,
+		RETURNING id::text`,
 		item.Title, item.Description, item.AssigneeID, item.MeetingID, item.PlanID,
 		item.DueDate, item.Status, item.Priority, item.SprintID,
-		item.StoryPoints, item.CardType, item.ParentID, createdBy)
-	created, err := scanActionItem(row)
-	if err != nil {
+		item.StoryPoints, item.CardType, item.ParentID, createdBy).Scan(&id); err != nil {
 		return nil, err
 	}
-	return &created, nil
+	return r.Get(ctx, id)
 }
 
 // Update applies the given field changes to the action item and returns the updated row.
@@ -260,7 +264,7 @@ func scanActionItem(row scannable) (model.ActionItem, error) {
 		&item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 		&item.AssigneeName, &item.CommentCount,
 		&item.StoryPoints, &item.CardType, &item.ParentID, &item.ParentTitle,
-		&item.Contributors,
+		&item.ReporterName, &item.Contributors,
 	)
 	return item, err
 }

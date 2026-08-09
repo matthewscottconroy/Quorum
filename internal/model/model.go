@@ -134,27 +134,32 @@ type MeetingDecision struct {
 // Status values: "open", "in_progress", "done", "cancelled".
 // Priority values: "high", "normal", "low".
 type ActionItem struct {
-	ID           string            `json:"id"`
-	Title        string            `json:"title"`
-	Description  *string           `json:"description,omitempty"`
-	AssigneeID   *string           `json:"assignee_id,omitempty"`
-	MeetingID    *string           `json:"meeting_id,omitempty"`
-	PlanID       *string           `json:"plan_id,omitempty"`
-	DueDate      *time.Time        `json:"due_date,omitempty"`
-	Status       string            `json:"status"`
-	Priority     string            `json:"priority"`
-	SprintID     *string           `json:"sprint_id,omitempty"`
-	SprintName   *string           `json:"sprint_name,omitempty"`
-	ColumnID     *string           `json:"column_id,omitempty"`
-	CommentCount int               `json:"comment_count"`
-	StoryPoints  *int              `json:"story_points,omitempty"`
-	CardType     string            `json:"card_type"`
-	ParentID     *string           `json:"parent_id,omitempty"`
-	ParentTitle  *string           `json:"parent_title,omitempty"`
-	CreatedBy    string            `json:"created_by"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	AssigneeName *string           `json:"assignee_name,omitempty"`
+	ID           string     `json:"id"`
+	Title        string     `json:"title"`
+	Description  *string    `json:"description,omitempty"`
+	AssigneeID   *string    `json:"assignee_id,omitempty"`
+	MeetingID    *string    `json:"meeting_id,omitempty"`
+	PlanID       *string    `json:"plan_id,omitempty"`
+	DueDate      *time.Time `json:"due_date,omitempty"`
+	Status       string     `json:"status"`
+	Priority     string     `json:"priority"`
+	SprintID     *string    `json:"sprint_id,omitempty"`
+	SprintName   *string    `json:"sprint_name,omitempty"`
+	ColumnID     *string    `json:"column_id,omitempty"`
+	CommentCount int        `json:"comment_count"`
+	StoryPoints  *int       `json:"story_points,omitempty"`
+	CardType     string     `json:"card_type"`
+	ParentID     *string    `json:"parent_id,omitempty"`
+	ParentTitle  *string    `json:"parent_title,omitempty"`
+	CreatedBy    string     `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	AssigneeName *string    `json:"assignee_name,omitempty"`
+	// ReporterName is who created the card (their member name, or account
+	// email if the login isn't linked to a member). Derived from created_by,
+	// which is stamped at creation and has no update path — automatic and
+	// immutable by construction.
+	ReporterName string            `json:"reporter_name"`
 	Contributors []CardContributor `json:"contributors"`
 }
 

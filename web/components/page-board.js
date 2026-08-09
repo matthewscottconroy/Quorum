@@ -400,6 +400,8 @@ class PageBoard extends HTMLElement {
       title: 'Work item',
       body: `
         <div class="modal-body">
+          ${item.reporter_name ? `<div style="font-size:.78rem;color:var(--color-text-muted);margin-bottom:.6rem" title="Set automatically when the card was created; cannot be changed">
+            ✍ Reported by <strong>${esc(item.reporter_name)}</strong> on ${esc(new Date(item.created_at).toLocaleDateString())}</div>` : ''}
           <div class="form-group"><label for="c-title">Title *</label><input id="c-title" value="${esc(item.title)}"></div>
           <div class="form-row">
             <div class="form-group"><label for="c-type">Type</label>
@@ -495,6 +497,7 @@ class PageBoard extends HTMLElement {
           <div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:.85rem;color:var(--color-text-muted)">
             <span>${esc(item.card_type.replace('_', '-'))}${item.story_points != null ? ` · ${item.story_points} pts` : ''}</span>
             <span>👤 ${esc(item.assignee_name ?? 'unassigned')}</span>
+            ${item.reporter_name ? `<span title="Who created this card">✍ ${esc(item.reporter_name)}</span>` : ''}
             ${(item.contributors ?? []).length ? `<span>👥 ${esc(item.contributors.map(c => c.member_name).join(', '))}</span>` : ''}
             <span>Status: ${esc(item.status.replace('_', ' '))}</span>
             ${item.due_date ? `<span>📅 ${esc(new Date(item.due_date).toLocaleDateString())}</span>` : ''}

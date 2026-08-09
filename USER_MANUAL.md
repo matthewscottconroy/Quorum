@@ -734,9 +734,11 @@ The **Board** page tracks work two ways over the same cards:
 - **Sprint board** — group cards into **sprints** (status `planned`,
   `active`, `completed`), each with a goal and dates, for time-boxed planning.
 
-Create a card with a title, optional description, an **assignee** (a member),
-optional **additional contributors** (any number of members working on the
-card alongside the assignee — the card face shows 👥 +N, hover for names),
+Every card also records its **reporter** — whoever created it — shown as
+"✍ Reported by …" in the card. It is set automatically at creation and cannot
+be changed. Create a card with a title, optional description, an **assignee**
+(a member), optional **additional contributors** (any number of members working
+on the card alongside the assignee — the card face shows 👥 +N, hover for names),
 and a sprint (or none — it sits in the backlog). Officers create and move
 cards; members can view the boards and take part in card conversations.
 

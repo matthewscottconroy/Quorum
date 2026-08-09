@@ -645,3 +645,69 @@ func TestIntegration_CardContributors(t *testing.T) {
 		t.Fatalf("contributor rows survived card deletion: %d", n)
 	}
 }
+
+func TestIntegration_CardReporter(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	ai := repo.NewActionItemsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+
+	// A creator whose login IS linked to a member: reporter shows the name.
+	member := newMember(t, mr, uniq("tier"), "active")
+	named, err := ar.CreateUser(ctx, uniq("rep")+"@example.com", "x", "officer", &member)
+	if err != nil {
+		t.Fatalf("named user: %v", err)
+	}
+	card, err := ai.Create(ctx, &model.ActionItem{Title: uniq("Card"), Status: "open", Priority: "normal"}, named.ID)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	m, err := mr.Get(ctx, member)
+	if err != nil {
+		t.Fatalf("get member: %v", err)
+	}
+	if card.ReporterName != m.DisplayName {
+		t.Fatalf("reporter = %q, want member name %q", card.ReporterName, m.DisplayName)
+	}
+
+	// Present identically on the list read path.
+	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 200})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var seen bool
+	for _, it := range listed {
+		if it.ID == card.ID {
+			seen = true
+			if it.ReporterName != m.DisplayName {
+				t.Fatalf("listed reporter = %q, want %q", it.ReporterName, m.DisplayName)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("card missing from list")
+	}
+
+	// Reporter is immutable: Update never touches created_by even if asked.
+	if _, err := ai.Update(ctx, card.ID, map[string]any{"created_by": member, "title": "renamed"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	after, err := ai.Get(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if after.CreatedBy != named.ID || after.ReporterName != m.DisplayName {
+		t.Fatalf("reporter changed after update: created_by=%s name=%q", after.CreatedBy, after.ReporterName)
+	}
+
+	// A creator whose login is NOT member-linked falls back to the account email.
+	plainUID := newUser(t, ar) // officer, memberID nil
+	card2, err := ai.Create(ctx, &model.ActionItem{Title: uniq("Card"), Status: "open", Priority: "normal"}, plainUID)
+	if err != nil {
+		t.Fatalf("create2: %v", err)
+	}
+	if !strings.Contains(card2.ReporterName, "@example.com") {
+		t.Fatalf("unlinked reporter = %q, want an email fallback", card2.ReporterName)
+	}
+}
