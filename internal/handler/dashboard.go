@@ -16,16 +16,25 @@ type openBillsCounter interface {
 }
 
 // DashboardHandler serves the summary endpoint used by the app's home screen.
+// planCounter feeds the dashboard's stalled-initiative signal.
+type planCounter interface {
+	PlanCounts(ctx context.Context) (active, overdue int, err error)
+}
+
 type DashboardHandler struct {
 	dues            duesRepo
 	members         membersRepo
 	meetings        meetingsRepo
 	actionItems     actionItemsRepo
 	bills           openBillsCounter
+	plans           planCounter
 	settings        orgSettingsRepo
 	schedules       scheduleLister
 	emailConfigured bool
 }
+
+// SetPlans wires the plan counter (optional; zeros when absent).
+func (h *DashboardHandler) SetPlans(p planCounter) { h.plans = p }
 
 // NewDashboardHandler constructs a DashboardHandler.
 func NewDashboardHandler(d duesRepo, m membersRepo, mt meetingsRepo, ai actionItemsRepo) *DashboardHandler {
@@ -134,6 +143,16 @@ func (h *DashboardHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	activePlans, overduePlans := 0, 0
+	if h.plans != nil {
+		activePlans, overduePlans, err = h.plans.PlanCounts(ctx)
+		if err != nil {
+			log.Printf("dashboard: plan counts: %v", err)
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
+		}
+	}
+
 	if meetings == nil {
 		meetings = []model.Meeting{}
 	}
@@ -146,6 +165,8 @@ func (h *DashboardHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		PendingDuesCount:  pending,
 		ActiveMemberCount: memberCount,
 		OpenBillsCount:    openBills,
+		ActivePlanCount:   activePlans,
+		OverduePlanCount:  overduePlans,
 		UpcomingMeetings:  meetings,
 		OpenActionItems:   openItems,
 	})

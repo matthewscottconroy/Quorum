@@ -148,6 +148,7 @@ func main() {
 	// Handlers
 	authH := handler.NewAuthHandler(authRepo, cfg)
 	dashH := handler.NewDashboardHandler(duesRepo, membersRepo, meetingsRepo, actionItemsRepo)
+	dashH.SetPlans(plansRepo)
 	activityH := handler.NewActivityHandler(repo.NewActivityRepo(pool))
 	membersH := handler.NewMembersHandler(membersRepo, actionItemsRepo, duesRepo)
 	memberImportH := handler.NewMemberImportHandler(membersRepo)
@@ -319,6 +320,7 @@ func main() {
 	governanceH.SetMailer(emailSvc) // async ballot links
 	meetingsH.SetNotifier(notifier)
 	plansH.SetNotifier(notifier)
+	plansH.SetWork(actionItemsRepo)
 	contactsH.SetNotifier(notifier)
 	resourcesH.SetNotifier(notifier)
 	actionItemsH.SetNotifier(notifier)
@@ -561,10 +563,11 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/budgets", budgetH.List)
 			r.With(mw.RequireRole("officer")).Post("/budgets", budgetH.Create)
 			r.With(mw.RequireRole("officer")).Get("/budgets/compare", budgetH.Compare)
+			r.With(mw.RequireRole("officer")).Get("/budgets/remaining", budgetH.Remaining)
 			r.With(mw.RequireRole("officer")).Get("/budgets/{id}", budgetH.Get)
 			r.With(mw.RequireRole("officer")).Get("/budgets/{id}/vs-actual", budgetH.VsActual)
 			r.With(mw.RequireRole("officer")).Patch("/budgets/{id}", budgetH.Update)
-			r.With(mw.RequireRole("officer")).Delete("/budgets/{id}", budgetH.Delete)
+			r.With(mw.RequireRole("admin")).Delete("/budgets/{id}", budgetH.Delete)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/clone", budgetH.Clone)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/seed-dues", budgetH.SeedDues)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/lines", budgetH.AddLine)

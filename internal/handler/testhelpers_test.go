@@ -8,6 +8,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"quorum/internal/model"
 	"quorum/internal/repo"
 )
@@ -673,13 +675,16 @@ type mockBudgetRepo struct {
 	CompareScenariosFn func(ctx context.Context, ids []string) ([]model.BudgetScenario, error)
 	GetScenarioFn      func(ctx context.Context, id string) (*model.BudgetScenario, error)
 	CreateScenarioFn   func(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error)
-	UpdateScenarioFn   func(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error)
+	UpdateScenarioFn   func(ctx context.Context, id string, name, description, periodLabel, status, currency, startsOn, endsOn *string) (*model.BudgetScenario, error)
 	DeleteScenarioFn   func(ctx context.Context, id string) error
 	CloneScenarioFn    func(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error)
-	SeedDuesIncomeFn   func(ctx context.Context, scenarioID string) (int, error)
+	SeedDuesIncomeFn   func(ctx context.Context, scenarioID string) (int, []model.BudgetSeedSkip, error)
 	AddLineFn          func(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error)
-	UpdateLineFn       func(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error)
+	UpdateLineFn       func(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int, accountID *string, clearAccount bool) (*model.BudgetLine, error)
 	DeleteLineFn       func(ctx context.Context, id string) error
+	ScenarioGuardFn    func(ctx context.Context, id string) (string, string, bool, error)
+	AccountKindFn      func(ctx context.Context, accountID string) (string, error)
+	AccountBudgetFn    func(ctx context.Context, accountID string) (*model.BudgetScenario, int64, error)
 }
 
 func (m *mockBudgetRepo) ListScenarios(ctx context.Context) ([]model.BudgetScenario, error) {
@@ -694,8 +699,8 @@ func (m *mockBudgetRepo) GetScenario(ctx context.Context, id string) (*model.Bud
 func (m *mockBudgetRepo) CreateScenario(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error) {
 	return m.CreateScenarioFn(ctx, s, createdBy)
 }
-func (m *mockBudgetRepo) UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error) {
-	return m.UpdateScenarioFn(ctx, id, name, description, periodLabel, status, currency)
+func (m *mockBudgetRepo) UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency, startsOn, endsOn *string) (*model.BudgetScenario, error) {
+	return m.UpdateScenarioFn(ctx, id, name, description, periodLabel, status, currency, startsOn, endsOn)
 }
 func (m *mockBudgetRepo) DeleteScenario(ctx context.Context, id string) error {
 	return m.DeleteScenarioFn(ctx, id)
@@ -703,14 +708,35 @@ func (m *mockBudgetRepo) DeleteScenario(ctx context.Context, id string) error {
 func (m *mockBudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error) {
 	return m.CloneScenarioFn(ctx, id, newName, createdBy)
 }
-func (m *mockBudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, error) {
+func (m *mockBudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, []model.BudgetSeedSkip, error) {
 	return m.SeedDuesIncomeFn(ctx, scenarioID)
 }
 func (m *mockBudgetRepo) AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error) {
 	return m.AddLineFn(ctx, l)
 }
-func (m *mockBudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error) {
-	return m.UpdateLineFn(ctx, id, kind, category, label, quantity, unitAmountMinor, note, sortOrder)
+func (m *mockBudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int, accountID *string, clearAccount bool) (*model.BudgetLine, error) {
+	return m.UpdateLineFn(ctx, id, kind, category, label, quantity, unitAmountMinor, note, sortOrder, accountID, clearAccount)
+}
+func (m *mockBudgetRepo) LineScenario(ctx context.Context, lineID string) (string, error) {
+	return "", pgx.ErrNoRows // tests default: guard passes through
+}
+func (m *mockBudgetRepo) ScenarioGuard(ctx context.Context, id string) (string, string, bool, error) {
+	if m.ScenarioGuardFn != nil {
+		return m.ScenarioGuardFn(ctx, id)
+	}
+	return "draft", "USD", false, nil
+}
+func (m *mockBudgetRepo) AccountKind(ctx context.Context, accountID string) (string, error) {
+	if m.AccountKindFn != nil {
+		return m.AccountKindFn(ctx, accountID)
+	}
+	return "expense", nil
+}
+func (m *mockBudgetRepo) AccountBudget(ctx context.Context, accountID string) (*model.BudgetScenario, int64, error) {
+	if m.AccountBudgetFn != nil {
+		return m.AccountBudgetFn(ctx, accountID)
+	}
+	return nil, 0, pgx.ErrNoRows
 }
 func (m *mockBudgetRepo) DeleteLine(ctx context.Context, id string) error {
 	return m.DeleteLineFn(ctx, id)

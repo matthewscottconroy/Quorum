@@ -174,13 +174,17 @@ type budgetRepo interface {
 	CompareScenarios(ctx context.Context, ids []string) ([]model.BudgetScenario, error)
 	GetScenario(ctx context.Context, id string) (*model.BudgetScenario, error)
 	CreateScenario(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error)
-	UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error)
+	UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency, startsOn, endsOn *string) (*model.BudgetScenario, error)
 	DeleteScenario(ctx context.Context, id string) error
 	CloneScenario(ctx context.Context, id, newName, createdBy string) (*model.BudgetScenario, error)
-	SeedDuesIncome(ctx context.Context, scenarioID string) (int, error)
+	SeedDuesIncome(ctx context.Context, scenarioID string) (int, []model.BudgetSeedSkip, error)
 	AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error)
-	UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error)
+	UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int, accountID *string, clearAccount bool) (*model.BudgetLine, error)
 	DeleteLine(ctx context.Context, id string) error
+	LineScenario(ctx context.Context, lineID string) (string, error)
+	ScenarioGuard(ctx context.Context, id string) (status, currency string, hasLines bool, err error)
+	AccountKind(ctx context.Context, accountID string) (string, error)
+	AccountBudget(ctx context.Context, accountID string) (*model.BudgetScenario, int64, error)
 }
 
 // governanceRepo is satisfied by *repo.GovernanceRepo.

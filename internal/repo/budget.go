@@ -27,7 +27,7 @@ func NewBudgetRepo(db *pgxpool.Pool, fx fxConverterSource) *BudgetRepo {
 // query (LEFT JOIN so scenarios with no lines still appear with zero totals).
 const scenarioSelectWithTotals = `
 	SELECT s.id::text, s.name, s.description, s.period_label, s.status, s.currency,
-	       s.created_by::text, s.created_at, s.updated_at,
+	       s.starts_on, s.ends_on, s.created_by::text, s.created_at, s.updated_at,
 	       coalesce(sum(l.quantity * l.unit_amount_minor) FILTER (WHERE l.kind = 'income'), 0)  AS income,
 	       coalesce(sum(l.quantity * l.unit_amount_minor) FILTER (WHERE l.kind = 'expense'), 0) AS expense
 	FROM budget_scenarios s
@@ -37,7 +37,7 @@ func scanScenarioWithTotals(row scannable) (model.BudgetScenario, error) {
 	var s model.BudgetScenario
 	var income, expense int64
 	err := row.Scan(&s.ID, &s.Name, &s.Description, &s.PeriodLabel, &s.Status, &s.Currency,
-		&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt, &income, &expense)
+		&s.StartsOn, &s.EndsOn, &s.CreatedBy, &s.CreatedAt, &s.UpdatedAt, &income, &expense)
 	if err != nil {
 		return s, err
 	}
@@ -90,10 +90,10 @@ func (r *BudgetRepo) GetScenario(ctx context.Context, id string) (*model.BudgetS
 	var s model.BudgetScenario
 	err := r.db.QueryRow(ctx, `
 		SELECT id::text, name, description, period_label, status, currency,
-		       created_by::text, created_at, updated_at
+		       starts_on, ends_on, created_by::text, created_at, updated_at
 		FROM budget_scenarios WHERE id = $1::uuid`, id).
 		Scan(&s.ID, &s.Name, &s.Description, &s.PeriodLabel, &s.Status, &s.Currency,
-			&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt)
+			&s.StartsOn, &s.EndsOn, &s.CreatedBy, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -116,9 +116,13 @@ func (r *BudgetRepo) GetScenario(ctx context.Context, id string) (*model.BudgetS
 
 func (r *BudgetRepo) listLines(ctx context.Context, scenarioID string) ([]model.BudgetLine, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, scenario_id::text, kind, category, label, quantity, unit_amount_minor, note, sort_order, created_at
-		FROM budget_lines WHERE scenario_id = $1::uuid
-		ORDER BY kind DESC, sort_order, created_at`, scenarioID)
+		SELECT l.id::text, l.scenario_id::text, l.kind, l.category, l.label,
+		       l.quantity, l.unit_amount_minor, l.note, l.sort_order, l.created_at,
+		       l.account_id::text, a.code, a.name
+		FROM budget_lines l
+		LEFT JOIN accounts a ON a.id = l.account_id
+		WHERE l.scenario_id = $1::uuid
+		ORDER BY l.kind DESC, l.sort_order, l.created_at`, scenarioID)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +131,8 @@ func (r *BudgetRepo) listLines(ctx context.Context, scenarioID string) ([]model.
 	for rows.Next() {
 		var l model.BudgetLine
 		if err := rows.Scan(&l.ID, &l.ScenarioID, &l.Kind, &l.Category, &l.Label,
-			&l.Quantity, &l.UnitAmountMinor, &l.Note, &l.SortOrder, &l.CreatedAt); err != nil {
+			&l.Quantity, &l.UnitAmountMinor, &l.Note, &l.SortOrder, &l.CreatedAt,
+			&l.AccountID, &l.AccountCode, &l.AccountName); err != nil {
 			return nil, err
 		}
 		l.AmountMinor = l.Quantity * l.UnitAmountMinor
@@ -140,9 +145,9 @@ func (r *BudgetRepo) listLines(ctx context.Context, scenarioID string) ([]model.
 func (r *BudgetRepo) CreateScenario(ctx context.Context, s *model.BudgetScenario, createdBy string) (*model.BudgetScenario, error) {
 	var id string
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO budget_scenarios (name, description, period_label, status, currency, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6::uuid) RETURNING id::text`,
-		s.Name, s.Description, s.PeriodLabel, s.Status, s.Currency, createdBy).Scan(&id)
+		INSERT INTO budget_scenarios (name, description, period_label, status, currency, starts_on, ends_on, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid) RETURNING id::text`,
+		s.Name, s.Description, s.PeriodLabel, s.Status, s.Currency, s.StartsOn, s.EndsOn, createdBy).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +155,7 @@ func (r *BudgetRepo) CreateScenario(ctx context.Context, s *model.BudgetScenario
 }
 
 // UpdateScenario edits scenario metadata.
-func (r *BudgetRepo) UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency *string) (*model.BudgetScenario, error) {
+func (r *BudgetRepo) UpdateScenario(ctx context.Context, id string, name, description, periodLabel, status, currency, startsOn, endsOn *string) (*model.BudgetScenario, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE budget_scenarios SET
 			name         = coalesce($1, name),
@@ -158,8 +163,10 @@ func (r *BudgetRepo) UpdateScenario(ctx context.Context, id string, name, descri
 			period_label = coalesce($3, period_label),
 			status       = coalesce($4, status),
 			currency     = coalesce($5, currency),
+			starts_on    = coalesce($6::date, starts_on),
+			ends_on      = coalesce($7::date, ends_on),
 			updated_at   = now()
-		WHERE id = $6::uuid`, name, description, periodLabel, status, currency, id)
+		WHERE id = $8::uuid`, name, description, periodLabel, status, currency, startsOn, endsOn, id)
 	if err != nil {
 		return nil, err
 	}
@@ -192,16 +199,16 @@ func (r *BudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy s
 
 	var newID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO budget_scenarios (name, description, period_label, status, currency, created_by)
-		SELECT $2, description, period_label, 'draft', currency, $3::uuid
+		INSERT INTO budget_scenarios (name, description, period_label, status, currency, starts_on, ends_on, created_by)
+		SELECT $2, description, period_label, 'draft', currency, starts_on, ends_on, $3::uuid
 		FROM budget_scenarios WHERE id = $1::uuid
 		RETURNING id::text`, id, newName, createdBy).Scan(&newID)
 	if err != nil {
 		return nil, err // pgx.ErrNoRows if the source is missing
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, note, sort_order)
-		SELECT $1::uuid, kind, category, label, quantity, unit_amount_minor, note, sort_order
+		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, note, sort_order, account_id)
+		SELECT $1::uuid, kind, category, label, quantity, unit_amount_minor, note, sort_order, account_id
 		FROM budget_lines WHERE scenario_id = $2::uuid`, newID, id); err != nil {
 		return nil, err
 	}
@@ -219,15 +226,41 @@ func (r *BudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy s
 // the current FX rates; a schedule whose currency has no rate is skipped (rather
 // than silently summed at par). Returns the number of lines seeded, or
 // pgx.ErrNoRows if the scenario does not exist.
-func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, error) {
+func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int, []model.BudgetSeedSkip, error) {
 	var currency string
 	if err := r.db.QueryRow(ctx, `SELECT currency FROM budget_scenarios WHERE id = $1::uuid`, scenarioID).Scan(&currency); err != nil {
-		return 0, err // pgx.ErrNoRows when the scenario is missing
+		return 0, nil, err // pgx.ErrNoRows when the scenario is missing
 	}
 	conv, err := r.fx.ConverterFor(ctx, currency)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
+	var skips []model.BudgetSeedSkip
+	// Tiers with active members but NO active schedule contribute nothing —
+	// say so instead of letting the projection silently under-count.
+	norows, err := r.db.Query(ctx, `
+		SELECT m.tier, count(*)::int
+		FROM members m
+		WHERE m.status = 'active'
+		  AND NOT EXISTS (SELECT 1 FROM dues_schedules s WHERE s.tier = m.tier AND s.active)
+		GROUP BY m.tier ORDER BY m.tier`)
+	if err != nil {
+		return 0, nil, err
+	}
+	for norows.Next() {
+		var sk model.BudgetSeedSkip
+		if err := norows.Scan(&sk.Tier, &sk.Members); err != nil {
+			norows.Close()
+			return 0, nil, err
+		}
+		sk.Reason = "no_active_schedule"
+		skips = append(skips, sk)
+	}
+	if err := norows.Err(); err != nil {
+		norows.Close()
+		return 0, nil, err
+	}
+	norows.Close()
 
 	// Gather each tier's active-member count and its active schedule (amount,
 	// currency, cadence). Convert the annualized per-member amount into the
@@ -240,7 +273,7 @@ func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int
 		GROUP BY m.tier, s.amount_minor, s.currency, s.cadence
 		ORDER BY m.tier`)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	type seedLine struct {
 		tier      string
@@ -253,41 +286,43 @@ func (r *BudgetRepo) SeedDuesIncome(ctx context.Context, scenarioID string) (int
 		var count, amountMinor int64
 		if err := rows.Scan(&tier, &count, &amountMinor, &cur, &cadence); err != nil {
 			rows.Close()
-			return 0, err
+			return 0, nil, err
 		}
 		annualized := amountMinor * cadenceMultiplier(cadence)
 		unit, ok := conv.Convert(annualized, cur)
 		if !ok {
-			continue // no rate into the scenario currency — skip rather than mis-sum
+			// No rate into the scenario currency: report, never mis-sum at par.
+			skips = append(skips, model.BudgetSeedSkip{Tier: tier, Members: int(count), Reason: "no_fx_rate"})
+			continue
 		}
 		lines = append(lines, seedLine{tier: tier, count: count, unitMinor: unit})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, err
+		return 0, nil, err
 	}
 	rows.Close()
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	if _, err := tx.Exec(ctx, `DELETE FROM budget_lines WHERE scenario_id = $1::uuid AND category = 'Dues'`, scenarioID); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	for _, l := range lines {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, sort_order)
 			VALUES ($1::uuid, 'income', 'Dues', $2, $3, $4, 0)`,
 			scenarioID, "Dues — "+l.tier, l.count, l.unitMinor); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return len(lines), nil
+	return len(lines), skips, nil
 }
 
 // cadenceMultiplier annualizes a per-period dues amount.
@@ -315,9 +350,9 @@ func (r *BudgetRepo) LineScenario(ctx context.Context, lineID string) (string, e
 func (r *BudgetRepo) AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error) {
 	var id string
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, note, sort_order)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8) RETURNING id::text`,
-		l.ScenarioID, l.Kind, l.Category, l.Label, l.Quantity, l.UnitAmountMinor, l.Note, l.SortOrder).Scan(&id)
+		INSERT INTO budget_lines (scenario_id, kind, category, label, quantity, unit_amount_minor, note, sort_order, account_id)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid) RETURNING id::text`,
+		l.ScenarioID, l.Kind, l.Category, l.Label, l.Quantity, l.UnitAmountMinor, l.Note, l.SortOrder, l.AccountID).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +360,7 @@ func (r *BudgetRepo) AddLine(ctx context.Context, l *model.BudgetLine) (*model.B
 }
 
 // UpdateLine edits a budget line and returns the updated row.
-func (r *BudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int) (*model.BudgetLine, error) {
+func (r *BudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int, accountID *string, clearAccount bool) (*model.BudgetLine, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE budget_lines SET
 			kind              = coalesce($1, kind),
@@ -334,8 +369,9 @@ func (r *BudgetRepo) UpdateLine(ctx context.Context, id string, kind, category, 
 			quantity          = coalesce($4, quantity),
 			unit_amount_minor = coalesce($5, unit_amount_minor),
 			note              = coalesce($6, note),
-			sort_order        = coalesce($7, sort_order)
-		WHERE id = $8::uuid`, kind, category, label, quantity, unitAmountMinor, note, sortOrder, id)
+			sort_order        = coalesce($7, sort_order),
+			account_id        = CASE WHEN $9 THEN NULL ELSE coalesce($8::uuid, account_id) END
+		WHERE id = $10::uuid`, kind, category, label, quantity, unitAmountMinor, note, sortOrder, accountID, clearAccount, id)
 	if err != nil {
 		return nil, err
 	}
@@ -360,12 +396,59 @@ func (r *BudgetRepo) DeleteLine(ctx context.Context, id string) error {
 func (r *BudgetRepo) getLine(ctx context.Context, id string) (*model.BudgetLine, error) {
 	var l model.BudgetLine
 	err := r.db.QueryRow(ctx, `
-		SELECT id::text, scenario_id::text, kind, category, label, quantity, unit_amount_minor, note, sort_order, created_at
-		FROM budget_lines WHERE id = $1::uuid`, id).
-		Scan(&l.ID, &l.ScenarioID, &l.Kind, &l.Category, &l.Label, &l.Quantity, &l.UnitAmountMinor, &l.Note, &l.SortOrder, &l.CreatedAt)
+		SELECT l.id::text, l.scenario_id::text, l.kind, l.category, l.label,
+		       l.quantity, l.unit_amount_minor, l.note, l.sort_order, l.created_at,
+		       l.account_id::text, a.code, a.name
+		FROM budget_lines l
+		LEFT JOIN accounts a ON a.id = l.account_id
+		WHERE l.id = $1::uuid`, id).
+		Scan(&l.ID, &l.ScenarioID, &l.Kind, &l.Category, &l.Label, &l.Quantity, &l.UnitAmountMinor, &l.Note, &l.SortOrder, &l.CreatedAt,
+			&l.AccountID, &l.AccountCode, &l.AccountName)
 	if err != nil {
 		return nil, err
 	}
 	l.AmountMinor = l.Quantity * l.UnitAmountMinor
 	return &l, nil
+}
+
+// ScenarioGuard returns the bits mutation guards need: current status,
+// currency, and whether any lines exist (currency freezes once they do).
+func (r *BudgetRepo) ScenarioGuard(ctx context.Context, id string) (status, currency string, hasLines bool, err error) {
+	err = r.db.QueryRow(ctx, `
+		SELECT s.status, s.currency, EXISTS (SELECT 1 FROM budget_lines l WHERE l.scenario_id = s.id)
+		FROM budget_scenarios s WHERE s.id = $1::uuid`, id).Scan(&status, &currency, &hasLines)
+	return
+}
+
+// AccountKind returns a GL account's type ("income", "expense", ...), for
+// validating that a budget line links to an account of its own kind.
+func (r *BudgetRepo) AccountKind(ctx context.Context, accountID string) (string, error) {
+	var kind string
+	err := r.db.QueryRow(ctx, `SELECT type FROM accounts WHERE id = $1::uuid`, accountID).Scan(&kind)
+	return kind, err
+}
+
+// AccountBudget finds the most recently updated ACTIVE scenario containing
+// lines linked to the given account, and that account's budgeted total in it.
+// Feeds the read-only "budget remaining" hint at spend-approval time.
+// Returns pgx.ErrNoRows when no active scenario budgets this account.
+func (r *BudgetRepo) AccountBudget(ctx context.Context, accountID string) (*model.BudgetScenario, int64, error) {
+	var scenarioID string
+	var budget int64
+	err := r.db.QueryRow(ctx, `
+		SELECT s.id::text, sum(l.quantity * l.unit_amount_minor)
+		FROM budget_scenarios s
+		JOIN budget_lines l ON l.scenario_id = s.id AND l.account_id = $1::uuid
+		WHERE s.status = 'active'
+		GROUP BY s.id, s.updated_at
+		ORDER BY s.updated_at DESC
+		LIMIT 1`, accountID).Scan(&scenarioID, &budget)
+	if err != nil {
+		return nil, 0, err
+	}
+	sc, err := r.GetScenario(ctx, scenarioID)
+	if err != nil {
+		return nil, 0, err
+	}
+	return sc, budget, nil
 }

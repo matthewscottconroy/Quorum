@@ -95,7 +95,7 @@ func TestBudgetAddLine_Validation(t *testing.T) {
 
 func TestBudgetSeedDues_ReturnsCount(t *testing.T) {
 	repo := &mockBudgetRepo{
-		SeedDuesIncomeFn: func(_ context.Context, _ string) (int, error) { return 2, nil },
+		SeedDuesIncomeFn: func(_ context.Context, _ string) (int, []model.BudgetSeedSkip, error) { return 2, nil, nil },
 	}
 	req := reqWithParam("POST", "/budgets/"+testBudgetID+"/seed-dues", "", map[string]string{"id": testBudgetID})
 	req = withCtxUser(req, "u", "officer")
@@ -124,7 +124,7 @@ func TestBudgetCompare_RequiresIDs(t *testing.T) {
 
 func TestBudgetUpdate_NotFound(t *testing.T) {
 	repo := &mockBudgetRepo{
-		UpdateScenarioFn: func(_ context.Context, _ string, _, _, _, _, _ *string) (*model.BudgetScenario, error) {
+		UpdateScenarioFn: func(_ context.Context, _ string, _, _, _, _, _, _, _ *string) (*model.BudgetScenario, error) {
 			return nil, pgx.ErrNoRows
 		},
 	}
@@ -139,7 +139,9 @@ func TestBudgetUpdate_NotFound(t *testing.T) {
 
 func TestBudgetSeedDues_NotFound(t *testing.T) {
 	repo := &mockBudgetRepo{
-		SeedDuesIncomeFn: func(_ context.Context, _ string) (int, error) { return 0, pgx.ErrNoRows },
+		SeedDuesIncomeFn: func(_ context.Context, _ string) (int, []model.BudgetSeedSkip, error) {
+			return 0, nil, pgx.ErrNoRows
+		},
 	}
 	req := reqWithParam("POST", "/budgets/"+testBudgetID+"/seed-dues", "", map[string]string{"id": testBudgetID})
 	req = withCtxUser(req, "u", "officer")

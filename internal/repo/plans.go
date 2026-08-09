@@ -48,7 +48,7 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 		SELECT COUNT(*) OVER() AS total_count,
 		       p.id::text, p.title, p.description, p.status, p.owner_id::text,
 		       p.target_date, p.created_by::text, p.created_at, p.updated_at,
-		       m.display_name
+		       m.display_name, p.estimated_cost_minor, p.cost_currency
 		FROM plans p
 		LEFT JOIN members m ON m.id = p.owner_id
 		%s
@@ -67,6 +67,7 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 		if err := rows.Scan(&total,
 			&p.ID, &p.Title, &p.Description, &p.Status, &p.OwnerID,
 			&p.TargetDate, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.OwnerName,
+			&p.EstimatedCostMinor, &p.CostCurrency,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -90,7 +91,7 @@ func (r *PlansRepo) Get(ctx context.Context, id string) (*model.Plan, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT p.id::text, p.title, p.description, p.status, p.owner_id::text,
 		       p.target_date, p.created_by::text, p.created_at, p.updated_at,
-		       m.display_name
+		       m.display_name, p.estimated_cost_minor, p.cost_currency
 		FROM plans p
 		LEFT JOIN members m ON m.id = p.owner_id
 		WHERE p.id = $1::uuid`, id)
@@ -108,11 +109,12 @@ func (r *PlansRepo) Get(ctx context.Context, id string) (*model.Plan, error) {
 // Create inserts a new plan and returns the stored row.
 func (r *PlansRepo) Create(ctx context.Context, p *model.Plan, createdBy string) (*model.Plan, error) {
 	row := r.db.QueryRow(ctx, `
-		INSERT INTO plans (title, description, status, owner_id, target_date, created_by)
-		VALUES ($1, $2, $3, $4::uuid, $5, $6::uuid)
+		INSERT INTO plans (title, description, status, owner_id, target_date, estimated_cost_minor, cost_currency, created_by)
+		VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, $8::uuid)
 		RETURNING id::text, title, description, status, owner_id::text,
-		          target_date, created_by::text, created_at, updated_at, NULL::text`,
-		p.Title, p.Description, p.Status, p.OwnerID, p.TargetDate, createdBy)
+		          target_date, created_by::text, created_at, updated_at, NULL::text,
+		          estimated_cost_minor, cost_currency`,
+		p.Title, p.Description, p.Status, p.OwnerID, p.TargetDate, p.EstimatedCostMinor, p.CostCurrency, createdBy)
 	pl, err := scanPlan(row)
 	if err != nil {
 		return nil, err
@@ -128,6 +130,7 @@ func (r *PlansRepo) Update(ctx context.Context, id string, fields map[string]any
 
 	allowed := map[string]bool{
 		"title": true, "description": true, "status": true, "owner_id": true, "target_date": true,
+		"estimated_cost_minor": true, "cost_currency": true,
 	}
 	for k, v := range fields {
 		if !allowed[k] {
@@ -241,6 +244,17 @@ func (r *PlansRepo) DeleteDecision(ctx context.Context, id string) error {
 func scanPlan(row scannable) (model.Plan, error) {
 	var p model.Plan
 	err := row.Scan(&p.ID, &p.Title, &p.Description, &p.Status, &p.OwnerID,
-		&p.TargetDate, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.OwnerName)
+		&p.TargetDate, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.OwnerName,
+		&p.EstimatedCostMinor, &p.CostCurrency)
 	return p, err
+}
+
+// PlanCounts returns the active-plan total and how many of those are past
+// their target date — the dashboard's stalled-initiative signal.
+func (r *PlansRepo) PlanCounts(ctx context.Context) (active, overdue int, err error) {
+	err = r.db.QueryRow(ctx, `
+		SELECT count(*)::int,
+		       count(*) FILTER (WHERE target_date IS NOT NULL AND target_date < CURRENT_DATE)::int
+		FROM plans WHERE status = 'active'`).Scan(&active, &overdue)
+	return
 }

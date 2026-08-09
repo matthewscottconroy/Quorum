@@ -133,6 +133,10 @@ func (m *mockActuals) Statement(ctx context.Context, from, to string, types []st
 	return m.fn(ctx, from, to, types)
 }
 
+func (m *mockActuals) StatementCash(ctx context.Context, from, to string) ([]model.GLBalance, error) {
+	return m.fn(ctx, from, to, nil)
+}
+
 func TestBudgetVsActual_Success(t *testing.T) {
 	h := budgetHandler(&mockBudgetRepo{
 		GetScenarioFn: func(_ context.Context, id string) (*model.BudgetScenario, error) {
@@ -146,8 +150,8 @@ func TestBudgetVsActual_Success(t *testing.T) {
 		fn: func(_ context.Context, _, _ string, _ []string) ([]model.GLBalance, error) {
 			// Income accounts carry credit balances (negative); expenses positive.
 			return []model.GLBalance{
-				{Type: "income", Balance: -90000},
-				{Type: "expense", Balance: 85000},
+				{Type: "income", Balance: -90000, Currency: "USD", Code: "4000"},
+				{Type: "expense", Balance: 85000, Currency: "USD", Code: "5000"},
 			}, nil
 		},
 	})
@@ -176,7 +180,11 @@ func TestBudgetVsActual_Success(t *testing.T) {
 }
 
 func TestBudgetVsActual_BadDate(t *testing.T) {
-	h := budgetHandler(&mockBudgetRepo{})
+	h := budgetHandler(&mockBudgetRepo{
+		GetScenarioFn: func(_ context.Context, id string) (*model.BudgetScenario, error) {
+			return &model.BudgetScenario{ID: id, Name: "FY26", Currency: "USD"}, nil
+		},
+	})
 	req := chiRequest("GET", "/budgets/"+testUUID+"/vs-actual?from=nope&to=2026-12-31", "", map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.VsActual(rr, req)

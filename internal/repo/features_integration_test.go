@@ -224,10 +224,10 @@ func TestIntegration_Budget_SeedIdempotentAndClone(t *testing.T) {
 		t.Fatalf("scenario: %v", err)
 	}
 	// Seed once, then again — the tier's dues line must not double.
-	if _, err := bud.SeedDuesIncome(ctx, sc.ID); err != nil {
+	if _, _, err := bud.SeedDuesIncome(ctx, sc.ID); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := bud.SeedDuesIncome(ctx, sc.ID); err != nil {
+	if _, _, err := bud.SeedDuesIncome(ctx, sc.ID); err != nil {
 		t.Fatalf("reseed: %v", err)
 	}
 	if _, err := bud.AddLine(ctx, &model.BudgetLine{ScenarioID: sc.ID, Kind: "expense", Label: "Venue", Quantity: 1, UnitAmountMinor: 10000}); err != nil {

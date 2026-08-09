@@ -190,18 +190,22 @@ var ValidSprintStatuses = map[string]bool{"planned": true, "active": true, "comp
 // Status values: "draft", "active", "completed", "archived".
 // Decisions is populated only when fetching a single plan.
 type Plan struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description *string        `json:"description,omitempty"`
-	Status      string         `json:"status"`
-	OwnerID     *string        `json:"owner_id,omitempty"`
-	TargetDate  *time.Time     `json:"target_date,omitempty"`
-	CreatedBy   string         `json:"created_by"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	OwnerName   *string        `json:"owner_name,omitempty"`
-	Decisions   []PlanDecision `json:"decisions,omitempty"`
-	ActionItems []ActionItem   `json:"action_items,omitempty"`
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Description *string    `json:"description,omitempty"`
+	Status      string     `json:"status"`
+	OwnerID     *string    `json:"owner_id,omitempty"`
+	TargetDate  *time.Time `json:"target_date,omitempty"`
+	CreatedBy   string     `json:"created_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	OwnerName   *string    `json:"owner_name,omitempty"`
+	// EstimatedCostMinor connects planning to money: an optional rough cost
+	// in the smallest unit of CostCurrency, shown wherever the plan appears.
+	EstimatedCostMinor *int64         `json:"estimated_cost_minor,omitempty"`
+	CostCurrency       *string        `json:"cost_currency,omitempty"`
+	Decisions          []PlanDecision `json:"decisions,omitempty"`
+	ActionItems        []ActionItem   `json:"action_items,omitempty"`
 }
 
 // PlanDecision logs a key decision made in the context of a Plan.
@@ -299,6 +303,8 @@ type BudgetScenario struct {
 	PeriodLabel *string      `json:"period_label,omitempty"`
 	Status      string       `json:"status"`
 	Currency    string       `json:"currency"`
+	StartsOn    *time.Time   `json:"starts_on,omitempty"`
+	EndsOn      *time.Time   `json:"ends_on,omitempty"`
 	CreatedBy   *string      `json:"created_by,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
@@ -314,6 +320,9 @@ type BudgetLine struct {
 	Kind            string    `json:"kind"`
 	Category        *string   `json:"category,omitempty"`
 	Label           string    `json:"label"`
+	AccountID       *string   `json:"account_id,omitempty"`
+	AccountCode     *string   `json:"account_code,omitempty"`
+	AccountName     *string   `json:"account_name,omitempty"`
 	Quantity        int64     `json:"quantity"`
 	UnitAmountMinor int64     `json:"unit_amount_minor"`
 	AmountMinor     int64     `json:"amount_minor"`
@@ -648,6 +657,8 @@ type DashboardSummary struct {
 	UpcomingMeetings  []Meeting    `json:"upcoming_meetings"`
 	OpenActionItems   []ActionItem `json:"open_action_items"`
 	ActiveMemberCount int          `json:"active_member_count"`
+	ActivePlanCount   int          `json:"active_plan_count"`
+	OverduePlanCount  int          `json:"overdue_plan_count"`
 }
 
 // Notification is a single in-app notice for a user. Type is a dotted event key
@@ -1021,4 +1032,12 @@ type ArcadeGameStats struct {
 	HighScorer string `json:"high_scorer,omitempty"`
 	YourPlays  int    `json:"your_plays"`
 	YourBest   int64  `json:"your_best"`
+}
+
+// BudgetSeedSkip explains why a tier or schedule contributed nothing when
+// seeding dues income — surfacing what earlier versions dropped silently.
+type BudgetSeedSkip struct {
+	Tier    string `json:"tier"`
+	Members int    `json:"members"`
+	Reason  string `json:"reason"` // "no_active_schedule" | "no_fx_rate"
 }
