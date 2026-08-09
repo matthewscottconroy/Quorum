@@ -33,6 +33,13 @@ func (h *MembersHandler) IDsByRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "min_role must be one of restricted, member, officer, admin, superadmin", "bad_request")
 		return
 	}
+	// This endpoint exists for the roster "Officers+" bulk-select; callers below
+	// admin may not use it to single out who holds admin/superadmin (a privileged
+	// disclosure they can't otherwise get, since /users is admin-only). Clamp the
+	// query to officer for them — officers still see officers-and-above.
+	if rank > roleRank["officer"] && !roleAtLeast(roleFromCtx(r), "admin") {
+		rank = roleRank["officer"]
+	}
 	ids, err := h.repo.IDsByMinRole(r.Context(), rank)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")

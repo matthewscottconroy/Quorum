@@ -371,12 +371,13 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET
-			email         = 'erased-' || left(id::text, 8) || '@erased.invalid',
-			password_hash = '!erased',
-			totp_secret   = NULL,
-			totp_enabled  = FALSE,
-			role          = 'restricted',
-			member_id     = NULL
+			email          = 'erased-' || left(id::text, 8) || '@erased.invalid',
+			password_hash  = '!erased',
+			totp_secret    = NULL,
+			totp_enabled   = FALSE,
+			role           = 'restricted',
+			member_id      = NULL,
+			calendar_token = NULL
 		WHERE member_id = $1::uuid`, id); err != nil {
 		return err
 	}

@@ -54,9 +54,15 @@ func (r *ActivityRepo) Recent(ctx context.Context, limit int) ([]model.ActivityE
 	collect(`SELECT created_at, 'plan',
 		'Plan added: ' || title
 		FROM plans ORDER BY created_at DESC LIMIT $1`)
+	// Only surface documents everyone can see: no minimum-role bar and not
+	// restricted to a visibility group. The feed is member-wide, so a title
+	// like "2026 layoff plan" must never leak from a role- or group-gated doc.
 	collect(`SELECT created_at, 'resource',
 		'Document added: ' || title
-		FROM resources ORDER BY created_at DESC LIMIT $1`)
+		FROM resources r
+		WHERE r.visible_min_role IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM resource_groups rg WHERE rg.resource_id = r.id)
+		ORDER BY created_at DESC LIMIT $1`)
 	collect(`SELECT m.created_at, 'motion',
 		'Motion ' || m.status || ': ' || m.title
 		FROM motions m WHERE m.status IN ('open', 'carried', 'failed') ORDER BY m.created_at DESC LIMIT $1`)

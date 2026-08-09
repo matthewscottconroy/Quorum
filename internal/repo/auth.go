@@ -378,9 +378,13 @@ func (r *AuthRepo) RotateCalendarToken(ctx context.Context, userID string) (stri
 }
 
 // UserIDByCalendarToken resolves a calendar feed token to its user id, or
-// pgx.ErrNoRows if the token is unknown/revoked.
+// pgx.ErrNoRows if the token is unknown/revoked. The role gate means a token
+// stops working the moment its owner is downgraded to restricted (or erased,
+// which also nulls the token) — the feed carries org-wide meeting data that
+// restricted users may not see, so the token alone must not grant it.
 func (r *AuthRepo) UserIDByCalendarToken(ctx context.Context, token string) (string, error) {
 	var id string
-	err := r.db.QueryRow(ctx, `SELECT id::text FROM users WHERE calendar_token = $1`, token).Scan(&id)
+	err := r.db.QueryRow(ctx,
+		`SELECT id::text FROM users WHERE calendar_token = $1 AND role <> 'restricted'`, token).Scan(&id)
 	return id, err
 }

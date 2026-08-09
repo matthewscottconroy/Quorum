@@ -637,7 +637,7 @@ func main() {
 			r.With(mw.RequireRole("admin")).Patch("/accounting/accounts/{id}", accountingH.UpdateAccount)
 			r.With(mw.RequireRole("admin")).Post("/accounting/entries", accountingH.ManualEntry)
 			// Vendor bills (accounts payable).
-			r.With(mw.RequireRole("member")).Get("/bills", billsH.List)
+			r.With(mw.RequireRole("officer")).Get("/bills", billsH.List)
 			r.With(mw.RequireRole("officer")).Post("/bills", billsH.Create)
 			r.With(mw.RequireRole("officer")).Post("/bills/{id}/pay", billsH.Pay)
 			r.With(mw.RequireRole("admin")).Post("/bills/{id}/void", billsH.Void)
