@@ -859,6 +859,40 @@ Three more areas, each self-explanatory in the app once you know they exist:
   are **flagged, never silently summed** — with explicit FX conversion where
   configured.
 
+## 5.11a The Top Secret arcade
+
+At the bottom of the sidebar sits a section called **Top Secret**. It is
+exactly what it looks like: a basement arcade. Seven cabinets, all original
+builds, all running in your browser — nothing is installed and nothing leaves
+your organization's server.
+
+- **Credits are play tokens, not money.** Pressing **INSERT CREDIT** logs one
+  play against your account (so the machines can keep house statistics) and
+  starts the round. No invoice, no ledger entry, no charge — ever.
+- **High scores** are per-cabinet: each player's best run, plus the house
+  record on the cabinet card. Scores only count if a credit was inserted.
+- The cabinets: **CHESS** and **GO** (two players at one mouse), **COMET
+  BUSTER** (vector rock shooter), **PENNY PINCHER** (grab the coins, dodge
+  the auditors; gold bars turn the tables), **BRICKFALL** (falling
+  four-square bricks), **POWDER KEG** (up to twelve seats — one or two humans
+  on one keyboard, machines fill the rest, last one standing wins), and
+  **HEXFECTION** (up to twelve seats, hotseat humans plus machines, convert
+  your neighbours until the dish is yours).
+- **Playing online.** Chess, Go, Powder Keg, and Hexfection also play over
+  the network against other members of your organization. On the cabinet,
+  choose **HOST ROOM** (picking the seat count for the big cabinets) and read
+  out the 4-letter room code; the others open the same cabinet, type the code,
+  and **JOIN**. The host presses **START** — empty seats are filled by
+  machines, and anyone who disconnects mid-game is quietly replaced by one.
+  Every player inserts their own credit and earns their own score. Rooms are
+  scoped to your server: nothing leaves your organization.
+- Leaving a cabinet resets it (the page reloads; you stay signed in). Arcade
+  rules: you walk away, the machine forgets you.
+- **If a cabinet says "CARTRIDGE NOT INSTALLED":** the arcade's WebAssembly
+  build is an optional artifact your operator adds with `make arcade` before
+  building the server (it needs a Rust toolchain; see the README). Everything
+  else in Quorum works without it.
+
 ## 5.12 Roster: office holders, committees & membership applications
 
 The **Roster** page (in the People area; officers see all of it, members see

@@ -313,6 +313,33 @@ These are organizational **records**, not access grants — the permission role 
 
 Recusals recorded against a motion or purchase are returned inline on that motion (`GET /meetings/:id/motions`) and purchase (`GET /purchases`), so the recusal is visible wherever the vote or approval is.
 
+### Top Secret arcade
+
+A basement arcade behind the **Top Secret** sidebar section: seven original cabinets written in Rust (Bevy engine, core crate only) and compiled to WebAssembly, served same-origin from `web/arcade/`. Credits are **play tokens, not money** — inserting one records a play against the user's account and never touches the ledger. Games: Chess and Go (two players — hotseat or online), Comet Buster, Penny Pincher, Brickfall, Powder Keg and Hexfection (up to 12 seats each — local humans + bots, or online rooms).
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/arcade/stats` | member | Per-cabinet totals: plays, house high score + holder, your plays/best |
+| `GET` | `/arcade/:game/scores` | member | Leaderboard — each player's best score |
+| `POST` | `/arcade/:game/credit` | member | Insert a credit (records a play; returns your lifetime count) |
+| `POST` | `/arcade/:game/score` | member | Record a final score (refused without a prior credited play; clamped) |
+| `GET` | `/arcade/ws` | member¹ | WebSocket room relay for online play (chess, go, powder-keg, hexfection) |
+
+¹ Browsers cannot set an Authorization header on a WebSocket, so `/arcade/ws` authenticates via its **first message** (`{"op":"auth","token":<JWT>}`, member+) on a 5-second deadline; the route sits outside the normal auth middleware by necessity. After auth: `create {game, seats}` or `join {code}` → 4-letter room code, host (`seat 0`) sends `start`, then `msg {data}` frames are fanned out to the other seats with the sender's seat stamped **server-side**. The server is a seat-managing relay, not a referee — rules run in every player's cartridge (the same perft-tested logic crate); the host's cartridge is authoritative for the real-time cabinet (Powder Keg guests send inputs, the host broadcasts ~20 Hz snapshots), and turn-based cabinets validate every relayed move locally before applying it. Empty seats in a started room are host-driven bots; a player who disconnects mid-game becomes one. Rooms live in process memory (single-replica assumption, like the rate limiters); idle rooms are swept after 30 minutes.
+
+**The cartridge is an optional build artifact** — it is *not* in the source repo. Without it the app runs normally and the arcade page reports "cartridge not installed". To build it (on any machine with Rust):
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.126   # must match arcade/cart/Cargo.toml
+make arcade        # → web/arcade/ ; then `make build` (or image build) embeds it
+make arcade-test   # runs the game-rules test suite
+```
+
+`web/arcade/` is gitignored; the Go binary embeds whatever is there at build time via `//go:embed web`, so build the cartridge **before** building the binary or container image on the host that ships it. Optional `wasm-opt` (binaryen) shrinks the download ~40%; the server gzips `application/wasm` itself (~4 MB over the wire).
+
+The game-rules layer (`arcade/logic`) is dependency-free and unit-tested — chess legal-move generation is perft-verified, go covers captures/ko/suicide/area scoring, hexfection covers clone/jump/conversion. Scores are self-reported by the wasm client and lightly validated (bounds + a credited play required); treat leaderboards as friendly, not forensic.
+
 ### Discussions
 
 | Method | Path | Min role | Description |
