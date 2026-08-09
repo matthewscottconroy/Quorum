@@ -58,6 +58,7 @@ chown quorum:quorum quorum && chmod 755 quorum
 # go build renames the binary out of its cache, which carries the cache's
 # SELinux label along; on enforcing systems (Rocky) systemd then refuses to
 # exec it (203/EXEC "Permission denied"). Restore the directory's label.
+# shellcheck disable=SC2015  # restorecon is best-effort; || true is the fallback, not else
 command -v restorecon >/dev/null 2>&1 && restorecon quorum || true
 
 echo "==> restarting quorum.service"

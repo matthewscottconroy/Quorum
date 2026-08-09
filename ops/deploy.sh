@@ -24,6 +24,7 @@ echo "==> uploading to $HOST"
 scp -q "$TMP" "$HOST:/tmp/quorum.new"
 
 echo "==> swapping binary and restarting quorum.service"
+# shellcheck disable=SC2029  # $DIR is meant to expand locally into the remote command
 ssh "$HOST" "sudo bash -s -- '$DIR'" <<'REMOTE'
 set -euo pipefail
 DIR="$1"

@@ -264,6 +264,20 @@ func main() {
 	reg.RegisterGauge("quorum_db_pool_max_conns", "Maximum pool size.",
 		func() float64 { return float64(pool.Stat().MaxConns()) })
 
+	// Nightly-job liveness: the unix time of the last successful run (0 until it
+	// runs this process). Alert on `time() - this > ~26h` to catch a job that
+	// errors every night or never fires because the process was down at 02:00.
+	reg.RegisterGauge("quorum_nightly_job_last_success_timestamp_seconds",
+		"Unix time of the last successful nightly job run (0 if not yet run).",
+		func() float64 { return float64(duesSvc.LastSuccessUnix()) })
+
+	// Dropped background notices — in-app/email events and deletion notices
+	// discarded because a worker queue was saturated. Should stay flat at 0.
+	notifDropped := reg.RegisterCounter("quorum_notifications_dropped_total",
+		"Background notification events dropped due to a full worker queue.")
+	notifySvc.SetDropHook(notifDropped)
+	notifier.SetDropHook(notifDropped)
+
 	// Audit-chain health as a metric: 1 intact, 0 BROKEN (alert on == 0),
 	// -1 not yet checked. Verification walks the whole chain, so it runs on a
 	// slow timer rather than at scrape time.

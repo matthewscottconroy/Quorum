@@ -42,9 +42,42 @@ DB_USER=quorum
 BACKUP_DIR="${QUORUM_BACKUP_DIR:-./backups}"
 KEEP="${QUORUM_BACKUP_KEEP:-14}"
 MODE="${QUORUM_BACKUP_MODE:-podman}"
+# Off-host copy destination. On a single-instance deployment, backups on the
+# same disk as the database are lost together with it, so a create is only
+# considered successful once the dump AND its manifest reach here.
+#   QUORUM_BACKUP_REMOTE="s3://bucket/prefix"   (aws cli)
+#   QUORUM_BACKUP_REMOTE="rclone:remote:path"   (rclone, "rclone:" prefix)
+REMOTE="${QUORUM_BACKUP_REMOTE:-}"
+
+# discover lists real backup files newest-first, excluding manifests and the
+# .partial temp files a crashed dump leaves behind (which must never be picked
+# up as a usable backup by list/prune/restore/verify).
+discover() {
+  # ls -t sorts by mtime (newest first), which a glob can't do; the grep drops
+  # manifests and crashed-dump .partial temp files.
+  # shellcheck disable=SC2010
+  ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -Ev '\.(manifest|partial)$' || true
+}
+
+# push_offhost copies a file to the configured remote. Returns non-zero on
+# failure so the caller can fail the whole backup.
+push_offhost() {
+  local f="$1"
+  [[ -n "$REMOTE" ]] || return 0
+  case "$REMOTE" in
+    rclone:*)
+      rclone copy "$f" "${REMOTE#rclone:}" ;;
+    s3://*)
+      aws s3 cp "$f" "${REMOTE%/}/$(basename "$f")" ;;
+    *)
+      echo "    unknown QUORUM_BACKUP_REMOTE scheme: $REMOTE" >&2; return 1 ;;
+  esac
+}
 
 db_pass() {
   # Password for the quorum role, from .env (podman mode) or the URL (url mode).
+  # The || true is a fallback for a missing .env, not an if-then-else.
+  # shellcheck disable=SC2015
   [[ -f .env ]] && grep -m1 '^DB_PASSWORD=' .env | cut -d= -f2- || true
 }
 
@@ -115,6 +148,20 @@ cmd_create() {
     echo "    backup FAILED" >&2
     exit 1
   fi
+  # Ship the dump and its manifest off-box before considering the backup done.
+  # A local-only backup on a single instance is lost with the instance, so a
+  # configured-but-failing remote must fail the run (and alert), not pass.
+  if [[ -n "$REMOTE" ]]; then
+    echo "==> Copying off-host → ${REMOTE}"
+    if push_offhost "$file" && push_offhost "${file}.manifest"; then
+      echo "    off-host copy OK"
+    else
+      echo "    OFF-HOST COPY FAILED — backup is local-only" >&2
+      exit 1
+    fi
+  else
+    echo "    (no QUORUM_BACKUP_REMOTE set — backup is LOCAL ONLY; set one for disaster recovery)"
+  fi
   cmd_prune
 }
 
@@ -157,8 +204,7 @@ cmd_list() {
     return 0
   fi
   echo "Backups in ${BACKUP_DIR} (newest first):"
-  # shellcheck disable=SC2012
-  ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" | while read -r f; do
+  discover | while read -r f; do
     printf "  %s  %s\n" "$(du -h "$f" | cut -f1)" "$f"
   done
 }
@@ -166,7 +212,7 @@ cmd_list() {
 cmd_prune() {
   mkdir -p "$BACKUP_DIR"
   local -a files
-  mapfile -t files < <(ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" || true)
+  mapfile -t files < <(discover)
   if (( ${#files[@]} > KEEP )); then
     echo "==> Pruning $(( ${#files[@]} - KEEP )) old backup(s), keeping ${KEEP}"
     local i
@@ -178,7 +224,7 @@ cmd_prune() {
 }
 
 latest_backup() {
-  ls -1t "$BACKUP_DIR"/quorum-*.pgdump* 2>/dev/null | grep -v ".manifest" | head -1
+  discover | head -1
 }
 
 cmd_restore() {

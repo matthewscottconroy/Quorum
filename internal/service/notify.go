@@ -36,7 +36,12 @@ type Notifier struct {
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	closed bool
+	onDrop func() // optional metric hook, fired when a notice is dropped
 }
+
+// SetDropHook attaches a callback fired whenever a deletion notice is dropped
+// (queue full or notifier closed).
+func (n *Notifier) SetDropHook(fn func()) { n.onDrop = fn }
 
 // NewNotifier constructs a Notifier with a bounded worker pool for deletion notices.
 func NewNotifier(email *EmailService, dir userDirectory) *Notifier {
@@ -84,12 +89,18 @@ func (n *Notifier) NotifyDeletion(_ context.Context, actorUserID, entityType, en
 	defer n.mu.Unlock()
 	if n.closed {
 		log.Printf("notify: closed, dropping deletion notice for %s %q", entityType, entityName)
+		if n.onDrop != nil {
+			n.onDrop()
+		}
 		return
 	}
 	select {
 	case n.jobs <- deletionJob{actorUserID, entityType, entityName, affectedEmails}:
 	default:
 		log.Printf("notify: queue full, dropping deletion notice for %s %q", entityType, entityName)
+		if n.onDrop != nil {
+			n.onDrop()
+		}
 	}
 }
 

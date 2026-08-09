@@ -41,6 +41,8 @@ func (m *mockJanitor) WithLeaderLock(ctx context.Context, _ int64, fn func(conte
 	fn(ctx)
 	return true, nil
 }
+func (m *mockJanitor) LastNightlyRun(_ context.Context) (time.Time, error) { return time.Now(), nil }
+func (m *mockJanitor) RecordNightlyRun(_ context.Context) error            { return nil }
 
 func TestPruneBookkeeping_CallsAllWithRetention(t *testing.T) {
 	j := &mockJanitor{}

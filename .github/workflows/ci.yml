@@ -111,3 +111,21 @@ jobs:
           done
       - name: web unit tests
         run: node --test web/*.test.js
+
+  shellcheck:
+    name: Shellcheck ops/scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck ops/*.sh scripts/*.sh
+
+  docker:
+    name: Container image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker build
+        run: docker build -t quorum:ci .

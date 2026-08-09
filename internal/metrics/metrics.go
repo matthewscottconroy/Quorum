@@ -54,9 +54,21 @@ type Registry struct {
 	durs      map[string]*histogram // key -> latency histogram
 	durLabels map[string][2]string  // key -> {method, route}
 	gauges    []GaugeFunc           // sampled at render time
+	counters  []*counter            // application counters (see RegisterCounter)
 	inFlight  int64                 // atomic
 	panics    uint64                // atomic
 }
+
+// counter is a named monotonic counter incremented from application code
+// (e.g. dropped notifications). Concurrency-safe via atomic.
+type counter struct {
+	name string
+	help string
+	val  uint64
+}
+
+// Inc adds one to the counter.
+func (c *counter) Inc() { atomic.AddUint64(&c.val, 1) }
 
 // New constructs an empty Registry.
 func New() *Registry {
@@ -73,6 +85,16 @@ func (r *Registry) RegisterGauge(name, help string, fn func() float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.gauges = append(r.gauges, GaugeFunc{Name: name, Help: help, Fn: fn})
+}
+
+// RegisterCounter creates a named counter and returns an increment function.
+// The returned closure is safe to call concurrently.
+func (r *Registry) RegisterCounter(name, help string) func() {
+	c := &counter{name: name, help: help}
+	r.mu.Lock()
+	r.counters = append(r.counters, c)
+	r.mu.Unlock()
+	return c.Inc
 }
 
 // ObserveRequest records one completed HTTP request.
@@ -142,6 +164,12 @@ func (r *Registry) Render(w io.Writer) {
 	fmt.Fprintf(w, "# HELP quorum_http_panics_total Recovered panics in HTTP handlers.\n")
 	fmt.Fprintf(w, "# TYPE quorum_http_panics_total counter\n")
 	fmt.Fprintf(w, "quorum_http_panics_total %d\n", atomic.LoadUint64(&r.panics))
+
+	for _, c := range r.counters {
+		fmt.Fprintf(w, "# HELP %s %s\n", c.name, c.help)
+		fmt.Fprintf(w, "# TYPE %s counter\n", c.name)
+		fmt.Fprintf(w, "%s %d\n", c.name, atomic.LoadUint64(&c.val))
+	}
 
 	for _, g := range r.gauges {
 		fmt.Fprintf(w, "# HELP %s %s\n", g.Name, g.Help)

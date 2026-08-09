@@ -2,8 +2,10 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -94,4 +96,31 @@ func (r *MaintenanceRepo) PruneAuditLog(ctx context.Context, retain time.Duratio
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// nightlyJobName keys the nightly job's row in job_runs.
+const nightlyJobName = "nightly"
+
+// LastNightlyRun returns when the nightly job last completed successfully, or
+// the zero time if it has never run (so the caller treats it as "stale" and
+// catches up).
+func (r *MaintenanceRepo) LastNightlyRun(ctx context.Context) (time.Time, error) {
+	var t time.Time
+	err := r.db.QueryRow(ctx,
+		`SELECT last_success_at FROM job_runs WHERE job = $1`, nightlyJobName).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil // never run: treat as stale
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
+// RecordNightlyRun stamps the nightly job's last-success time to now.
+func (r *MaintenanceRepo) RecordNightlyRun(ctx context.Context) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO job_runs (job, last_success_at) VALUES ($1, now())
+		ON CONFLICT (job) DO UPDATE SET last_success_at = now()`, nightlyJobName)
+	return err
 }

@@ -74,6 +74,9 @@ All settings are read from environment variables. Copy `.env.example` to `.env` 
 | `QUORUM_STRIPE_WEBHOOK_SECRET` | no | — | Stripe webhook signing secret (`whsec_…`). When unset, the Stripe webhook endpoint returns 503. |
 | `QUORUM_PAYPAL_WEBHOOK_ID` | no | — | PayPal webhook ID. When unset, the PayPal webhook endpoint returns 503. |
 | `QUORUM_ALLOW_UNSIGNED_WEBHOOKS` | no | `false` | Local development only: process webhook events without signature verification when the provider's secret is unset. Never enable in production. |
+| `QUORUM_DB_MAX_CONNS` | no | `10` | Maximum pooled database connections. Raise on a busy deployment if the pool-saturation alert fires. |
+| `QUORUM_DB_STATEMENT_TIMEOUT_MS` | no | `30000` | Server-side per-statement timeout (ms). Caps a runaway query so it can't pin a pooled connection. `0` disables. |
+| `QUORUM_BACKUP_REMOTE` | no | — | Off-host backup destination for `scripts/backup.sh create`: `s3://bucket/prefix` (needs `aws` CLI) or `rclone:remote:path` (needs `rclone`). When set, a backup fails unless the dump and its manifest copy off-box — essential disaster-recovery on a single instance. |
 | `DB_PASSWORD` | docker only | — | Password for the Postgres container |
 
 ---

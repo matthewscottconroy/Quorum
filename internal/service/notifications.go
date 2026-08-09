@@ -53,7 +53,12 @@ type NotificationService struct {
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	closed bool
+	onDrop func() // optional metric hook, fired when an event is dropped
 }
+
+// SetDropHook attaches a callback fired whenever an event is dropped (queue
+// full or service closed), so drops can be counted and alerted on.
+func (s *NotificationService) SetDropHook(fn func()) { s.onDrop = fn }
 
 // NewNotificationService starts the delivery worker pool.
 func NewNotificationService(store notifyStore, email emailSender) *NotificationService {
@@ -105,12 +110,18 @@ func (s *NotificationService) enqueue(e notifyEvent) {
 	defer s.mu.Unlock()
 	if s.closed {
 		slog.Warn("notifications: service closed, dropping event", "type", e.notifType)
+		if s.onDrop != nil {
+			s.onDrop()
+		}
 		return
 	}
 	select {
 	case s.jobs <- e:
 	default:
 		slog.Warn("notifications: queue full, dropping event", "type", e.notifType)
+		if s.onDrop != nil {
+			s.onDrop()
+		}
 	}
 }
 

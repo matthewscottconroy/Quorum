@@ -65,8 +65,8 @@ func (r *FundsRepo) CreateFund(ctx context.Context, name string, purpose *string
 	return r.GetFund(ctx, fundID)
 }
 
-func (r *FundsRepo) fundQuery(where string, args ...any) ([]model.Fund, error) {
-	rows, err := r.db.Query(context.Background(), `
+func (r *FundsRepo) fundQuery(ctx context.Context, where string, args ...any) ([]model.Fund, error) {
+	rows, err := r.db.Query(ctx, `
 		SELECT f.id::text, f.name, f.purpose, a.code, f.approvals_required, f.active,
 		       f.created_at,
 		       (SELECT count(*) FROM purchase_requests pr
@@ -89,59 +89,71 @@ func (r *FundsRepo) fundQuery(where string, args ...any) ([]model.Fund, error) {
 	return out, rows.Err()
 }
 
-// decorate loads signers and per-currency balances for each fund.
+// decorate loads signers and per-currency balances for a set of funds in two
+// set-based queries (not per-fund), then groups the rows in Go.
 func (r *FundsRepo) decorate(ctx context.Context, funds []model.Fund) error {
+	if len(funds) == 0 {
+		return nil
+	}
+	ids := make([]string, len(funds))
+	byID := make(map[string]*model.Fund, len(funds))
 	for i := range funds {
-		f := &funds[i]
-		rows, err := r.db.Query(ctx, `
-			SELECT fs.user_id::text, coalesce(m.display_name, u.email)
-			FROM fund_signers fs
-			JOIN users u ON u.id = fs.user_id
-			LEFT JOIN members m ON m.id = u.member_id
-			WHERE fs.fund_id = $1::uuid ORDER BY 2`, f.ID)
-		if err != nil {
+		ids[i] = funds[i].ID
+		byID[funds[i].ID] = &funds[i]
+	}
+
+	srows, err := r.db.Query(ctx, `
+		SELECT fs.fund_id::text, fs.user_id::text, coalesce(m.display_name, u.email)
+		FROM fund_signers fs
+		JOIN users u ON u.id = fs.user_id
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE fs.fund_id = ANY($1::uuid[]) ORDER BY 3`, ids)
+	if err != nil {
+		return err
+	}
+	for srows.Next() {
+		var fundID string
+		var s model.FundSigner
+		if err := srows.Scan(&fundID, &s.UserID, &s.Name); err != nil {
+			srows.Close()
 			return err
 		}
-		for rows.Next() {
-			var s model.FundSigner
-			if err := rows.Scan(&s.UserID, &s.Name); err != nil {
-				rows.Close()
-				return err
-			}
+		if f := byID[fundID]; f != nil {
 			f.Signers = append(f.Signers, s)
 		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return err
+	}
 
-		brows, err := r.db.Query(ctx, `
-			SELECT l.currency, sum(l.debit) - sum(l.credit)
-			FROM journal_lines l
-			JOIN funds fu ON fu.cash_account_id = l.account_id
-			WHERE fu.id = $1::uuid GROUP BY l.currency ORDER BY l.currency`, f.ID)
-		if err != nil {
+	brows, err := r.db.Query(ctx, `
+		SELECT fu.id::text, l.currency, sum(l.debit) - sum(l.credit)
+		FROM journal_lines l
+		JOIN funds fu ON fu.cash_account_id = l.account_id
+		WHERE fu.id = ANY($1::uuid[])
+		GROUP BY fu.id, l.currency ORDER BY l.currency`, ids)
+	if err != nil {
+		return err
+	}
+	for brows.Next() {
+		var fundID string
+		var b model.FundBalance
+		if err := brows.Scan(&fundID, &b.Currency, &b.Balance); err != nil {
+			brows.Close()
 			return err
 		}
-		for brows.Next() {
-			var b model.FundBalance
-			if err := brows.Scan(&b.Currency, &b.Balance); err != nil {
-				brows.Close()
-				return err
-			}
+		if f := byID[fundID]; f != nil {
 			f.Balances = append(f.Balances, b)
 		}
-		brows.Close()
-		if err := brows.Err(); err != nil {
-			return err
-		}
 	}
-	return nil
+	brows.Close()
+	return brows.Err()
 }
 
 // ListFunds returns all funds with signers and derived balances.
 func (r *FundsRepo) ListFunds(ctx context.Context) ([]model.Fund, error) {
-	funds, err := r.fundQuery("")
+	funds, err := r.fundQuery(ctx, "")
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +165,7 @@ func (r *FundsRepo) ListFunds(ctx context.Context) ([]model.Fund, error) {
 
 // GetFund returns one fund with signers and balances, or pgx.ErrNoRows.
 func (r *FundsRepo) GetFund(ctx context.Context, id string) (*model.Fund, error) {
-	funds, err := r.fundQuery("WHERE f.id = $1::uuid", id)
+	funds, err := r.fundQuery(ctx, "WHERE f.id = $1::uuid", id)
 	if err != nil {
 		return nil, err
 	}

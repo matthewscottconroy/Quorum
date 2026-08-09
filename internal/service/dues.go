@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"quorum/internal/model"
@@ -50,6 +51,8 @@ type janitor interface {
 	PruneProcessedEvents(ctx context.Context, retain time.Duration) (int64, error)
 	PruneAuditLog(ctx context.Context, retain time.Duration) (int64, error)
 	WithLeaderLock(ctx context.Context, key int64, fn func(context.Context)) (bool, error)
+	LastNightlyRun(ctx context.Context) (time.Time, error)
+	RecordNightlyRun(ctx context.Context) error
 }
 
 // nightlyJobLockKey is the fixed advisory-lock key that serializes the nightly
@@ -82,7 +85,21 @@ type DuesService struct {
 	// legal one), so deployments can set it via QUORUM_AUDIT_RETENTION_DAYS.
 	auditRetention time.Duration
 	postHook       func(context.Context)
+
+	// lastSuccessUnix is the wall-clock time (unix seconds) the nightly job
+	// last completed, for the observability gauge and startup catch-up. 0 until
+	// the first run of this process. Accessed atomically.
+	lastSuccessUnix atomic.Int64
+	onJobDone       func() // optional metric hook fired after a successful run
 }
+
+// SetJobDoneHook attaches a callback fired after each successful nightly run
+// (used to stamp the last-success metric).
+func (s *DuesService) SetJobDoneHook(fn func()) { s.onJobDone = fn }
+
+// LastSuccessUnix returns when the nightly job last completed (unix seconds),
+// or 0 if it has not run since startup.
+func (s *DuesService) LastSuccessUnix() int64 { return s.lastSuccessUnix.Load() }
 
 // SetPostHook attaches an optional step run at the end of each nightly job
 // under the same leader lock (used by the continuity watchdog).
@@ -133,6 +150,16 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 
 	if s.postHook != nil {
 		s.postHook(ctx)
+	}
+
+	s.lastSuccessUnix.Store(time.Now().Unix())
+	if s.janitor != nil {
+		if err := s.janitor.RecordNightlyRun(ctx); err != nil {
+			log.Printf("nightly job: could not record last-run marker: %v", err)
+		}
+	}
+	if s.onJobDone != nil {
+		s.onJobDone()
 	}
 }
 
@@ -277,10 +304,20 @@ func (s *DuesService) pruneBookkeeping(ctx context.Context) {
 // StartScheduler launches the nightly background job, aligned to 2 AM local
 // time. The returned channel closes when the goroutine has fully stopped, so
 // shutdown can wait for an in-flight job before closing the database pool.
+//
+// Catch-up: an in-process scheduler that only sleeps to the next 2 AM loses any
+// run missed while the process was down (an upgrade or outage across 02:00).
+// So on startup, if the last successful run recorded in the DB is more than a
+// day old, run once immediately. The job's steps are all idempotent and
+// leader-locked, so an extra run is harmless.
 func (s *DuesService) StartScheduler(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		if s.missedLastRun(ctx) {
+			log.Printf("nightly job: last run is stale (or never recorded); running catch-up now")
+			s.runNightlyJobSafely(ctx)
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -291,6 +328,23 @@ func (s *DuesService) StartScheduler(ctx context.Context) <-chan struct{} {
 		}
 	}()
 	return done
+}
+
+// missedLastRun reports whether the most recent successful nightly run is more
+// than ~25h old (or has never happened), meaning a scheduled 02:00 run was
+// likely skipped while the process was down. Uses the persisted marker if the
+// janitor provides one; falls back to "run catch-up" when unknown so a genuine
+// gap is never silently skipped.
+func (s *DuesService) missedLastRun(ctx context.Context) bool {
+	if s.janitor == nil {
+		return false // dev/single-run: no persistence, rely on the timer
+	}
+	last, err := s.janitor.LastNightlyRun(ctx)
+	if err != nil {
+		log.Printf("nightly job: could not read last-run marker: %v", err)
+		return false
+	}
+	return time.Since(last) > 25*time.Hour
 }
 
 // runNightlyJobSafely recovers from panics per run, so one bad night cannot

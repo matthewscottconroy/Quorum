@@ -77,6 +77,29 @@ groups:
         annotations:
           summary: "p99 request latency above 2s"
 
+      - alert: QuorumNightlyJobStale
+        expr: quorum_nightly_job_last_success_timestamp_seconds > 0 and (time() - quorum_nightly_job_last_success_timestamp_seconds) > 93600
+        labels: {severity: warning}
+        annotations:
+          summary: "Nightly job has not succeeded in over 26 hours"
+          description: >
+            Dues aging, recurring-invoice generation, reminders, the admin
+            digest, and table pruning all run in the 02:00 job. A stale marker
+            means it is erroring every night or never firing. Check logs for
+            "dues scheduler panic" / "nightly job"; a restart triggers a
+            catch-up run. (Value is 0 until the first run after startup.)
+
+      - alert: QuorumNotificationsDropped
+        expr: increase(quorum_notifications_dropped_total[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Background notifications are being dropped"
+          description: >
+            A worker queue saturated and in-app/email notices (or deletion
+            notices) were discarded. Members may have missed governance or
+            deletion notifications. Investigate the burst source; the queue
+            sizes are compile-time constants in internal/service.
+
       - alert: QuorumAuditChainBroken
         expr: quorum_audit_chain_intact == 0
         labels: {severity: critical}

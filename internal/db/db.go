@@ -7,7 +7,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,12 +26,29 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 	// Bound the pool so a traffic spike or connection leak degrades gracefully
-	// instead of exhausting PostgreSQL's max_connections.
+	// instead of exhausting PostgreSQL's max_connections. Overridable for
+	// larger deployments via QUORUM_DB_MAX_CONNS (the pool-saturation alert
+	// advises raising it, so it must be raisable without a rebuild).
 	cfg.MaxConns = 10
+	if v := os.Getenv("QUORUM_DB_MAX_CONNS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			cfg.MaxConns = int32(n)
+		}
+	}
 	cfg.MaxConnLifetime = time.Hour
 	cfg.MaxConnIdleTime = 30 * time.Minute
 	cfg.HealthCheckPeriod = time.Minute
 	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
+	// A server-side cap so one pathological query or a lock held by an
+	// interactive psql can't pin a pooled connection forever and, ten deep,
+	// wedge the whole pool. Overridable via QUORUM_DB_STATEMENT_TIMEOUT_MS.
+	stmtTimeout := "30000"
+	if v := os.Getenv("QUORUM_DB_STATEMENT_TIMEOUT_MS"); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
+			stmtTimeout = v
+		}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = stmtTimeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
