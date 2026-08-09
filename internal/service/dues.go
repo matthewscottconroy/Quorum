@@ -141,12 +141,14 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 
 	s.pruneBookkeeping(ctx)
 
-	if s.email == nil || !s.email.configured() {
-		return
+	// Reminders and the digest need email; skip them when it's unconfigured,
+	// but the job itself still ran — fall through to the success marker so
+	// liveness monitoring and catch-up don't treat an email-less deployment as
+	// a perpetually-failing job.
+	if s.email != nil && s.email.configured() {
+		s.sendMemberReminders(ctx)
+		s.sendAdminDigest(ctx)
 	}
-
-	s.sendMemberReminders(ctx)
-	s.sendAdminDigest(ctx)
 
 	if s.postHook != nil {
 		s.postHook(ctx)

@@ -1,7 +1,7 @@
 import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney } from '../utils.js';
+import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager } from '../utils.js';
 
 const STATUSES = ['','pending','overdue','paid','partial','waived'];
 
@@ -12,6 +12,8 @@ class PageDues extends HTMLElement {
     this._status   = '';
     this._period   = '';
     this._seq      = 0;
+    this._offset   = 0;
+    this._total    = 0;
   }
 
   connectedCallback() {
@@ -40,16 +42,17 @@ class PageDues extends HTMLElement {
         <input id="period-inp" placeholder="Period label (e.g. Annual 2026)" value="${esc(this._period)}" style="max-width:260px">
         <button class="btn-secondary" id="refresh-btn">Refresh</button>
       </div>
-      <div class="card" style="overflow:hidden">
+      <div class="card" style="overflow-x:auto">
         <table>
           <thead><tr><th>Member</th><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
+      <div id="pager"></div>
     `;
 
-    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this.load(); });
-    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this.load(); });
+    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this.load(); });
+    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this.load(); });
     this.querySelector('#refresh-btn')?.addEventListener('click', () => this.load());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
     this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
@@ -156,16 +159,18 @@ class PageDues extends HTMLElement {
     const seq = ++this._seq;
     const tbody = this.querySelector('#tbody');
     tbody.innerHTML = `<tr><td colspan="${this._cols()}" style="text-align:center"><span class="spinner"></span></td></tr>`;
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ limit: '50', offset: String(this._offset) });
     if (this._status) params.set('status', this._status);
     if (this._period) params.set('period', this._period);
     try {
       const _dPage = await api('GET', '/dues?' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._invoices = _dPage?.data ?? _dPage ?? [];
+      this._total = _dPage?.total ?? this._invoices.length;
       tbody.innerHTML = this._rows()
         || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No invoices found.</p></div></td></tr>`;
       this._wireRows(tbody);
+      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this.load(); } });
     } catch {
       if (seq !== this._seq) return;
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load dues.</p></div></td></tr>`;
@@ -267,7 +272,7 @@ class PageDues extends HTMLElement {
           </div>
           <div class="form-group" id="member-row">
             <label for="f-msearch">Members to bill</label>
-            <input id="f-msearch" placeholder="Type to filter…" autocomplete="off">
+            <input id="f-msearch" placeholder="Type to search all members…" autocomplete="off">
             <div id="f-mlist" style="max-height:180px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.35rem .6rem;margin-top:.35rem">
               <span class="spinner"></span>
             </div>
@@ -325,39 +330,52 @@ class PageDues extends HTMLElement {
         (pg?.data ?? pg ?? []).map(c => `<option value="${esc(c.id)}">${esc(c.name)}${c.organization ? ' — ' + esc(c.organization) : ''}</option>`).join('');
     }).catch(() => {});
 
-    // Member picker: selection survives filtering because it lives in a Set,
-    // not in the checkboxes themselves.
-    let pickerMembers = [];
+    // Member picker: the list is fetched from the server per search term (so an
+    // org with more members than one page can still find anyone), while the
+    // selection lives in a Set that survives re-querying.
+    let shownMembers = [];
     const picked = new Set();
+    const pickedNames = new Map(); // id -> name, so the count tooltip works after re-query
     const mlist = dialog.querySelector('#f-mlist');
     const recount = () => {
       dialog.querySelector('#f-mcount').textContent = `${picked.size} selected`;
+      dialog.querySelector('#f-mcount').title = [...pickedNames.values()].join(', ');
     };
-    const renderPicker = () => {
-      const q = dialog.querySelector('#f-msearch').value.trim().toLowerCase();
-      const shown = pickerMembers.filter(m => !q || m.display_name.toLowerCase().includes(q) || (m.tier ?? '').toLowerCase().includes(q));
-      mlist.innerHTML = shown.map(m => `
+    const paint = () => {
+      mlist.innerHTML = shownMembers.map(m => `
         <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
           <input type="checkbox" class="inv-mcb" style="width:auto" value="${esc(m.id)}" ${picked.has(m.id) ? 'checked' : ''}>
           <span style="flex:1">${esc(m.display_name)}</span>
           <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
         </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem;margin:.3rem 0">No matching members.</p>';
       mlist.querySelectorAll('.inv-mcb').forEach(cb => cb.addEventListener('change', () => {
-        if (cb.checked) picked.add(cb.value); else picked.delete(cb.value);
+        const m = shownMembers.find(x => x.id === cb.value);
+        if (cb.checked) { picked.add(cb.value); if (m) pickedNames.set(cb.value, m.display_name); }
+        else { picked.delete(cb.value); pickedNames.delete(cb.value); }
         recount();
       }));
     };
-    api('GET', '/members?limit=200&status=active').then(pg => {
-      pickerMembers = pg?.data ?? pg ?? [];
-      renderPicker(); recount();
-    }).catch(() => { mlist.innerHTML = '<p style="color:var(--color-danger);font-size:.85rem">Failed to load members.</p>'; });
-    dialog.querySelector('#f-msearch').addEventListener('input', renderPicker);
+    let searchTimer;
+    const runSearch = () => {
+      const q = dialog.querySelector('#f-msearch').value.trim();
+      const params = new URLSearchParams({ limit: '50', status: 'active' });
+      if (q) params.set('search', q);
+      api('GET', '/members?' + params).then(pg => {
+        shownMembers = pg?.data ?? pg ?? [];
+        paint();
+      }).catch(() => { mlist.innerHTML = '<p style="color:var(--color-danger);font-size:.85rem">Failed to load members.</p>'; });
+    };
+    runSearch(); recount();
+    dialog.querySelector('#f-msearch').addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(runSearch, 300);
+    });
     dialog.querySelector('#f-mall').addEventListener('click', () => {
-      mlist.querySelectorAll('.inv-mcb').forEach(cb => picked.add(cb.value));
-      renderPicker(); recount();
+      shownMembers.forEach(m => { picked.add(m.id); pickedNames.set(m.id, m.display_name); });
+      paint(); recount();
     });
     dialog.querySelector('#f-mnone').addEventListener('click', () => {
-      picked.clear(); renderPicker(); recount();
+      picked.clear(); pickedNames.clear(); paint(); recount();
     });
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {

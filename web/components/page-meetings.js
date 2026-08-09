@@ -313,7 +313,8 @@ class PageMeetings extends HTMLElement {
 
   // ─── Attendance roster ─────────────────────────────────────────────────────
 
-  /** Fetches the data every roster picker needs. */
+  /** Fetches the data every roster picker needs: a first page of members (for
+   *  the initial list and tier options) and the visibility groups. */
   async loadRosterData() {
     const mp = await api('GET', '/members?limit=200&status=active');
     const members = mp?.data ?? mp ?? [];
@@ -323,17 +324,23 @@ class PageMeetings extends HTMLElement {
   }
 
   /**
-   * Mounts a checkbox roster with bulk-select tools — everyone, no one, by
+   * Mounts a checkbox roster with bulk-select tools — everyone-shown, none, by
    * minimum role (linked user account), by member tier, or by visibility
-   * group — into `host`. `attending` maps member_id → present flag for
-   * preselection. Returns { roster } yielding the current selection as
-   * attendee objects; callers can append buttons to `.att-actions`.
+   * group — into `host`. The individual list is searched server-side so anyone
+   * is reachable regardless of org size; the selection lives in a Set that
+   * survives searching and every bulk action. `attending` maps member_id →
+   * present flag, seeding the selection and preserving present/absent. Returns
+   * { roster } yielding the selection as attendee objects; callers can append
+   * buttons to `.att-actions`.
    */
   mountRosterPicker(host, members, groups, attending) {
     const tiers = [...new Set(members.map(m => m.tier).filter(Boolean))].sort();
+    const selected = new Set(attending.keys());
+    let shown = members; // the current (searched) page of members
+
     host.innerHTML = `
       <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin-bottom:.5rem">
-        <button type="button" class="btn-secondary att-all" style="font-size:.75rem">All</button>
+        <button type="button" class="btn-secondary att-all" style="font-size:.75rem" title="Select everyone currently shown">All shown</button>
         <button type="button" class="btn-secondary att-none" style="font-size:.75rem">None</button>
         <button type="button" class="btn-secondary att-officers" style="font-size:.75rem">Officers+</button>
         <select class="att-tier" style="font-size:.75rem;max-width:9rem">
@@ -345,44 +352,65 @@ class PageMeetings extends HTMLElement {
           ${groups.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('')}
         </select>
       </div>
-      <div class="att-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.4rem .6rem">
-        ${members.map(m => `
-          <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
-            <input type="checkbox" class="att-cb" style="width:auto" value="${esc(m.id)}" ${attending.has(m.id) ? 'checked' : ''}>
-            <span style="flex:1">${esc(m.display_name)}</span>
-            <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
-          </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem">No active members.</p>'}
-      </div>
+      <input class="att-search" placeholder="Search members by name…" autocomplete="off" style="margin-bottom:.4rem">
+      <div class="att-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:.4rem .6rem"></div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.5rem">
         <span class="att-count" style="font-size:.78rem;color:var(--color-text-muted)"></span>
         <span class="att-actions"></span>
       </div>`;
 
-    const boxes = () => [...host.querySelectorAll('.att-cb')];
+    const listEl = host.querySelector('.att-list');
     const recount = () => {
-      host.querySelector('.att-count').textContent =
-        `${boxes().filter(b => b.checked).length} of ${members.length} attending`;
+      host.querySelector('.att-count').textContent = `${selected.size} attending`;
     };
-    const setChecked = (ids, on) => {
-      const set = new Set(ids);
-      boxes().forEach(b => { if (set.has(b.value)) b.checked = on; });
-      recount();
+    const paint = () => {
+      listEl.innerHTML = shown.map(m => `
+        <label style="display:flex;gap:.45rem;align-items:center;font-size:.85rem;padding:.12rem 0;cursor:pointer;text-transform:none;letter-spacing:normal;font-weight:400;color:var(--color-text);margin-bottom:0">
+          <input type="checkbox" class="att-cb" style="width:auto" value="${esc(m.id)}" ${selected.has(m.id) ? 'checked' : ''}>
+          <span style="flex:1">${esc(m.display_name)}</span>
+          <span style="font-size:.72rem;color:var(--color-text-muted)">${esc(m.tier ?? '')}</span>
+        </label>`).join('') || '<p style="color:var(--color-text-muted);font-size:.85rem">No matching members.</p>';
+      listEl.querySelectorAll('.att-cb').forEach(cb => cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(cb.value); else selected.delete(cb.value);
+        recount();
+      }));
     };
-    boxes().forEach(b => b.addEventListener('change', recount));
+    const addIDs = ids => { ids.forEach(id => selected.add(id)); paint(); recount(); };
+
+    paint();
     recount();
 
-    host.querySelector('.att-all').addEventListener('click', () => setChecked(members.map(m => m.id), true));
-    host.querySelector('.att-none').addEventListener('click', () => setChecked(members.map(m => m.id), false));
+    let searchTimer;
+    host.querySelector('.att-search').addEventListener('input', e => {
+      clearTimeout(searchTimer);
+      const q = e.target.value.trim();
+      searchTimer = setTimeout(async () => {
+        const params = new URLSearchParams({ limit: '50', status: 'active' });
+        if (q) params.set('search', q);
+        try {
+          const pg = await api('GET', '/members?' + params);
+          shown = pg?.data ?? pg ?? [];
+          paint();
+        } catch { toast('Could not search members', 'error'); }
+      }, 300);
+    });
+
+    host.querySelector('.att-all').addEventListener('click', () => addIDs(shown.map(m => m.id)));
+    host.querySelector('.att-none').addEventListener('click', () => { selected.clear(); paint(); recount(); });
     host.querySelector('.att-officers').addEventListener('click', async () => {
       try {
         const res = await api('GET', '/members/ids?min_role=officer');
-        setChecked(res.member_ids ?? [], true);
+        addIDs(res.member_ids ?? []);
       } catch { toast('Could not load officers', 'error'); }
     });
-    host.querySelector('.att-tier').addEventListener('change', e => {
-      if (!e.target.value) return;
-      setChecked(members.filter(m => m.tier === e.target.value).map(m => m.id), true);
+    host.querySelector('.att-tier').addEventListener('change', async e => {
+      const tier = e.target.value;
+      if (!tier) return;
       e.target.value = '';
+      try {
+        const pg = await api('GET', '/members?' + new URLSearchParams({ tier, status: 'active', limit: '500' }));
+        addIDs((pg?.data ?? pg ?? []).map(m => m.id));
+      } catch { toast('Could not load tier members', 'error'); }
     });
     host.querySelector('.att-group').addEventListener('change', async e => {
       const gid = e.target.value;
@@ -390,14 +418,14 @@ class PageMeetings extends HTMLElement {
       e.target.value = '';
       try {
         const res = await api('GET', `/groups/${gid}/member-ids`);
-        setChecked(res.member_ids ?? [], true);
+        addIDs(res.member_ids ?? []);
       } catch { toast('Could not load group members', 'error'); }
     });
 
-    const roster = () => boxes().filter(b => b.checked).map(b => ({
-      member_id: b.value,
+    const roster = () => [...selected].map(id => ({
+      member_id: id,
       // Keep an existing present/absent flag; newly added people default to present.
-      present: attending.get(b.value) ?? true,
+      present: attending.get(id) ?? true,
     }));
     return { roster, recount };
   }

@@ -1,11 +1,13 @@
 import { api, canWrite, isAuthenticated, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
+
+const PLAN_STATUSES = ['draft', 'active', 'completed', 'archived'];
 
 const STATUSES = ['draft','active','completed','archived'];
 
 class PagePlans extends HTMLElement {
-  constructor() { super(); this._plans = []; this._seq = 0; }
+  constructor() { super(); this._plans = []; this._seq = 0; this._status = ''; this._offset = 0; this._total = 0; }
 
   connectedCallback() {
     this.render();
@@ -19,9 +21,17 @@ class PagePlans extends HTMLElement {
         <h1>Plans &amp; Initiatives</h1>
         ${canWrite() ? '<button class="btn-primary" id="add-btn">+ New plan</button>' : ''}
       </div>
+      <div class="search-bar">
+        <select id="status-sel" aria-label="Filter by status">
+          <option value="">All statuses</option>
+          ${PLAN_STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </div>
       <div style="display:flex;flex-direction:column;gap:.75rem" id="plan-list"></div>
+      <div id="pager"></div>
     `;
 
+    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this.load(); });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
   }
 
@@ -30,10 +40,14 @@ class PagePlans extends HTMLElement {
     const list = this.querySelector('#plan-list');
     list.innerHTML = '<div style="text-align:center;padding:1rem"><span class="spinner"></span></div>';
     try {
-      const _plPage = await api('GET', '/plans');
+      const params = new URLSearchParams({ limit: '25', offset: String(this._offset) });
+      if (this._status) params.set('status', this._status);
+      const _plPage = await api('GET', '/plans?' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._plans = _plPage?.data ?? _plPage ?? [];
+      this._total = _plPage?.total ?? this._plans.length;
       this.renderList(list);
+      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 25, total: this._total, onNavigate: o => { this._offset = o; this.load(); } });
     } catch {
       if (seq !== this._seq) return;
       list.innerHTML = '<div class="empty-state"><p>Failed to load plans.</p></div>';

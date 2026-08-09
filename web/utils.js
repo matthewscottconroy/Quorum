@@ -281,6 +281,31 @@ export function confirmDelete({ noun = 'record', name = '', onConfirm } = {}) {
   return { dialog, close };
 }
 
+/**
+ * Renders a "N–M of TOTAL" range with Previous/Next buttons into `container`,
+ * wiring navigation back through `onNavigate(newOffset)`. Shared by every
+ * offset-paginated list page so records past the first page stay reachable.
+ * The container is hidden entirely when everything fits on one page.
+ * @param {HTMLElement} container
+ * @param {{offset:number, limit:number, total:number, onNavigate:(offset:number)=>void}} opts
+ */
+export function renderPager(container, { offset, limit, total, onNavigate }) {
+  if (!container) return;
+  if (total <= limit && offset === 0) { container.innerHTML = ''; return; }
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + limit, total);
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:.6rem .2rem;gap:1rem">
+      <span style="color:var(--color-text-muted);font-size:.85rem">${from}–${to} of ${total}</span>
+      <span style="display:flex;gap:.5rem">
+        <button class="btn-secondary" data-pg="prev" ${offset === 0 ? 'disabled' : ''}>Previous</button>
+        <button class="btn-secondary" data-pg="next" ${to >= total ? 'disabled' : ''}>Next</button>
+      </span>
+    </div>`;
+  container.querySelector('[data-pg=prev]').addEventListener('click', () => onNavigate(Math.max(0, offset - limit)));
+  container.querySelector('[data-pg=next]').addEventListener('click', () => onNavigate(offset + limit));
+}
+
 /* ── Word-frequency analysis (for document heat maps) ─────────────────────── */
 
 /** Common English words (plus document boilerplate) excluded from frequency

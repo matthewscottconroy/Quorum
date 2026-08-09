@@ -1,9 +1,9 @@
 import { api, canWrite, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
 
 class PageContacts extends HTMLElement {
-  constructor() { super(); this._contacts = []; this._search = ''; this._category = ''; this._seq = 0; }
+  constructor() { super(); this._contacts = []; this._search = ''; this._category = ''; this._seq = 0; this._offset = 0; this._total = 0; }
 
   connectedCallback() {
     this.render();
@@ -23,20 +23,21 @@ class PageContacts extends HTMLElement {
         <input id="search-inp" placeholder="Search contacts…" value="${esc(this._search)}">
         <input id="cat-inp" placeholder="Category" value="${esc(this._category)}" style="max-width:160px">
       </div>
-      <div class="card" style="overflow:hidden">
+      <div class="card" style="overflow-x:auto">
         <table>
           <thead><tr><th>Name</th><th>Organization</th><th>Category</th><th>Email</th><th>Phone</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
+      <div id="pager"></div>
     `;
 
     this.querySelector('#search-inp')?.addEventListener('input', e => {
       this._search = e.target.value;
       clearTimeout(this._timer);
-      this._timer = setTimeout(() => this.load(), 350);
+      this._timer = setTimeout(() => { this._offset = 0; this.load(); }, 350);
     });
-    this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this.load(); });
+    this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this._offset = 0; this.load(); });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
   }
 
@@ -44,16 +45,18 @@ class PageContacts extends HTMLElement {
     const seq = ++this._seq;
     const tbody = this.querySelector('#tbody');
     tbody.innerHTML = `<tr><td colspan="${this._cols()}" style="text-align:center"><span class="spinner"></span></td></tr>`;
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ limit: '50', offset: String(this._offset) });
     if (this._search)   params.set('search', this._search);
     if (this._category) params.set('category', this._category);
     try {
       const _coPage = await api('GET', '/contacts?' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._contacts = _coPage?.data ?? _coPage ?? [];
+      this._total = _coPage?.total ?? this._contacts.length;
       tbody.innerHTML = this._rows()
         || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No contacts found.</p></div></td></tr>`;
       this._wireRows(tbody);
+      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this.load(); } });
     } catch {
       if (seq !== this._seq) return;
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load contacts.</p></div></td></tr>`;

@@ -1,6 +1,6 @@
 import { api, apiUpload, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
 import { openDocPreview } from './doc-preview.js';
 
 function safeUrl(u) { try { const p = new URL(u); return (p.protocol==='https:'||p.protocol==='http:') ? u : null; } catch { return null; } }
@@ -17,6 +17,7 @@ class PageResources extends HTMLElement {
     super();
     this._resources = []; this._folders = []; this._search = ''; this._category = '';
     this._folder = ''; this._seq = 0; this._collapsed = new Set();
+    this._offset = 0; this._total = 0;
   }
 
   /** children-of map for the folder tree; roots under the '' key. */
@@ -56,20 +57,21 @@ class PageResources extends HTMLElement {
         ${canWrite() ? '<button class="btn-secondary" id="folders-btn">Folders</button>' : ''}
       </div>
       <div class="card" id="folder-tree" style="padding:.45rem .7rem;margin-bottom:.8rem;font-size:.86rem"></div>
-      <div class="card" style="overflow:hidden">
+      <div class="card" style="overflow-x:auto">
         <table>
           <thead><tr><th>Title</th><th>Folder</th><th>Category</th><th>Tags</th><th>Content</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
+      <div id="pager"></div>
     `;
 
     this.querySelector('#search-inp')?.addEventListener('input', e => {
       this._search = e.target.value;
       clearTimeout(this._timer);
-      this._timer = setTimeout(() => this.load(), 350);
+      this._timer = setTimeout(() => { this._offset = 0; this.load(); }, 350);
     });
-    this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this.load(); });
+    this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this._offset = 0; this.load(); });
     this.querySelector('#folders-btn')?.addEventListener('click', () => this.openFoldersModal());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
   }
@@ -105,6 +107,7 @@ class PageResources extends HTMLElement {
     }));
     box.querySelectorAll('.ft-name').forEach(b => b.addEventListener('click', () => {
       this._folder = b.dataset.id;
+      this._offset = 0;
       this.load();
     }));
     if (!document.getElementById('folder-tree-style')) {
@@ -125,7 +128,7 @@ class PageResources extends HTMLElement {
     const seq = ++this._seq;
     const tbody = this.querySelector('#tbody');
     tbody.innerHTML = `<tr><td colspan="${this._cols()}" style="text-align:center"><span class="spinner"></span></td></tr>`;
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ limit: '50', offset: String(this._offset) });
     if (this._search)   params.set('search', this._search);
     if (this._category) params.set('category', this._category);
     if (this._folder)   params.set('folder', this._folder);
@@ -136,11 +139,13 @@ class PageResources extends HTMLElement {
       ]);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._resources = _rePage?.data ?? _rePage ?? [];
+      this._total = _rePage?.total ?? this._resources.length;
       this._folders = folders ?? [];
       this._renderTree();
       tbody.innerHTML = this._rows()
         || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No resources yet.</p></div></td></tr>`;
       this._wireRows(tbody);
+      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this.load(); } });
     } catch {
       if (seq !== this._seq) return;
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load resources.</p></div></td></tr>`;

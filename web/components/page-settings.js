@@ -488,8 +488,6 @@ class PageSettings extends HTMLElement {
         const { revoked } = await api('POST', '/auth/me/sessions/revoke-others');
         toast(revoked ? `Signed out ${revoked} other session${revoked === 1 ? '' : 's'}` : 'No other sessions to sign out', 'success');
         this.loadSessionCount();
-    this.loadGroups();
-    this.querySelector('#group-add-btn')?.addEventListener('click', () => this.openGroupModal(null));
       } catch (err) {
         toast(err.error ?? 'Could not sign out other devices', 'error');
       }
