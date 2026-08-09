@@ -282,6 +282,15 @@ approximate location/address and last-used time. If anything looks unfamiliar:
 3. If you suspect more than a stray login, tell an administrator — the audit
    log (6.8) shows exactly what the account did.
 
+## 2.8 Applying to join (no account needed)
+
+Prospective members don't need a login to apply. From the sign-in screen,
+**Apply to join** opens a short public form — name, email, and an optional
+message. Submitting it drops the application into the organization's review
+queue; an officer sees it on the **Roster** page (5.12) and can approve it,
+which creates the member record, or decline it. The form is rate-limited to
+prevent abuse and never exposes anything about the organization.
+
 \newpage
 
 # Part 3 — User Story: The Member (Self-Service / `restricted`)
@@ -504,6 +513,19 @@ To forgive an invoice, change its status to **waived** (a confirmation is
 requested because it changes the invoice's financial state). Waived and paid
 invoices are not re-aged to overdue.
 
+**Record a refund.** Open the invoice (click its row) and use **Record refund**.
+Enter the amount (in the invoice's currency — a refund must match it), the
+provider/method, and an optional reason. Quorum posts a reversing entry to the
+ledger and recomputes the invoice's status, so your books and the invoice both
+reflect the money going back out. Refunds are just negative transactions; they
+show in the invoice's transaction list.
+
+**Offer a payment plan (installments).** In the same invoice view, under
+**Payment plan**, split a large invoice into scheduled partial payments: add a
+row per installment with a due date and amount. This is a *tracking aid only* —
+the invoice's own paid/partial status stays authoritative and payments are still
+recorded as transactions in the usual way. Saving an empty list clears the plan.
+
 ### 5.2.7 Recurring dues schedules
 
 For dues billed on a rhythm (annual, quarterly, monthly), create a **dues
@@ -621,6 +643,12 @@ section that acts as a recording secretary:
 - **Preview as a heat map.** The 🔥 button renders the minutes as a
   word-frequency heat map (5.7) — a fast gist of a long meeting, entirely
   in your browser. A preview is not an export: nothing is downloaded or logged.
+- **Recuse yourself (conflict of interest).** On any live motion, **Recuse
+  myself** records that you are stepping back from the vote for a conflict of
+  interest, with an optional reason. The recusal is shown on the motion so it can
+  be captured in the minutes. Recusing is advisory — it does not block you from
+  voting — but it creates the auditable record good governance expects. The same
+  control appears on fund **purchases** (6.6a).
 
 ## 5.4 Plans & initiatives
 
@@ -822,11 +850,31 @@ Three more areas, each self-explanatory in the app once you know they exist:
   single-use voting links, including **proxy** support — for decisions taken
   between meetings. Ballot casting is atomic: a vote counts exactly once.
 - **Budgets.** Scenario planning: draft a budget, **clone** it into a what-if
-  variant, adjust, and **compare** side by side before adopting one.
+  variant, adjust, and **compare** side by side before adopting one. Once a
+  period is underway, **Vs actual** compares any scenario's budgeted income and
+  expense against what's actually posted to the ledger over a date range, with
+  the variance called out — so you can see where you're over or under plan.
 - **Analytics.** Dashboard charts of membership and receivables over time.
   Multi-currency organizations: totals are per-currency — mixed currencies
   are **flagged, never silently summed** — with explicit FX conversion where
   configured.
+
+## 5.12 Roster: office holders, committees & membership applications
+
+The **Roster** page (in the People area; officers see all of it, members see
+office holders and committees) keeps the organizational record that sits
+*alongside* the permission model — none of it grants access.
+
+- **Office holders.** Record who holds which office (Treasurer, Secretary, …)
+  and since when. Ending a term keeps it in the history, so the page doubles as
+  an org-chart-over-time. Admins add and end terms; a member holds a given title
+  once at a time.
+- **Committees.** Create named working groups with a purpose, an optional chair,
+  and a roster. Admins manage them; everyone can see who's on what.
+- **Membership applications.** When someone applies through the public form (see
+  2.8), their request lands in the **Membership applications** queue here.
+  **Approve** creates a member record from the application in one step (you can
+  set a tier); **Reject** declines it. Both are officer actions.
 
 \newpage
 
@@ -959,6 +1007,26 @@ Settings → Organization settings carries the org's **bus-factor kit**:
   infrastructure facts you maintain, the full org configuration snapshot,
   and the custody registry. Regenerate and print after material changes;
   store beside the offline backup-passphrase copy.
+
+## 6.6c Organization settings: automation & retention knobs
+
+Settings → Organization settings also carries a few policy switches that let the
+software run itself the way your organization prefers. All are optional and off
+by default, so Quorum works as-is for any organization until you turn them on.
+
+- **Auto-lapse overdue members** (`lapse_after_days`). Set a number of days and
+  the nightly cycle flips a member from **active** to **inactive** once they have
+  an invoice overdue by at least that long. Leave it at `0` (the default) to
+  never lapse anyone automatically. Lapsing is reversible — you can reactivate a
+  member at any time.
+- **Monthly financial summary email** (`monthly_report_email`). Enter an address
+  and the nightly cycle sends a monthly financial digest there — a hands-off way
+  to keep a treasurer or board informed.
+- **Audit legal hold** (`audit_legal_hold`, admin only). Normally the nightly
+  cycle prunes old audit and bookkeeping records past their retention window.
+  Turning legal hold **on** suspends that pruning entirely — nothing ages out —
+  so records are preserved while litigation or an investigation is pending. Turn
+  it off to resume normal retention.
 
 ## 6.7 Visibility groups (constrain what members can see)
 

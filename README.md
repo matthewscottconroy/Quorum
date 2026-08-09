@@ -151,6 +151,8 @@ Query parameters for `GET /members`: `search`, `status`, `tier`, `limit`, `offse
 | `PATCH` | `/dues/:id` | officer | Update invoice status |
 | `POST` | `/dues/:id/transactions` | officer | Record a payment |
 | `POST` | `/dues/batch` | officer | Bulk-set status on `{ids}` (waive / re-open) |
+| `POST` | `/dues/:id/refund` | officer | Record a refund — a reversing GL entry in the invoice's currency (`{amount_minor, provider, note?}`) |
+| `GET` / `PUT` | `/dues/:id/installments` | officer | Read / set a payment plan (tracking only): `{installments:[{amount_minor, due_date}]}`, empty clears it |
 | `POST` | `/dues/:id/report-payment` | member¹ | Member self-reports a manual payment (Zelle/check) for officer confirmation |
 | `GET` | `/payment-reports` | officer | Pending payment-report queue |
 | `POST` | `/payment-reports/:id/confirm` \| `/dismiss` | officer | Confirm (records the payment) or dismiss a report |
@@ -263,7 +265,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `POST` | `/accounting/entries` | admin | Adjusting journal entry (balanced per currency or the DB refuses) |
 | `GET` / `PUT` | `/accounting/posting-rules` | officer / admin | The automatic-posting account mappings, admin-editable (incl. `cash.provider.<name>` per payment provider); future postings only |
 | `GET` | `/reports/accounting-pack.zip?from=&to=` | admin | CPA export: sealed statements PDF + trial balance/GL/statements/funds/AR-aging + bills/AP-aging CSVs + evidence file; ZIP SHA-256 audited |
-| `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings (`fiscal_year_start_month`, `how_to_pay`, `require_2fa` = off\|admin\|officer\|member; admin-only: `infrastructure_facts`, `continuity_*`) |
+| `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings (`fiscal_year_start_month`, `how_to_pay`, `require_2fa` = off\|admin\|officer\|member, `lapse_after_days`; admin-only: `infrastructure_facts`, `continuity_*`, `audit_legal_hold`, `monthly_report_email`) |
 | `GET`/`POST`/`PATCH`/`DELETE` + `/attest` | `/continuity/custody[...]` | admin | Secret-custody registry (locations/holders, never values) with recorded attestations |
 | `GET` | `/continuity/checks` | admin | Bus-factor health: superadmin count, custody staleness, watchdog config, TLS days-left |
 | `GET` | `/reports/continuity-pack.zip` | superadmin | The successor's map: generated README, infrastructure facts, org snapshot, custody CSV — sealed & audited |
@@ -289,6 +291,27 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `POST` | `/bills/:id/void` | admin | Reverse an open bill with a mirroring journal entry |
 
 Bills are permanent records: no deletes, and a paid or void bill is frozen (DB triggers). Cash-basis statements ignore a bill until it is actually paid — the accrual entry touches no cash account. Open bills appear in the AP aging block of `/accounting/statements`.
+
+### Roster, governance records & membership
+
+These are organizational **records**, not access grants — the permission role remains the only security boundary. Office titles and committees describe the org chart; recusals and the application queue are auditable governance workflow.
+
+| Method | Path | Min role | Description |
+|--------|------|----------|-------------|
+| `GET` | `/office-terms` | member | Office holders with history (`?current=true` for present holders) |
+| `POST` | `/office-terms` | admin | Record a member holding an office (`{member_id, title, started_on?}`) |
+| `POST` | `/office-terms/:id/end` | admin | Close an open term (`{ended_on?}`, defaults to today) |
+| `GET` / `POST` | `/committees` | member / admin | List committees (with chair + member count) / create (`{name, purpose?, chair_id?}`) |
+| `GET` / `PATCH` / `DELETE` | `/committees/:id` | member / admin / admin | Get (with roster) / edit / delete |
+| `PUT` | `/committees/:id/members` | admin | Replace the committee roster (`{member_ids:[…]}`) |
+| `GET` / `POST` | `/recusals/:id` | member | List (`?type=motion\|purchase`) / record the caller recusing (`{type, reason?}`) from a motion or purchase for conflict of interest |
+| `POST` | `/public/join-request` | — (public) | Anyone applies to join (`{name, email, message?}`); rate-limited |
+| `GET` | `/join-requests` | officer | Membership-application queue (`?status=pending\|approved\|rejected`) |
+| `POST` | `/join-requests/:id/approve` | officer | Approve — atomically creates a member (`{tier?}`) and returns `{member_id}` |
+| `POST` | `/join-requests/:id/reject` | officer | Decline an application |
+| `GET` | `/budgets/:id/vs-actual?from=&to=` | officer | Compare a budget scenario's totals to posted GL income/expense over a date range |
+
+Recusals recorded against a motion or purchase are returned inline on that motion (`GET /meetings/:id/motions`) and purchase (`GET /purchases`), so the recusal is visible wherever the vote or approval is.
 
 ### Discussions
 
