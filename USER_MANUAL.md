@@ -734,6 +734,11 @@ The **Board** page tracks work two ways over the same cards:
 - **Sprint board** — group cards into **sprints** (status `planned`,
   `active`, `completed`), each with a goal and dates, for time-boxed planning.
 
+A closed card wears its resolution on its face: **✓ done** (green) or
+**✕ cancelled** (grey, struck through) — so a Done lane distinguishes work
+that shipped from work that was called off. Set it with the card's **Status**
+dropdown, or drop the card into a column mapped to that status.
+
 Every card also records its **reporter** — whoever created it — shown as
 "✍ Reported by …" in the card. It is set automatically at creation and cannot
 be changed. Create a card with a title, optional description, an **assignee**

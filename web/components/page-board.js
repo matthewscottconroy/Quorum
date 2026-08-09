@@ -185,16 +185,26 @@ class PageBoard extends HTMLElement {
 
   cardHTML(i, officer) {
     const due = i.due_date ? new Date(i.due_date) : null;
-    const overdue = due && i.status !== 'done' && due < new Date();
+    const closed = i.status === 'done' || i.status === 'cancelled';
+    const overdue = due && !closed && due < new Date();
     const [tb, tc] = TYPE_BADGE[i.card_type] ?? TYPE_BADGE.task;
+    // A closed card wears its resolution on the face: in a Done lane (or any
+    // shared view) "completed" and "cancelled" must be distinguishable at a
+    // glance, not only inside the editor's Status dropdown.
+    const resolution = i.status === 'done'
+      ? '<span class="badge" style="background:#dcfce7;color:#166534;font-size:.65rem">✓ done</span>'
+      : i.status === 'cancelled'
+        ? '<span class="badge" style="background:#f1f5f9;color:#64748b;font-size:.65rem">✕ cancelled</span>'
+        : '';
     return `
       <div class="board-card ${officer ? 'board-card-edit' : ''}" data-id="${esc(i.id)}"
            role="button" tabindex="0" aria-label="${officer ? 'Edit' : 'View'} card: ${esc(i.title)}"
-           style="border-left:3px solid ${PRIORITY_COLOR[i.priority] ?? PRIORITY_COLOR.normal}">
-        <div class="board-card-title">
+           style="border-left:3px solid ${PRIORITY_COLOR[i.priority] ?? PRIORITY_COLOR.normal};${i.status === 'cancelled' ? 'opacity:.65' : ''}">
+        <div class="board-card-title" style="${i.status === 'cancelled' ? 'text-decoration:line-through' : ''}">
           <span class="board-type" style="background:${tc}" title="${esc(i.card_type.replace('_', '-'))}">${tb}</span>
           ${esc(i.title)}
           ${i.story_points != null ? `<span class="board-pts">${i.story_points}</span>` : ''}
+          ${resolution}
         </div>
         ${i.parent_title ? `<div class="board-card-sprint">◳ ${esc(i.parent_title)}</div>` : ''}
         <div class="board-card-meta">
