@@ -146,6 +146,7 @@ func main() {
 	// Handlers
 	authH := handler.NewAuthHandler(authRepo, cfg)
 	dashH := handler.NewDashboardHandler(duesRepo, membersRepo, meetingsRepo, actionItemsRepo)
+	activityH := handler.NewActivityHandler(repo.NewActivityRepo(pool))
 	membersH := handler.NewMembersHandler(membersRepo, actionItemsRepo, duesRepo)
 	duesH := handler.NewDuesHandler(duesRepo)
 	meetingsH := handler.NewMeetingsHandler(meetingsRepo)
@@ -221,6 +222,7 @@ func main() {
 	accountingH.SetAPAging(billsRepo)
 	packH.SetBills(billsRepo)
 	dashH.SetOpenBills(billsRepo)
+	dashH.SetSetupDeps(orgSettingsRepo, duesRepo, cfg.SMTPHost != "")
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)
@@ -399,10 +401,13 @@ func main() {
 			// blocked here and reach only their own record via the member-scoped
 			// endpoints below (which enforce ownership in-handler).
 			r.With(mw.RequireRole("member")).Get("/dashboard", dashH.Summary)
+			r.With(mw.RequireRole("admin")).Get("/setup-status", dashH.SetupStatus)
+			r.With(mw.RequireRole("member")).Get("/activity", activityH.Recent)
 
 			r.With(mw.RequireRole("member")).Get("/members", membersH.List)
 			r.With(mw.RequireRole("officer")).Get("/members/ids", membersH.IDsByRole)
 			r.With(mw.RequireRole("officer")).Post("/members", membersH.Create)
+			r.With(mw.RequireRole("officer")).Post("/members/batch", membersH.BatchUpdate)
 			r.Get("/members/{id}", membersH.Get) // ownership-scoped
 			r.With(mw.RequireRole("officer")).Patch("/members/{id}", membersH.Update)
 			r.With(mw.RequireRole("admin")).Delete("/members/{id}", membersH.Delete) // soft-delete
@@ -415,6 +420,7 @@ func main() {
 
 			r.With(mw.RequireRole("officer")).Get("/dues", duesH.List)
 			r.With(mw.RequireRole("officer")).Post("/dues", duesH.Create)
+			r.With(mw.RequireRole("officer")).Post("/dues/batch", duesH.BatchUpdateStatus)
 			r.With(mw.RequireRole("officer")).Get("/dues/{id}", duesH.Get)
 			r.With(mw.RequireRole("officer")).Patch("/dues/{id}", duesH.Update)
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/transactions", duesH.CreateTransaction)

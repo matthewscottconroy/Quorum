@@ -1,4 +1,4 @@
-import { api, isSuperadmin, canWrite } from '../app.js';
+import { api, isSuperadmin, canWrite, isAdmin } from '../app.js';
 import { esc, fmtDate, confirmDelete } from '../utils.js';
 import { toast } from './toast-notification.js';
 
@@ -9,9 +9,77 @@ class PageDashboard extends HTMLElement {
       const data = await api('GET', '/dashboard');
       this.render(data);
       this.wire();
+      this.renderSetupChecklist();
+      this.renderActivity();
     } catch {
       this.innerHTML = '<p class="empty-state">Failed to load dashboard.</p>';
     }
+  }
+
+  /**
+   * First-run checklist for admins: shows foundational setup steps with a
+   * done/not-done check derived from live data. Dismissible per browser;
+   * disappears on its own once every step is done.
+   */
+  async renderSetupChecklist() {
+    if (!isAdmin()) return;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('quorum.setup.dismissed') === '1'; } catch { /* private mode */ }
+    if (dismissed) return;
+    let st;
+    try { st = await api('GET', '/setup-status'); } catch { return; }
+    const steps = [
+      ['members_added',     'Add your members', '#/members', 'or import a CSV'],
+      ['dues_schedule_set', 'Set up recurring dues', '#/dues', 'a schedule bills each period automatically'],
+      ['how_to_pay_set',    'Tell members how to pay', '#/settings', 'shown on every My Account page'],
+      ['email_configured',  'Configure email (SMTP)', '#/settings', 'reminders and resets silently skip until this is set'],
+      ['require_2fa_set',   'Decide the two-factor policy', '#/settings', 'optional but recommended for officers+'],
+      ['meeting_scheduled', 'Schedule your first meeting', '#/meetings', ''],
+    ];
+    const remaining = steps.filter(([k]) => !st[k]);
+    if (!remaining.length) return;
+    const host = this.querySelector('#setup-slot');
+    if (!host) return;
+    host.innerHTML = `
+      <section class="card" style="padding:1rem 1.25rem;margin-bottom:1rem;border-left:3px solid var(--color-primary)">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:1rem">
+          <h2 style="font-size:1rem;margin:0">Getting set up · ${steps.length - remaining.length}/${steps.length} done</h2>
+          <button class="btn-ghost" id="setup-dismiss" style="font-size:.75rem">Dismiss</button>
+        </div>
+        <ul style="list-style:none;padding:.5rem 0 0;margin:0">
+          ${steps.map(([k, label, link, hint]) => `
+            <li style="display:flex;gap:.5rem;align-items:baseline;padding:.2rem 0;font-size:.9rem">
+              <span aria-hidden="true">${st[k] ? '✅' : '⬜'}</span>
+              ${st[k] ? `<span style="color:var(--color-text-muted)">${esc(label)}</span>`
+                      : `<a href="${link}">${esc(label)}</a>`}
+              ${hint && !st[k] ? `<span style="font-size:.78rem;color:var(--color-text-muted)">— ${esc(hint)}</span>` : ''}
+            </li>`).join('')}
+        </ul>
+      </section>`;
+    host.querySelector('#setup-dismiss').addEventListener('click', () => {
+      try { localStorage.setItem('quorum.setup.dismissed', '1'); } catch { /* private mode */ }
+      host.innerHTML = '';
+    });
+  }
+
+  /** Role-filtered recent-activity feed (what changed since I last looked). */
+  async renderActivity() {
+    const host = this.querySelector('#activity-slot');
+    if (!host) return;
+    let feed;
+    try { feed = await api('GET', '/activity?limit=12'); } catch { return; }
+    if (!feed?.length) return;
+    host.innerHTML = `
+      <section class="card dash-panel">
+        <div class="panel-header"><h2>Recent activity</h2></div>
+        <ul style="list-style:none;margin:0;padding:.25rem 1rem .75rem">
+          ${feed.map(e => `
+            <li style="display:flex;gap:.6rem;align-items:baseline;padding:.28rem 0;font-size:.86rem;border-bottom:1px solid var(--color-border)">
+              <span style="white-space:nowrap;color:var(--color-text-muted);font-size:.75rem">${esc(fmtDate(e.at, { month: 'short', day: 'numeric' }))}</span>
+              <span>${esc(e.summary)}</span>
+            </li>`).join('')}
+        </ul>
+      </section>`;
   }
 
   // Wire the superadmin-only action-item delete controls (type-to-confirm).
@@ -40,6 +108,7 @@ class PageDashboard extends HTMLElement {
     const canDelete = isSuperadmin();
     this.innerHTML = `
       <div class="page-header"><h1>Dashboard</h1></div>
+      <div id="setup-slot"></div>
 
       <div class="stat-row">
         <div class="stat-card card">
@@ -99,6 +168,7 @@ class PageDashboard extends HTMLElement {
                 </tbody>
                </table>`}
         </section>
+        <div id="activity-slot" style="grid-column:1 / -1"></div>
       </div>
 
       <style>

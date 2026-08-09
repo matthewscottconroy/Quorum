@@ -9,6 +9,8 @@
  * every fetch with `credentials: 'same-origin'`.
  */
 
+import { setVocabOverrides } from './utils.js';
+
 // ─── Auth state (module-level, never touches the DOM) ───────────────────────
 let _token          = null;
 let _user           = null;
@@ -433,6 +435,17 @@ import './components/toast-notification.js';
 import './components/page-not-found.js';
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
+// Loads org vocabulary overrides (Settings → vocab_overrides JSON) so pages
+// can render the org's own terms. Best-effort: failures keep English labels.
+async function loadVocab() {
+  if (!isAuthenticated()) return;
+  try {
+    const st = await api('GET', '/settings/org');
+    if (st?.vocab_overrides) setVocabOverrides(JSON.parse(st.vocab_overrides));
+  } catch { /* defaults are fine */ }
+}
+document.addEventListener('auth-changed', () => { loadVocab(); });
+
 async function boot() {
   // Mount the shell now, from module code that runs AFTER all of app.js's
   // top-level state (auth vars, PUBLIC_ROUTES, the route table) is initialized.
@@ -461,6 +474,7 @@ async function boot() {
   if (refreshed && location.hash === prevHash) {
     document.dispatchEvent(new CustomEvent('auth-changed'));
   }
+  if (isAuthenticated()) await loadVocab();
 }
 
 export { resolveRoute };

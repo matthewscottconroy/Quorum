@@ -542,6 +542,14 @@ type Page[T any] struct {
 	Offset int `json:"offset"`
 }
 
+// ActivityEvent is one entry in the dashboard's recent-activity feed: a short
+// human summary and when it happened. Org-visible only — no amounts or PII.
+type ActivityEvent struct {
+	At      time.Time `json:"at"`
+	Kind    string    `json:"kind"`
+	Summary string    `json:"summary"`
+}
+
 // DashboardSummary aggregates key metrics for the home screen.
 type DashboardSummary struct {
 	OverdueDuesCount  int          `json:"overdue_dues_count"`

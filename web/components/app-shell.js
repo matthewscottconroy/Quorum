@@ -1,4 +1,5 @@
 import { isAuthenticated, resolveRoute, routePath, PUBLIC_ROUTES } from '../app.js';
+import './command-palette.js';
 
 // Bare (chrome-less) pages shown without the nav shell to logged-out visitors.
 const PUBLIC_PAGE_TAGS = {
@@ -32,6 +33,7 @@ class AppShell extends HTMLElement {
           ${pageTag}
         </main>
       </div>
+      <command-palette></command-palette>
     `;
     this.applyStyles();
   }

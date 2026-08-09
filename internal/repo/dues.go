@@ -169,6 +169,21 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 	return created, nil
 }
 
+// BatchUpdateStatus sets the status on many invoices in one statement,
+// returning the number changed. Used for bulk waive/re-open from the UI.
+func (r *DuesRepo) BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tag, err := r.db.Exec(ctx,
+		`UPDATE dues_invoices SET status = $1, updated_at = now() WHERE id = ANY($2::uuid[])`,
+		status, ids)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // UpdateInvoiceStatus sets an invoice's status, returning pgx.ErrNoRows if absent.
 func (r *DuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error {
 	tag, err := r.db.Exec(ctx, `

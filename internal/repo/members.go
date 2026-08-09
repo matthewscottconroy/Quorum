@@ -170,6 +170,34 @@ var memberAllowedFields = map[string]bool{
 	"tier": true, "status": true, "joined_at": true, "notes": true, "metadata": true,
 }
 
+// BatchUpdate applies the same allowlisted field changes to many members in
+// one transaction. Returns the number of rows updated. Unknown fields are
+// ignored (matching Update); an empty id list or field set is a no-op.
+func (r *MembersRepo) BatchUpdate(ctx context.Context, ids []string, fields map[string]any) (int64, error) {
+	sets := []string{}
+	args := []any{}
+	idx := 1
+	for k, v := range fields {
+		if !memberAllowedFields[k] {
+			continue
+		}
+		sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		args = append(args, v)
+		idx++
+	}
+	if len(sets) == 0 || len(ids) == 0 {
+		return 0, nil
+	}
+	sets = append(sets, "updated_at = now()")
+	args = append(args, ids)
+	tag, err := r.db.Exec(ctx, fmt.Sprintf(
+		`UPDATE members SET %s WHERE id = ANY($%d::uuid[])`, strings.Join(sets, ", "), idx), args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Update applies the given field changes to the member and returns the updated row.
 func (r *MembersRepo) Update(ctx context.Context, id string, fields map[string]any) (*model.Member, error) {
 	sets := []string{}

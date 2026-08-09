@@ -1,27 +1,31 @@
 import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager, providerOptions, knownCurrencies } from '../utils.js';
+import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager, providerOptions, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
 
 const STATUSES = ['','pending','overdue','paid','partial','waived'];
 
 class PageDues extends HTMLElement {
   constructor() {
     super();
+    const f = loadFilters('dues', { status: '', period: '' });
     this._invoices = [];
-    this._status   = '';
-    this._period   = '';
+    this._status   = f.status;
+    this._period   = f.period;
     this._seq      = 0;
     this._offset   = 0;
     this._total    = 0;
+    this._selected = new Set();
   }
+
+  _persist() { saveFilters('dues', { status: this._status, period: this._period }); }
 
   connectedCallback() {
     this.render();
     this.load();
   }
 
-  _cols() { return canWrite() ? 6 : 5; }
+  _cols() { return canWrite() ? 7 : 5; }
 
   /** Renders the static page shell once; load() only touches #tbody. */
   render() {
@@ -42,17 +46,18 @@ class PageDues extends HTMLElement {
         <input id="period-inp" placeholder="Period label (e.g. Annual 2026)" value="${esc(this._period)}" style="max-width:260px">
         <button class="btn-secondary" id="refresh-btn">Refresh</button>
       </div>
+      <div id="bulk-bar"></div>
       <div class="card" style="overflow-x:auto">
         <table>
-          <thead><tr><th>Member</th><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th>${canWrite()?'<th></th>':''}</tr></thead>
+          <thead><tr>${canWrite()?'<th style="width:1.5rem"><input type="checkbox" id="sel-all" aria-label="Select all" style="width:auto"></th>':''}<th>Member</th><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
       <div id="pager"></div>
     `;
 
-    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this.load(); });
-    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this.load(); });
+    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this._persist(); this.load(); });
+    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this._persist(); this.load(); });
     this.querySelector('#refresh-btn')?.addEventListener('click', () => this.load());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
     this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
@@ -182,6 +187,7 @@ class PageDues extends HTMLElement {
     if (!this._invoices?.length) return '';
     return this._invoices.map(inv => `
       <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0">
+        ${canWrite() ? `<td><input type="checkbox" class="sel-cb" value="${esc(inv.id)}" ${this._selected.has(inv.id) ? 'checked' : ''} style="width:auto" aria-label="Select invoice"></td>` : ''}
         <td>${esc(inv.member_name)}</td>
         <td>${esc(inv.period_label)}</td>
         <td>${formatMoney(inv.amount_minor, inv.currency)}</td>
@@ -195,9 +201,20 @@ class PageDues extends HTMLElement {
   }
 
   _wireRows(tbody) {
+    tbody.querySelectorAll('.sel-cb').forEach(cb => cb.addEventListener('change', () => {
+      cb.checked ? this._selected.add(cb.value) : this._selected.delete(cb.value);
+      this._renderBulkBar();
+    }));
+    const selAll = this.querySelector('#sel-all');
+    if (selAll) selAll.addEventListener('change', () => {
+      this._invoices.forEach(i => selAll.checked ? this._selected.add(i.id) : this._selected.delete(i.id));
+      tbody.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = selAll.checked; });
+      this._renderBulkBar();
+    });
+    this._renderBulkBar();
     tbody.querySelectorAll('.inv-row').forEach(row => {
       const open = e => {
-        if (e.target.classList.contains('waive-btn') || e.target.classList.contains('tx-btn')) return;
+        if (e.target.classList.contains('waive-btn') || e.target.classList.contains('tx-btn') || e.target.classList.contains('sel-cb')) return;
         this.openDetailModal(row.dataset.id);
       };
       row.addEventListener('click', open);
@@ -256,6 +273,32 @@ class PageDues extends HTMLElement {
       `,
     });
     dialog.querySelector('#close-btn2').addEventListener('click', close);
+  }
+
+  /** Bulk bar for invoices: waive or re-open (mark pending) the selection. */
+  _renderBulkBar() {
+    const bar = this.querySelector('#bulk-bar');
+    if (!bar) return;
+    const n = this._selected.size;
+    if (!n) { bar.innerHTML = ''; return; }
+    bar.innerHTML = `
+      <div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.6rem .9rem;margin-bottom:.6rem">
+        <strong style="font-size:.9rem">${n} selected</strong>
+        <button class="btn-secondary" id="bulk-waive" style="font-size:.82rem">Waive</button>
+        <button class="btn-secondary" id="bulk-reopen" style="font-size:.82rem">Re-open (pending)</button>
+        <button class="btn-ghost" id="bulk-clear" style="margin-left:auto">Clear</button>
+      </div>`;
+    const apply = async status => {
+      try {
+        const res = await api('POST', '/dues/batch', { ids: [...this._selected], status });
+        toast(`Updated ${res.updated} invoice${res.updated === 1 ? '' : 's'}`, 'success');
+        this._selected.clear();
+        this.load();
+      } catch (err) { toast(err.error ?? 'Bulk update failed', 'error'); }
+    };
+    bar.querySelector('#bulk-waive').addEventListener('click', () => apply('waived'));
+    bar.querySelector('#bulk-reopen').addEventListener('click', () => apply('pending'));
+    bar.querySelector('#bulk-clear').addEventListener('click', () => { this._selected.clear(); this.load(); });
   }
 
   openCreateModal() {

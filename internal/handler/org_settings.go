@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,6 +39,24 @@ var orgSettingKeys = map[string]orgSetting{
 	// Member-visible so the enrollment screen can explain the policy.
 	"require_2fa": {validate: func(v string) bool {
 		return v == "off" || v == "admin" || v == "officer" || v == "member"
+	}},
+	// Org vocabulary overrides: a JSON object mapping canonical UI labels to
+	// the org's own terms ({"Dues":"Assessments","Members":"Residents"}).
+	// Member-visible; the client applies it to nav and page labels.
+	"vocab_overrides": {validate: func(v string) bool {
+		if len(v) > 2000 {
+			return false
+		}
+		var m map[string]string
+		return json.Unmarshal([]byte(v), &m) == nil
+	}},
+	// A payment link template shown to members next to open invoices. Any
+	// https URL; optional {amount_major} and {reference} placeholders are
+	// filled per invoice ({reference} carries the invoice id for webhook
+	// reconciliation). Org-agnostic: works for Stripe payment links,
+	// PayPal.me, or anything else that accepts URL parameters.
+	"payment_link_template": {validate: func(v string) bool {
+		return v == "" || (len(v) <= 500 && strings.HasPrefix(v, "https://"))
 	}},
 	// Continuity (roadmap E1-E3); admin-only visibility - these describe
 	// where the org's keys live and who gets the bus-factor alarm.

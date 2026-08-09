@@ -45,6 +45,7 @@ type membersRepo interface {
 	Get(ctx context.Context, id string) (*model.Member, error)
 	Create(ctx context.Context, m *model.Member) (*model.Member, error)
 	Update(ctx context.Context, id string, fields map[string]any) (*model.Member, error)
+	BatchUpdate(ctx context.Context, ids []string, fields map[string]any) (int64, error)
 	Delete(ctx context.Context, id string) error
 	Count(ctx context.Context) (int, error)
 	IDsByMinRole(ctx context.Context, minRank int) ([]string, error)
@@ -56,6 +57,7 @@ type duesRepo interface {
 	GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error)
 	CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
 	UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error
+	BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error)
 	RecomputeInvoiceStatus(ctx context.Context, id string) error
 	CountByStatus(ctx context.Context, status string) (int, error)
 	ListTransactions(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)

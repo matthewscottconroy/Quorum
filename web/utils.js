@@ -309,6 +309,39 @@ export function renderPager(container, { offset, limit, total, onNavigate }) {
   container.querySelector('[data-pg=next]').addEventListener('click', () => onNavigate(offset + limit));
 }
 
+/* ── Per-list filter memory ───────────────────────────────────────────────── */
+
+// List pages remember their last filters per browser so a return visit lands
+// on the same view. UI preference only — sessionStorage, never tokens.
+export function loadFilters(key, fallback = {}) {
+  try {
+    const raw = sessionStorage.getItem('quorum.filters.' + key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : { ...fallback };
+  } catch { return { ...fallback }; }
+}
+export function saveFilters(key, obj) {
+  try { sessionStorage.setItem('quorum.filters.' + key, JSON.stringify(obj)); } catch { /* private mode */ }
+}
+
+/* ── Org vocabulary overrides (i18n groundwork) ───────────────────────────── */
+
+// Org-facing vocabulary is overridable per deployment: many orgs say
+// "Assessments" for dues, "Residents" for members, etc. Overrides load from
+// org settings at boot (see app.js) and apply wherever labels render through
+// vocab(). Keys are the canonical English labels.
+let VOCAB = {};
+
+/** Installs the org's label overrides ({"Dues": "Assessments", ...}). */
+export function setVocabOverrides(map) {
+  VOCAB = (map && typeof map === 'object') ? map : {};
+}
+
+/** Returns the org's word for a canonical label (or the label itself). */
+export function vocab(label) {
+  const v = VOCAB[label];
+  return (typeof v === 'string' && v.trim()) ? v.trim() : label;
+}
+
 /* ── Payment providers & currencies (shared across money forms) ───────────── */
 
 /** Payment/settlement methods. The value routes the GL cash account via the

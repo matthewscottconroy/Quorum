@@ -199,6 +199,40 @@ func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, inv)
 }
 
+// BatchUpdateStatus sets the same status on many invoices (officer+): bulk
+// waive, or re-open. Body: {ids: [...], status: "..."}.
+func (h *DuesHandler) BatchUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs    []string `json:"ids"`
+		Status string   `json:"status"`
+	}
+	if err := decodeJSON(r, &body); err != nil || len(body.IDs) == 0 {
+		writeError(w, 400, "ids (non-empty) required", "bad_request")
+		return
+	}
+	if len(body.IDs) > 500 {
+		writeError(w, 400, "at most 500 ids per batch", "bad_request")
+		return
+	}
+	if !model.ValidInvoiceStatuses[body.Status] {
+		writeError(w, 400, "invalid status", "bad_request")
+		return
+	}
+	for _, id := range body.IDs {
+		if !isValidUUID(id) {
+			writeError(w, 400, "ids must be UUIDs", "bad_request")
+			return
+		}
+	}
+	n, err := h.repo.BatchUpdateStatus(r.Context(), body.IDs, body.Status)
+	if err != nil {
+		writeError(w, 500, "update error", "internal_error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"count": n, "status_new": body.Status})
+	writeJSON(w, 200, map[string]any{"updated": n})
+}
+
 // CreateTransaction records a manual payment against an invoice.
 func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	invoiceID, ok := requireUUID(w, r, "id")

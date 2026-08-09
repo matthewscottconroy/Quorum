@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"quorum/internal/model"
@@ -144,6 +145,56 @@ func (h *MembersHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update handles updating a member.
+// BatchUpdate applies status and/or tier to many members at once (officer+).
+// Body: {ids: [...], status?: "...", tier?: "..."}.
+func (h *MembersHandler) BatchUpdate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs    []string `json:"ids"`
+		Status *string  `json:"status"`
+		Tier   *string  `json:"tier"`
+	}
+	if err := decodeJSON(r, &body); err != nil || len(body.IDs) == 0 {
+		writeError(w, 400, "ids (non-empty) required", "bad_request")
+		return
+	}
+	if len(body.IDs) > 500 {
+		writeError(w, 400, "at most 500 ids per batch", "bad_request")
+		return
+	}
+	for _, id := range body.IDs {
+		if !isValidUUID(id) {
+			writeError(w, 400, "ids must be UUIDs", "bad_request")
+			return
+		}
+	}
+	fields := map[string]any{}
+	if body.Status != nil {
+		if *body.Status != "active" && *body.Status != "inactive" && *body.Status != "suspended" {
+			writeError(w, 400, "invalid status: active, inactive, or suspended", "bad_request")
+			return
+		}
+		fields["status"] = *body.Status
+	}
+	if body.Tier != nil {
+		if strings.TrimSpace(*body.Tier) == "" || len(*body.Tier) > 64 {
+			writeError(w, 400, "invalid tier", "bad_request")
+			return
+		}
+		fields["tier"] = strings.TrimSpace(*body.Tier)
+	}
+	if len(fields) == 0 {
+		writeError(w, 400, "provide status and/or tier to set", "bad_request")
+		return
+	}
+	n, err := h.repo.BatchUpdate(r.Context(), body.IDs, fields)
+	if err != nil {
+		writeError(w, 500, "update error", "internal_error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"count": n, "fields": len(fields)})
+	writeJSON(w, 200, map[string]any{"updated": n})
+}
+
 func (h *MembersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {

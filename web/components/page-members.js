@@ -1,6 +1,6 @@
 import { api, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager, loadFilters, saveFilters } from '../utils.js';
 
 const TIERS = ['standard','associate','honorary','lifetime','other'];
 const STATUSES = ['active','inactive','suspended'];
@@ -8,20 +8,24 @@ const STATUSES = ['active','inactive','suspended'];
 class PageMembers extends HTMLElement {
   constructor() {
     super();
-    this._members = [];
-    this._search  = '';
-    this._status  = '';
-    this._seq     = 0;
-    this._offset  = 0;
-    this._total   = 0;
+    const f = loadFilters('members', { search: '', status: '' });
+    this._members  = [];
+    this._search   = f.search;
+    this._status   = f.status;
+    this._seq      = 0;
+    this._offset   = 0;
+    this._total    = 0;
+    this._selected = new Set();
   }
+
+  _persist() { saveFilters('members', { search: this._search, status: this._status }); }
 
   connectedCallback() {
     this.render();
     this.load();
   }
 
-  _cols() { return canWrite() ? 6 : 5; }
+  _cols() { return canWrite() ? 7 : 5; }
 
   /** Renders the static page shell once; load() only touches #tbody. */
   render() {
@@ -40,9 +44,10 @@ class PageMembers extends HTMLElement {
           ${STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s}</option>`).join('')}
         </select>
       </div>
+      <div id="bulk-bar"></div>
       <div class="card" style="overflow-x:auto">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Tier</th><th>Status</th><th>Dues</th>${canWrite()?'<th></th>':''}</tr></thead>
+          <thead><tr>${canWrite()?'<th style="width:1.5rem"><input type="checkbox" id="sel-all" aria-label="Select all" style="width:auto"></th>':''}<th>Name</th><th>Email</th><th>Tier</th><th>Status</th><th>Dues</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
@@ -52,11 +57,12 @@ class PageMembers extends HTMLElement {
     this.querySelector('#search-inp')?.addEventListener('input', e => {
       this._search = e.target.value;
       clearTimeout(this._searchTimer);
-      this._searchTimer = setTimeout(() => { this._offset = 0; this.load(); }, 350);
+      this._searchTimer = setTimeout(() => { this._offset = 0; this._persist(); this.load(); }, 350);
     });
     this.querySelector('#status-sel')?.addEventListener('change', e => {
       this._status = e.target.value;
       this._offset = 0;
+      this._persist();
       this.load();
     });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
@@ -93,6 +99,7 @@ class PageMembers extends HTMLElement {
     if (!this._members?.length) return '';
     return this._members.map(m => `
       <tr>
+        ${canWrite() ? `<td><input type="checkbox" class="sel-cb" value="${esc(m.id)}" ${this._selected.has(m.id) ? 'checked' : ''} style="width:auto" aria-label="Select ${esc(m.display_name)}"></td>` : ''}
         <td><strong>${esc(m.display_name)}</strong></td>
         <td>${esc(m.email ?? '—')}</td>
         <td>${esc(m.tier)}</td>
@@ -107,6 +114,17 @@ class PageMembers extends HTMLElement {
   }
 
   _wireRows(tbody) {
+    tbody.querySelectorAll('.sel-cb').forEach(cb => cb.addEventListener('change', () => {
+      cb.checked ? this._selected.add(cb.value) : this._selected.delete(cb.value);
+      this._renderBulkBar();
+    }));
+    const selAll = this.querySelector('#sel-all');
+    if (selAll) selAll.addEventListener('change', () => {
+      this._members.forEach(m => selAll.checked ? this._selected.add(m.id) : this._selected.delete(m.id));
+      tbody.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = selAll.checked; });
+      this._renderBulkBar();
+    });
+    this._renderBulkBar();
     tbody.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const m = this._members.find(x => x.id === btn.dataset.id);
@@ -119,6 +137,34 @@ class PageMembers extends HTMLElement {
     tbody.querySelectorAll('.erase-btn').forEach(btn => {
       btn.addEventListener('click', () => this.eraseMember(btn.dataset.id, btn.dataset.name));
     });
+  }
+
+  /** Bulk action bar: appears when rows are selected; sets status/tier for all. */
+  _renderBulkBar() {
+    const bar = this.querySelector('#bulk-bar');
+    if (!bar) return;
+    const n = this._selected.size;
+    if (!n) { bar.innerHTML = ''; return; }
+    bar.innerHTML = `
+      <div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.6rem .9rem;margin-bottom:.6rem">
+        <strong style="font-size:.9rem">${n} selected</strong>
+        <select id="bulk-status" style="max-width:11rem"><option value="">Set status…</option>
+          ${STATUSES.map(x => `<option value="${x}">${x}</option>`).join('')}</select>
+        <select id="bulk-tier" style="max-width:11rem"><option value="">Set tier…</option>
+          ${TIERS.map(x => `<option value="${x}">${x}</option>`).join('')}</select>
+        <button class="btn-ghost" id="bulk-clear" style="margin-left:auto">Clear</button>
+      </div>`;
+    const apply = async fields => {
+      try {
+        const res = await api('POST', '/members/batch', { ids: [...this._selected], ...fields });
+        toast(`Updated ${res.updated} member${res.updated === 1 ? '' : 's'}`, 'success');
+        this._selected.clear();
+        this.load();
+      } catch (err) { toast(err.error ?? 'Bulk update failed', 'error'); }
+    };
+    bar.querySelector('#bulk-status').addEventListener('change', e => { if (e.target.value) apply({ status: e.target.value }); });
+    bar.querySelector('#bulk-tier').addEventListener('change', e => { if (e.target.value) apply({ tier: e.target.value }); });
+    bar.querySelector('#bulk-clear').addEventListener('click', () => { this._selected.clear(); this.load(); });
   }
 
   // eraseMember fulfils a right-to-be-forgotten request: unlike Delete (which

@@ -209,6 +209,9 @@ func (m *mockMembersRepo) Update(ctx context.Context, id string, fields map[stri
 func (m *mockMembersRepo) Delete(ctx context.Context, id string) error {
 	return m.DeleteFn(ctx, id)
 }
+func (m *mockMembersRepo) BatchUpdate(ctx context.Context, ids []string, fields map[string]any) (int64, error) {
+	return int64(len(ids)), nil
+}
 func (m *mockMembersRepo) Count(ctx context.Context) (int, error) { return m.CountFn(ctx) }
 
 func (m *mockMembersRepo) IDsByMinRole(ctx context.Context, minRank int) ([]string, error) {
@@ -270,6 +273,9 @@ func (m *mockDuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status strin
 }
 func (m *mockDuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {
 	return m.RecomputeInvoiceStatusFn(ctx, id)
+}
+func (m *mockDuesRepo) BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error) {
+	return int64(len(ids)), nil
 }
 func (m *mockDuesRepo) CountByStatus(ctx context.Context, status string) (int, error) {
 	return m.CountByStatusFn(ctx, status)
