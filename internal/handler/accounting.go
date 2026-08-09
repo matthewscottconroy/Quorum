@@ -88,7 +88,7 @@ type glRepoC interface {
 	PurchasesCSVRows(ctx context.Context, from, to string) ([][]string, error)
 }
 
-var ruleKeyRe = regexp.MustCompile(`^(receivable|income\.dues|income\.unlinked|writeoff|cash\.operating|expense\.default|cash\.provider\.[a-z0-9_]{1,32})$`)
+var ruleKeyRe = regexp.MustCompile(`^(receivable|payable|income\.dues|income\.services|income\.unlinked|writeoff|cash\.operating|expense\.default|cash\.provider\.[a-z0-9_]{1,32})$`)
 
 // PostingRules lists the automatic-posting mappings (officer+).
 func (h *AccountingHandler) PostingRules(w http.ResponseWriter, r *http.Request) {
@@ -311,10 +311,21 @@ func (h *AccountingHandler) ManualEntry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "entry_date, memo, and 2-40 lines required", "bad_request")
 		return
 	}
+	net := map[string]int64{} // per-currency debits - credits
 	for _, ln := range body.Lines {
 		if !acctCodeRe.MatchString(ln.AccountCode) || len(ln.Currency) != 3 ||
 			ln.Debit < 0 || ln.Credit < 0 || (ln.Debit == 0) == (ln.Credit == 0) {
 			writeError(w, http.StatusBadRequest, "each line needs account_code, currency, and exactly one of debit/credit > 0", "bad_request")
+			return
+		}
+		net[strings.ToUpper(ln.Currency)] += ln.Debit - ln.Credit
+	}
+	// The DB's deferred trigger enforces balance too, but failing here gives
+	// the caller a precise error instead of a generic entry failure.
+	for cur, n := range net {
+		if n != 0 {
+			writeError(w, http.StatusBadRequest,
+				"entry does not balance: "+cur+" debits and credits differ", "bad_request")
 			return
 		}
 	}
