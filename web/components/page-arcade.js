@@ -51,14 +51,18 @@ const CABINETS = [
     id: 'hexfection', name: 'HEXFECTION', tag: 'Spread across the hex dish. Convert your neighbours.',
     players: 'up to 12 — hotseat, bots, or online', controls: 'Mouse — click your blob, then a target cell. Step 1 splits, jump 2 leaps; landing converts neighbours.',
   },
+  {
+    id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns, 1-7 pick a job, R/T release rate, N-N everyone quits. P2 (local): arrows + Enter, Q/E job. Esc pause.',
+  },
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
 const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 } };
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
-const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }] };
+const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 } };
 
 /**
  * A tiny WebAudio chip synth for the cartridges (window.__arcadeSfx).
@@ -129,7 +133,7 @@ const SFX = {
 window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';
@@ -275,6 +279,16 @@ class PageArcade extends HTMLElement {
                   <select id="sel-humans" class="tsc-sel">${Array.from({ length: multi.humans },
                     (_, i) => `<option ${i === 0 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>
                 </label>` : ''}
+              ${cab.id === 'interns' ? `
+                <label class="tsc-note">LEVEL
+                  <select id="sel-level" class="tsc-sel" style="max-width:180px">
+                    <option value="b1">HOUSE: ORIENTATION DAY</option>
+                    <option value="b2">HOUSE: THE BASEMENT</option>
+                    <option value="b3">HOUSE: CUBICLE WALLS</option>
+                    <option value="b4">HOUSE: TWO TOWERS</option>
+                  </select>
+                </label>
+                <button class="tsc-btn" id="editor-btn" disabled>LEVEL EDITOR</button>` : ''}
               <button class="tsc-coin" id="coin" disabled>◉ INSERT CREDIT</button>
               <span class="tsc-note" id="boot-note">booting cartridge…</span>
             </div>
@@ -380,6 +394,7 @@ class PageArcade extends HTMLElement {
     this._wasmStarted = true;
     this._mod = mod;
     if (note) note.textContent = '';
+    if (cab.id === 'interns') this.wireLevels(cab, mod);
     // Keyboard cabinets: when the canvas loses focus the keys go dead — say
     // so instead of letting the player mash a silent keyboard.
     if (KEY_GAMES.has(cab.id)) {
@@ -407,6 +422,7 @@ class PageArcade extends HTMLElement {
           ? Number(mode.value)
           : Math.min(players, Number(this.querySelector('#sel-humans')?.value ?? 1));
         try {
+          await this.resolveLevel(cab);
           const res = await api('POST', `/arcade/${cab.id}/credit`);
           toast(`Credit ${res.credits} logged. Go!`, 'success');
           mod.arcade_insert_credit(players, humans);
@@ -420,6 +436,60 @@ class PageArcade extends HTMLElement {
       });
     }
     if (NET[cab.id]) this.wireNet(cab);
+  }
+
+  // ---- INTERNS levels & editor ----
+
+  /** Sets window.__ARCADE_LEVEL from the picker: builtin ref or fetched doc. */
+  async resolveLevel(cab) {
+    if (cab.id !== 'interns') return;
+    const sel = this.querySelector('#sel-level');
+    if (!sel) return;
+    const v = sel.value;
+    if (v.startsWith('b')) {
+      window.__ARCADE_LEVEL = JSON.stringify({ builtin: Number(v.slice(1)) || 1 });
+      return;
+    }
+    const lvl = await api('GET', `/arcade/levels/${v}`);
+    window.__ARCADE_LEVEL = lvl.data;
+  }
+
+  async wireLevels(cab, mod) {
+    const sel = this.querySelector('#sel-level');
+    const editorBtn = this.querySelector('#editor-btn');
+    const refresh = async () => {
+      try {
+        const community = await api('GET', `/arcade/${cab.id}/levels`) ?? [];
+        // Rebuild options: four house levels, then the community shelf.
+        const current = sel.value;
+        sel.innerHTML = [1, 2, 3, 4].map(n =>
+          `<option value="b${n}">HOUSE: ${['ORIENTATION DAY', 'THE BASEMENT', 'CUBICLE WALLS', 'TWO TOWERS'][n - 1]}</option>`).join('') +
+          community.map(l => `<option value="${esc(l.id)}">${esc(l.name)} — ${esc(l.author_name)}</option>`).join('');
+        if ([...sel.options].some(o => o.value === current)) sel.value = current;
+      } catch { /* house levels always exist */ }
+    };
+    await refresh();
+    // The editor hands us a compiled level document; we name and shelve it.
+    window.__arcadeSaveLevel = async json => {
+      const name = prompt('Name this level (1-60 chars). Re-using one of your own names updates it:');
+      if (!name || !name.trim()) return;
+      try {
+        const res = await api('POST', `/arcade/${cab.id}/levels`, { name: name.trim(), data: JSON.parse(json) });
+        toast(`Level “${res.name}” saved to the community shelf`, 'success');
+        await refresh();
+      } catch (err) {
+        toast(err.error ?? 'Save failed', 'error');
+      }
+    };
+    if (editorBtn) {
+      editorBtn.disabled = false;
+      editorBtn.addEventListener('click', () => {
+        mod.arcade_start_editor();
+        this._playing = true;
+        this.querySelector('#arcade-canvas')?.focus();
+        toast('Editor: paint with the mouse, S saves, G test-plays, X returns', 'info');
+      });
+    }
   }
 
   // ---- online rooms ----
@@ -455,6 +525,7 @@ class PageArcade extends HTMLElement {
       busy(true);
       lobby.textContent = 'CONNECTING…';
       try {
+        if (mode === 'host') await this.resolveLevel(cab);
         await api('POST', `/arcade/${cab.id}/credit`); // online play still costs a credit
       } catch (err) {
         toast(err.error ?? 'Coin jammed', 'error');

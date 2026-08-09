@@ -36,6 +36,39 @@ pub fn push_net_event(msg: String) {
     NET_IN.lock().unwrap().push(msg);
 }
 
+/// Editor handshake: poll_editor_start (game side) sets this; the game's
+/// setup consumes it to boot into authoring mode instead of a round.
+static EDITOR_PENDING: Mutex<bool> = Mutex::new(false);
+
+pub fn mark_editor_pending() {
+    *EDITOR_PENDING.lock().unwrap() = true;
+}
+
+pub fn take_editor_pending() -> bool {
+    let mut p = EDITOR_PENDING.lock().unwrap();
+    let v = *p;
+    *p = false;
+    v
+}
+
+/// Hands a compiled level document to the page (window.__arcadeSaveLevel),
+/// which prompts for a name and POSTs it to the community shelf.
+pub fn save_level(json: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeSaveLevel".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &json.into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = json;
+    }
+}
+
 /// Fires a named chip-synth sound effect. The page owns the WebAudio
 /// context (it can only start after a user gesture, which the coin click
 /// provides); missing handler or muted page is a silent no-op.

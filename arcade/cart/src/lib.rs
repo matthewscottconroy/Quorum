@@ -12,6 +12,7 @@ mod chess_ui;
 mod comet;
 mod go_ui;
 mod hex_ui;
+mod interns;
 mod penny;
 mod powder;
 mod retro;
@@ -123,6 +124,9 @@ pub fn run() {
         "hexfection" => {
             app.add_plugins((shell_for("HEXFECTION", hex_ui::BLURB), hex_ui::HexPlugin));
         }
+        "interns" => {
+            app.add_plugins((shell_for("INTERNS", interns::BLURB), interns::InternsPlugin));
+        }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));
         }
@@ -160,5 +164,11 @@ mod wasm_api {
     #[wasm_bindgen]
     pub fn arcade_net_event(msg: String) {
         crate::shell::push_net_event(msg);
+    }
+
+    /// Opens the INTERNS level editor — a tool, so no credit required.
+    #[wasm_bindgen]
+    pub fn arcade_start_editor() {
+        *crate::interns::EDITOR_START.lock().unwrap() = true;
     }
 }
