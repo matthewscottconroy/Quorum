@@ -306,6 +306,54 @@ export function renderPager(container, { offset, limit, total, onNavigate }) {
   container.querySelector('[data-pg=next]').addEventListener('click', () => onNavigate(offset + limit));
 }
 
+/* ── Payment providers & currencies (shared across money forms) ───────────── */
+
+/** Payment/settlement methods. The value routes the GL cash account via the
+ *  `cash.provider.<value>` posting rule, so it must be consistent everywhere
+ *  money is recorded — a free-typed provider silently misroutes the posting. */
+export const PROVIDERS = [
+  ['manual', 'manual'], ['cash', 'cash'], ['check', 'check'],
+  ['wire', 'wire / bank transfer'], ['zelle', 'zelle'], ['venmo', 'venmo'],
+  ['stripe', 'stripe (manual entry)'], ['paypal', 'paypal (manual entry)'],
+  ['other', 'other'],
+];
+
+/** <option> markup for a provider <select>, with `selected` pre-chosen. */
+export function providerOptions(selected = 'manual') {
+  return PROVIDERS.map(([v, l]) =>
+    `<option value="${v}" ${v === selected ? 'selected' : ''}>${l}</option>`).join('');
+}
+
+/**
+ * Returns the currency codes the org actually uses — every code appearing in
+ * the FX rate table plus the reporting currency — so money forms can suggest
+ * them and steer users away from typos that would create a rate-less currency
+ * (which then silently drops out of Analytics totals). Always includes USD and
+ * is sorted. Falls back to ['USD'] if the FX endpoints are unavailable.
+ */
+export async function knownCurrencies(api) {
+  const codes = new Set(['USD']);
+  try {
+    const [rates, settings] = await Promise.all([
+      api('GET', '/fx/rates').catch(() => []),
+      api('GET', '/fx/settings').catch(() => null),
+    ]);
+    for (const r of rates ?? []) {
+      if (r.from_currency) codes.add(r.from_currency);
+      if (r.to_currency) codes.add(r.to_currency);
+    }
+    if (settings?.reporting_currency) codes.add(settings.reporting_currency);
+  } catch { /* fall back to USD */ }
+  return [...codes].sort();
+}
+
+/** A <datalist> of known currency codes; pair with `<input list="...">`. It
+ *  suggests without restricting, so a legitimately new currency is still
+ *  typeable before its rate exists. */
+export function currencyDatalist(id, codes) {
+  return `<datalist id="${id}">${codes.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>`;
+}
+
 /* ── Word-frequency analysis (for document heat maps) ─────────────────────── */
 
 /** Common English words (plus document boilerplate) excluded from frequency

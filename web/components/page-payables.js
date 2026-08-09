@@ -1,6 +1,6 @@
 import { api, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, providerOptions, knownCurrencies, currencyDatalist } from '../utils.js';
 
 const BILL_BADGE = {
   open: ['⏳ open', '#b45309'], paid: ['✓ paid', '#137333'], void: ['— void', '#6b7280'],
@@ -75,9 +75,10 @@ class PagePayables extends HTMLElement {
   }
 
   async openBillModal() {
-    const [contactsPg, accounts] = await Promise.all([
+    const [contactsPg, accounts, currencies] = await Promise.all([
       api('GET', '/contacts?limit=200').catch(() => null),
       api('GET', '/accounting/accounts').catch(() => []),
+      knownCurrencies(api),
     ]);
     const contacts = contactsPg?.data ?? contactsPg ?? [];
     if (!contacts.length) { toast('Add the vendor under Contacts first', 'error'); return; }
@@ -92,7 +93,8 @@ class PagePayables extends HTMLElement {
             <div class="form-group"><label for="nb-amount">Amount *</label>
               <input id="nb-amount" inputmode="decimal" placeholder="450.00"></div>
             <div class="form-group"><label for="nb-cur">Currency</label>
-              <input id="nb-cur" value="USD" maxlength="3" style="max-width:80px"></div>
+              <input id="nb-cur" value="USD" maxlength="3" list="nb-cur-list" style="max-width:90px">
+              ${currencyDatalist('nb-cur-list', currencies)}</div>
             <div class="form-group"><label for="nb-exp">Expense account *</label>
               <select id="nb-exp">${expenses.map(a => `<option value="${esc(a.id)}">${esc(a.code)} ${esc(a.name)}</option>`).join('')}</select></div>
           </div>
@@ -142,7 +144,7 @@ class PagePayables extends HTMLElement {
               ${(funds ?? []).map(f => `<option value="${esc(f.id)}">Fund: ${esc(f.name)}</option>`).join('')}
             </select></div>
           <div class="form-group" id="pb-provider-row"><label for="pb-provider">Paid via (routes the cash account)</label>
-            <input id="pb-provider" value="wire" placeholder="wire, check, zelle…"></div>
+            <select id="pb-provider">${providerOptions('wire')}</select></div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="pb-cancel">Cancel</button>

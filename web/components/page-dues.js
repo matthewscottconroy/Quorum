@@ -1,7 +1,7 @@
 import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager } from '../utils.js';
+import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager, providerOptions, knownCurrencies } from '../utils.js';
 
 const STATUSES = ['','pending','overdue','paid','partial','waived'];
 
@@ -293,7 +293,8 @@ class PageDues extends HTMLElement {
             </div>
             <div class="form-group">
               <label for="f-currency">Currency</label>
-              <input id="f-currency" value="USD" maxlength="3" pattern="[A-Za-z]{3}" style="max-width:80px;text-transform:uppercase">
+              <input id="f-currency" value="USD" maxlength="3" pattern="[A-Za-z]{3}" list="dues-cur-list" style="max-width:90px;text-transform:uppercase">
+              <datalist id="dues-cur-list"></datalist>
             </div>
           </div>
           <div class="form-row">
@@ -324,6 +325,10 @@ class PageDues extends HTMLElement {
       const contact = ctype.value === 'contact';
       dialog.querySelector('#member-row').style.display = contact ? 'none' : '';
       dialog.querySelector('#contact-row').style.display = contact ? '' : 'none';
+    });
+    knownCurrencies(api).then(cs => {
+      const dl = dialog.querySelector('#dues-cur-list');
+      if (dl) dl.innerHTML = cs.map(c => `<option value="${esc(c)}"></option>`).join('');
     });
     api('GET', '/contacts?limit=200').then(pg => {
       dialog.querySelector('#f-contact').innerHTML = '<option value="">— choose —</option>' +
@@ -430,17 +435,7 @@ class PageDues extends HTMLElement {
             </div>
             <div class="form-group">
               <label for="f-provider">Provider</label>
-              <select id="f-provider">
-                <option value="manual">manual</option>
-                <option value="cash">cash</option>
-                <option value="check">check</option>
-                <option value="wire">wire / bank transfer</option>
-                <option value="zelle">zelle</option>
-                <option value="venmo">venmo</option>
-                <option value="stripe">stripe (manual entry)</option>
-                <option value="paypal">paypal (manual entry)</option>
-                <option value="other">other</option>
-              </select>
+              <select id="f-provider">${providerOptions('manual')}</select>
             </div>
           </div>
           <div class="form-group">

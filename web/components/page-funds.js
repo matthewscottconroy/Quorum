@@ -1,6 +1,6 @@
 import { api, getUser, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies } from '../utils.js';
 
 const STATUS_BADGE = {
   pending: ['⏳ pending', '#b45309'], approved: ['✅ approved', '#137333'],
@@ -193,7 +193,7 @@ class PageFunds extends HTMLElement {
             <div class="form-group"><label for="pr-amount">Amount *</label>
               <input id="pr-amount" inputmode="decimal" placeholder="250.00"></div>
             <div class="form-group"><label for="pr-cur">Currency</label>
-              <input id="pr-cur" value="USD" maxlength="3"></div>
+              <input id="pr-cur" value="USD" maxlength="3" list="pr-cur-list"><datalist id="pr-cur-list"></datalist></div>
           </div>
           <div class="form-group"><label for="pr-payee">Payee *</label>
             <input id="pr-payee" placeholder="Who gets paid"></div>
@@ -212,6 +212,7 @@ class PageFunds extends HTMLElement {
         </div>`,
     });
     dialog.querySelector('#pr-cancel2').addEventListener('click', close);
+    knownCurrencies(api).then(cs => { const dl = dialog.querySelector('#pr-cur-list'); if (dl) dl.innerHTML = cs.map(c => `<option value="${esc(c)}"></option>`).join(''); });
     api('GET', '/resources?limit=200').then(pg => {
       dialog.querySelector('#pr-doc').innerHTML = '<option value="">— none —</option>' +
         (pg?.data ?? []).map(r0 => `<option value="${esc(r0.id)}">${r0.file_name ? '📄' : '🔗'} ${esc(r0.title)}</option>`).join('');
@@ -303,7 +304,7 @@ class PageFunds extends HTMLElement {
             <div class="form-group"><label for="tr-amount">Amount *</label>
               <input id="tr-amount" inputmode="decimal" placeholder="500.00"></div>
             <div class="form-group"><label for="tr-cur">Currency</label>
-              <input id="tr-cur" value="USD" maxlength="3"></div>
+              <input id="tr-cur" value="USD" maxlength="3" list="tr-cur-list"><datalist id="tr-cur-list"></datalist></div>
           </div>
           <div class="form-group"><label for="tr-memo">Memo</label>
             <input id="tr-memo" placeholder="e.g. Board allocation 2026-08"></div>
@@ -314,6 +315,7 @@ class PageFunds extends HTMLElement {
         </div>`,
     });
     dialog.querySelector('#tr-cancel').addEventListener('click', close);
+    knownCurrencies(api).then(cs => { const dl = dialog.querySelector('#tr-cur-list'); if (dl) dl.innerHTML = cs.map(c => `<option value="${esc(c)}"></option>`).join(''); });
     const saveBtn = dialog.querySelector('#tr-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const currency = dialog.querySelector('#tr-cur').value.trim().toUpperCase();
