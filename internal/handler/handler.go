@@ -255,7 +255,7 @@ func (m *Middleware) Auth(next http.Handler) http.Handler {
 		// next token refresh.
 		if m.mfaPolicy != nil && !claims.MFA {
 			if pol := m.mfaPolicy(); pol != "" && pol != "off" &&
-				roleRank[claims.Role] >= roleRank[pol] && !mfaExemptPath(r.URL.Path) {
+				roleRank[claims.Role] >= roleRank[pol] && !mfaExemptPath(r.Method, r.URL.Path) {
 				writeError(w, http.StatusForbidden,
 					"your organization requires two-factor authentication: set it up to continue", "mfa_required")
 				return
@@ -269,11 +269,16 @@ func (m *Middleware) Auth(next http.Handler) http.Handler {
 }
 
 // mfaExemptPath lists the walled garden a not-yet-enrolled user may reach
-// under a 2FA mandate: see who they are, enroll, and leave.
-func mfaExemptPath(p string) bool {
+// under a 2FA mandate: see who they are, enroll, and leave. Method-aware:
+// /settings/org is readable (the enrollment screen shows the policy) but a
+// write there could flip require_2fa off, which would let a single-factor
+// admin lift the mandate without ever enrolling.
+func mfaExemptPath(method, p string) bool {
 	switch strings.TrimPrefix(p, "/api/v1") {
-	case "/auth/me", "/auth/logout", "/auth/2fa/setup", "/auth/2fa/enable", "/settings/org":
+	case "/auth/me", "/auth/logout", "/auth/2fa/setup", "/auth/2fa/enable":
 		return true
+	case "/settings/org":
+		return method == http.MethodGet
 	}
 	return false
 }

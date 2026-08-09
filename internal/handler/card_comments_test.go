@@ -166,13 +166,14 @@ func TestMFAGate(t *testing.T) {
 	policy := "member"
 	mw.SetMFAPolicy(func() string { return policy })
 	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	callPath := func(token, path string) int {
-		req := httptest.NewRequest("GET", path, nil)
+	call := func(token, method, path string) int {
+		req := httptest.NewRequest(method, path, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rr := httptest.NewRecorder()
 		mw.Auth(okHandler).ServeHTTP(rr, req)
 		return rr.Code
 	}
+	callPath := func(token, path string) int { return call(token, "GET", path) }
 
 	unenrolled, _ := auth.IssueAccessTokenFor("u1", "member", "", false, testSecret, time.Minute)
 	enrolled, _ := auth.IssueAccessTokenFor("u1", "member", "", true, testSecret, time.Minute)
@@ -184,6 +185,15 @@ func TestMFAGate(t *testing.T) {
 		if got := callPath(unenrolled, p); got != 200 {
 			t.Fatalf("exempt path %s: got %d, want 200", p, got)
 		}
+	}
+	// /settings/org is readable inside the walled garden (the enrollment
+	// screen shows the policy) but NOT writable: a write could flip
+	// require_2fa off and lift the mandate without enrolling.
+	if got := callPath(unenrolled, "/api/v1/settings/org"); got != 200 {
+		t.Fatalf("GET /settings/org under mandate: got %d, want 200", got)
+	}
+	if got := call(unenrolled, "PUT", "/api/v1/settings/org"); got != 403 {
+		t.Fatalf("PUT /settings/org under mandate: got %d, want 403", got)
 	}
 	if got := callPath(enrolled, "/api/v1/members"); got != 200 {
 		t.Fatalf("enrolled: got %d, want 200", got)
