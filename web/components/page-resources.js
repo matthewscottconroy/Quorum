@@ -1,6 +1,6 @@
 import { api, apiUpload, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager, fmtDateTime } from '../utils.js';
 import { openDocPreview } from './doc-preview.js';
 
 function safeUrl(u) { try { const p = new URL(u); return (p.protocol==='https:'||p.protocol==='http:') ? u : null; } catch { return null; } }
@@ -49,7 +49,10 @@ class PageResources extends HTMLElement {
     this.innerHTML = `
       <div class="page-header">
         <h1>Resources</h1>
-        ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Add resource</button>' : ''}
+        <div style="display:flex;gap:.5rem">
+          ${isAdmin() ? '<button class="btn-secondary" id="verify-btn" title="Check where a file hash came from">Verify a file</button>' : ''}
+          ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Add resource</button>' : ''}
+        </div>
       </div>
       <div class="search-bar">
         <input id="search-inp" placeholder="Search resources…" value="${esc(this._search)}">
@@ -74,6 +77,7 @@ class PageResources extends HTMLElement {
     this.querySelector('#cat-inp')?.addEventListener('change', e => { this._category = e.target.value; this._offset = 0; this.load(); });
     this.querySelector('#folders-btn')?.addEventListener('click', () => this.openFoldersModal());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openModal(null));
+    this.querySelector('#verify-btn')?.addEventListener('click', () => this.openVerifyModal());
   }
 
   /** Collapsible folder tree; clicking a name filters the table. */
@@ -174,7 +178,8 @@ class PageResources extends HTMLElement {
           ${safeUrl(r.url)?`<a href="${esc(r.url)}" target="_blank" rel="noopener">Open ↗</a>`:''}
           ${!r.file_name && !safeUrl(r.url) ? '—' : ''}
         </td>
-        ${canWrite()?`<td style="text-align:right">
+        ${canWrite()?`<td style="text-align:right;white-space:nowrap">
+          ${r.file_name?`<button class="btn-ghost hist-btn" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Download history">History</button>`:''}
           <button class="btn-ghost edit-btn" data-id="${esc(r.id)}">Edit</button>
           ${isSuperadmin()?`<button class="btn-ghost del-btn" data-id="${esc(r.id)}" data-title="${esc(r.title)}" style="color:var(--color-danger)">Del</button>`:''}
         </td>`:''}
@@ -200,6 +205,9 @@ class PageResources extends HTMLElement {
         if (r) this.openModal(r);
       });
     });
+    tbody.querySelectorAll('.hist-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.openHistoryModal(btn.dataset.id, btn.dataset.title));
+    });
     tbody.querySelectorAll('.del-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         confirmDelete({
@@ -215,6 +223,82 @@ class PageResources extends HTMLElement {
         });
       });
     });
+  }
+
+  /** Download ledger for one resource: who pulled the file, when, from where. */
+  async openHistoryModal(id, title) {
+    const { dialog, close } = openModal({
+      title: `Download history — ${title}`,
+      maxWidth: '640px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.82rem;color:var(--color-text-muted);margin-top:0">
+            Every download is recorded with the exact bytes served (a watermarked
+            copy is unique per download), so a leaked file can be traced back here.</p>
+          <div id="hist-list"><div style="text-align:center;padding:1rem"><span class="spinner"></span></div></div>
+        </div>
+        <div class="modal-footer"><button class="btn-secondary" id="hist-close">Close</button></div>`,
+    });
+    dialog.querySelector('#hist-close').addEventListener('click', close);
+    try {
+      const recs = await api('GET', `/resources/${id}/downloads?limit=200`) ?? [];
+      dialog.querySelector('#hist-list').innerHTML = recs.length ? `
+        <div class="card" style="overflow-x:auto"><table style="width:100%">
+          <thead><tr><th>When</th><th>IP</th><th>SHA-256</th></tr></thead>
+          <tbody>${recs.map(d => `
+            <tr>
+              <td style="white-space:nowrap">${esc(fmtDateTime(d.downloaded_at))}</td>
+              <td style="font-family:monospace;font-size:.8rem">${esc(d.ip || '—')}</td>
+              <td style="font-family:monospace;font-size:.72rem;color:var(--color-text-muted)">${esc((d.sha256 || '').slice(0, 24))}…</td>
+            </tr>`).join('')}</tbody>
+        </table></div>`
+        : '<p style="color:var(--color-text-muted);font-size:.9rem">No downloads recorded yet.</p>';
+    } catch {
+      dialog.querySelector('#hist-list').innerHTML = '<p class="empty-state">Failed to load history.</p>';
+    }
+  }
+
+  /** Provenance check: paste a file's SHA-256 to learn whether it came from
+   *  Quorum (a stored original or a recorded download) or was altered/foreign. */
+  openVerifyModal() {
+    const { dialog, close } = openModal({
+      title: 'Verify a file hash',
+      maxWidth: '560px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-top:0">
+            Paste the SHA-256 of a file you received. Quorum tells you whether it
+            is an unaltered original, a specific recorded download (who/when/where),
+            or unknown — meaning it was changed after leaving Quorum, or never came
+            from it. Compute one with <code>sha256sum &lt;file&gt;</code>.</p>
+          <div class="form-group"><label for="vh-sha">SHA-256 (64 hex characters)</label>
+            <input id="vh-sha" autocomplete="off" placeholder="e3b0c44298fc1c14…" style="font-family:monospace"></div>
+          <div id="vh-result"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="vh-close">Close</button>
+          <button class="btn-primary" id="vh-go">Verify</button>
+        </div>`,
+    });
+    dialog.querySelector('#vh-close').addEventListener('click', close);
+    const goBtn = dialog.querySelector('#vh-go');
+    goBtn.addEventListener('click', guardButton(goBtn, async () => {
+      const sha = dialog.querySelector('#vh-sha').value.trim().toLowerCase();
+      const out = dialog.querySelector('#vh-result');
+      if (!/^[0-9a-f]{64}$/.test(sha)) { toast('Enter a 64-character hex SHA-256', 'error'); return; }
+      try {
+        const res = await api('GET', `/downloads/verify?sha256=${sha}`);
+        const tone = res.status === 'unknown' ? 'var(--color-danger,#dc2626)' : 'var(--color-success,#137333)';
+        const label = { original: '✓ Original document', download: '✓ Recorded download', unknown: '⚠ Unknown' }[res.status] ?? res.status;
+        out.innerHTML = `
+          <div style="border:1px solid ${tone};border-radius:var(--radius);padding:.7rem .9rem;margin-top:.6rem">
+            <div style="font-weight:700;color:${tone}">${label}</div>
+            <div style="font-size:.85rem;margin-top:.25rem">${esc(res.meaning ?? '')}</div>
+            ${res.title ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.25rem">Document: ${esc(res.title)}</div>` : ''}
+            ${res.record ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.25rem">Downloaded ${esc(fmtDateTime(res.record.downloaded_at))} from ${esc(res.record.ip ?? '—')}</div>` : ''}
+          </div>`;
+      } catch (err) { toast(err.error ?? 'Verification failed', 'error'); }
+    }));
   }
 
   async openModal(resource) {

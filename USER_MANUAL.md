@@ -988,18 +988,19 @@ time. Filter by action, resource, or date. Three things worth knowing:
 **When:** a Quorum document surfaces somewhere it shouldn't have, or you need
 to prove a file is (or is not) authentic.
 
-Hash the file in question (`sha256sum thefile`) and ask the system (admins,
-via the API): `GET /api/v1/downloads/verify?sha256=<hash>`. Three possible
-answers:
+Hash the file in question (`sha256sum thefile`) and paste the hash into
+**Resources → Verify a file** (admins), or ask the API
+(`GET /api/v1/downloads/verify?sha256=<hash>`). Three possible answers:
 
 | Status | Meaning |
 |---|---|
 | `original` | Byte-identical to a stored document as uploaded. |
-| `download` | Matches the exact bytes of **one recorded download** — the response names who received it, when, and from which IP. This is what watermarked stamping buys: each download's bytes are unique. |
+| `download` | Matches the exact bytes of **one recorded download** — the response names when it was received and from which IP. This is what watermarked stamping buys: each download's bytes are unique. |
 | `unknown` | Altered after it left Quorum, or never came from it. |
 
-A document's full download history is also available to officers on the API
-(`GET /resources/{id}/downloads`).
+A document's full download history is available in the UI too: **Resources →
+History** on any file-backed row (officer+) lists each download with its time,
+IP, and hash.
 
 ## 6.10 Data portability & erasure
 
@@ -1072,8 +1073,9 @@ arithmetically and historically consistent, just no longer tied to a natural
 person.
 
 It is irreversible and type-to-confirm gated, and the audit log records who
-performed it. Prefer deactivation (6.5) unless someone has actually exercised
-their right to erasure.
+performed it. In the UI it is the **Erase** button on a member row (super-
+administrators only), next to Edit and Del. Prefer deactivation (6.5) unless
+someone has actually exercised their right to erasure.
 
 \newpage
 

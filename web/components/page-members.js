@@ -1,4 +1,4 @@
-import { api, apiDownload, canWrite, isAdmin } from '../app.js';
+import { api, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
 
@@ -98,9 +98,10 @@ class PageMembers extends HTMLElement {
         <td>${esc(m.tier)}</td>
         <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
         <td><payment-status-badge status="${esc(m.dues_status || 'none')}"></payment-status-badge></td>
-        ${canWrite() ? `<td style="text-align:right">
+        ${canWrite() ? `<td style="text-align:right;white-space:nowrap">
           <button class="btn-ghost edit-btn" data-id="${esc(m.id)}">Edit</button>
           ${isAdmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>` : ''}
+          ${isSuperadmin() ? `<button class="btn-ghost erase-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)" title="Erase all personal data (GDPR)">Erase</button>` : ''}
         </td>` : ''}
       </tr>`).join('');
   }
@@ -114,6 +115,27 @@ class PageMembers extends HTMLElement {
     });
     tbody.querySelectorAll('.del-btn').forEach(btn => {
       btn.addEventListener('click', () => this.deleteMember(btn.dataset.id, btn.dataset.name));
+    });
+    tbody.querySelectorAll('.erase-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.eraseMember(btn.dataset.id, btn.dataset.name));
+    });
+  }
+
+  // eraseMember fulfils a right-to-be-forgotten request: unlike Delete (which
+  // soft-deletes to inactive, keeping the record), this scrubs personal data
+  // irreversibly. Superadmin only; the backend refuses if the member is linked
+  // to an admin login.
+  eraseMember(id, name) {
+    confirmDelete({
+      noun: `member's personal data — "${name}" (irreversible GDPR erasure, not a soft-delete)`,
+      name: name ?? '',
+      onConfirm: async (confirmVal) => {
+        try {
+          await api('POST', `/members/${id}/erase?confirm=${encodeURIComponent(confirmVal)}`);
+          toast('Personal data erased', 'success');
+          this.load();
+        } catch (err) { toast(err.error ?? 'Erase failed', 'error'); throw err; }
+      },
     });
   }
 
