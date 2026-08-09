@@ -871,13 +871,20 @@ your organization's server.
   starts the round. No invoice, no ledger entry, no charge — ever.
 - **High scores** are per-cabinet: each player's best run, plus the house
   record on the cabinet card. Scores only count if a credit was inserted.
-- The cabinets: **CHESS** and **GO** (two players at one mouse), **COMET
-  BUSTER** (vector rock shooter), **PENNY PINCHER** (grab the coins, dodge
-  the auditors; gold bars turn the tables), **BRICKFALL** (falling
-  four-square bricks), **POWDER KEG** (up to twelve seats — one or two humans
-  on one keyboard, machines fill the rest, last one standing wins), and
-  **HEXFECTION** (up to twelve seats, hotseat humans plus machines, convert
-  your neighbours until the dish is yours).
+- The cabinets: **CHESS** (play the machine, a friend at the same mouse, or
+  online; full draw rules, R twice to resign, and online Black sees the board
+  from Black's side), **GO** (two players; U undoes a hotseat move — and
+  capture dead stones *before* passing, or they count against you), **COMET
+  BUSTER** (vector rock shooter — mind the saucer), **PENNY PINCHER** (grab
+  the coins, dodge the auditors; gold bars turn the tables and blink when the
+  advantage is about to expire), **BRICKFALL** (falling four-square bricks),
+  **POWDER KEG** (up to twelve seats — one or two humans on one keyboard,
+  machines fill the rest; the white perk lets you kick kegs, and after the
+  walls close a settle timer forces a finish), and **HEXFECTION** (up to
+  twelve seats, hotseat humans plus machines, convert your neighbours until
+  the dish is yours).
+- Every cabinet has sound (mute your device if the basement should stay
+  secret) and **Esc** pauses any local single-machine round.
 - **Playing online.** Chess, Go, Powder Keg, and Hexfection also play over
   the network against other members of your organization. On the cabinet,
   choose **HOST ROOM** (picking the seat count for the big cabinets) and read
