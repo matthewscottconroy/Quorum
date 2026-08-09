@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["logic", "cart"]
+
+# The cartridge is a size-sensitive wasm download: optimize for size, single
+# codegen unit, thin LTO. Debug info stripped.
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1

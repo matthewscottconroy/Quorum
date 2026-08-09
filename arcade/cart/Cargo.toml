@@ -1,0 +1,34 @@
+[package]
+name = "arcade"
+version = "0.1.0"
+edition = "2021"
+
+# The cartridge: every cabinet in one Bevy binary, compiled to wasm. Only the
+# core `bevy` crate is used as the engine (no third-party bevy extension
+# crates); wasm-bindgen/js-sys are the mandatory JS boundary, and the version
+# pin must match the wasm-bindgen CLI used by build.sh.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arcade-logic = { path = "../logic" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bevy = { version = "0.16", default-features = false, features = [
+    "bevy_asset",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_gizmos",
+    "bevy_render",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_window",
+    "bevy_winit",
+    "default_font",
+    "webgl2",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.126"
+js-sys = "0.3"

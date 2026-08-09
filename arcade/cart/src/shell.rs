@@ -1,0 +1,271 @@
+//! The cabinet shell every game runs inside: attract screen, the credit
+//! mailbox fed by JavaScript, the game-over card, and score reporting back
+//! to the page. Games only implement Phase::Playing; the shell owns the rest.
+
+use std::sync::Mutex;
+
+use bevy::prelude::*;
+use serde::Deserialize;
+
+use crate::retro::{self, text, AMBER, DIM, GREEN, MAGENTA};
+use crate::{CabinetConfig, FinalScore, GameTag, NetCfg, NetIn, NetMode, Phase};
+
+/// Credit mailbox: JavaScript pushes (players, humans) when the user feeds
+/// the coin slot; the shell polls it once per frame. A Mutex is overkill on
+/// single-threaded wasm but keeps the native build honest.
+static CREDIT: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+
+/// Network mailboxes: the page pushes a room-start config and relayed events;
+/// shell systems drain them into ECS state each frame.
+static NET_START: Mutex<Option<String>> = Mutex::new(None);
+static NET_IN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn push_credit(players: u32, humans: u32) {
+    *CREDIT.lock().unwrap() = Some((players, humans));
+}
+
+fn take_credit() -> Option<(u32, u32)> {
+    CREDIT.lock().unwrap().take()
+}
+
+pub fn push_net_start(cfg: String) {
+    *NET_START.lock().unwrap() = Some(cfg);
+}
+
+pub fn push_net_event(msg: String) {
+    NET_IN.lock().unwrap().push(msg);
+}
+
+/// Sends a game payload to the room (host relays state; players relay moves).
+pub fn net_send(payload: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeNetSend".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &payload.into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = payload;
+    }
+}
+
+/// Which cabinet did the page ask for? (window.__ARCADE_GAME)
+pub fn selected_game() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_GAME".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "brickfall".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("ARCADE_GAME").unwrap_or_else(|_| "brickfall".to_string())
+    }
+}
+
+/// Reports the final score to the page (window.__arcadeScore).
+pub fn report_score(score: u32) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeScore".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &(score as f64).into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        println!("final score: {score}");
+    }
+}
+
+#[derive(Component)]
+struct ShellTag;
+
+#[derive(Component)]
+struct Blink(Timer);
+
+/// Attract/game-over furniture and phase transitions.
+pub struct ShellPlugin {
+    pub title: &'static str,
+    pub blurb: &'static [&'static str],
+}
+
+#[derive(Resource)]
+struct CabinetCard {
+    title: &'static str,
+    blurb: &'static [&'static str],
+}
+
+impl Plugin for ShellPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(CabinetCard { title: self.title, blurb: self.blurb })
+            .add_systems(Startup, boot)
+            .add_systems(OnEnter(Phase::Attract), attract_in)
+            .add_systems(OnExit(Phase::Attract), shell_out)
+            .add_systems(OnEnter(Phase::GameOver), game_over_in)
+            .add_systems(OnExit(Phase::GameOver), (shell_out, clear_game_entities))
+            .add_systems(
+                Update,
+                (
+                    blink,
+                    poll_credit.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
+                    poll_net_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
+                    pump_net_events.run_if(in_state(Phase::Playing)),
+                ),
+            );
+    }
+}
+
+/// Wire format of the page's room-start config.
+#[derive(Deserialize)]
+struct NetStartMsg {
+    seat: u8,
+    seats: u8,
+    #[serde(default)]
+    present: Vec<u8>,
+}
+
+/// Wire format of a relayed room event.
+#[derive(Deserialize)]
+struct NetInMsg {
+    seat: u8,
+    #[serde(default)]
+    left: bool,
+    #[serde(default)]
+    data: serde_json::Value,
+}
+
+fn poll_net_start(
+    mut config: ResMut<CabinetConfig>,
+    mut net: ResMut<NetMode>,
+    mut next: ResMut<NextState<Phase>>,
+) {
+    let Some(raw) = NET_START.lock().unwrap().take() else { return };
+    let Ok(msg) = serde_json::from_str::<NetStartMsg>(&raw) else { return };
+    let seats = msg.seats.clamp(2, 12);
+    let mut present = vec![false; seats as usize];
+    for s in msg.present {
+        if (s as usize) < present.len() {
+            present[s as usize] = true;
+        }
+    }
+    net.0 = Some(NetCfg { seat: msg.seat.min(seats - 1), seats, present });
+    config.players = seats as u32;
+    config.humans = 1;
+    NET_IN.lock().unwrap().clear(); // no stale traffic from a previous room
+    next.set(Phase::Playing);
+}
+
+fn pump_net_events(mut writer: EventWriter<NetIn>) {
+    let drained: Vec<String> = std::mem::take(NET_IN.lock().unwrap().as_mut());
+    for raw in drained {
+        let Ok(msg) = serde_json::from_str::<NetInMsg>(&raw) else { continue };
+        writer.write(NetIn {
+            seat: msg.seat,
+            left: msg.left,
+            data: if msg.left { String::new() } else { msg.data.to_string() },
+        });
+    }
+}
+
+fn boot(mut commands: Commands) {
+    commands.spawn(Camera2d);
+}
+
+fn attract_in(mut commands: Commands, card: Res<CabinetCard>) {
+    let title = text(&mut commands, card.title, 64.0, GREEN, Vec3::new(0.0, 160.0, 5.0));
+    commands.entity(title).insert(ShellTag);
+    for (i, line) in card.blurb.iter().enumerate() {
+        let e = text(
+            &mut commands,
+            line,
+            20.0,
+            DIM,
+            Vec3::new(0.0, 60.0 - 30.0 * i as f32, 5.0),
+        );
+        commands.entity(e).insert(ShellTag);
+    }
+    let coin = text(&mut commands, "INSERT CREDIT", 30.0, AMBER, Vec3::new(0.0, -180.0, 5.0));
+    commands
+        .entity(coin)
+        .insert((ShellTag, Blink(Timer::from_seconds(0.6, TimerMode::Repeating))));
+}
+
+fn game_over_in(mut commands: Commands, score: Res<FinalScore>) {
+    report_score(score.0);
+    // Dim scrim so the final board stays faintly visible underneath.
+    commands.spawn((
+        Sprite {
+            color: Color::srgba(0.0, 0.0, 0.0, 0.72),
+            custom_size: Some(Vec2::new(retro::SCREEN_W, retro::SCREEN_H)),
+            ..default()
+        },
+        Transform::from_xyz(0.0, 0.0, 40.0),
+        ShellTag,
+    ));
+    let over = text(&mut commands, "GAME OVER", 56.0, MAGENTA, Vec3::new(0.0, 90.0, 50.0));
+    commands.entity(over).insert(ShellTag);
+    let sc = text(
+        &mut commands,
+        &format!("SCORE {}", score.0),
+        34.0,
+        GREEN,
+        Vec3::new(0.0, 20.0, 50.0),
+    );
+    commands.entity(sc).insert(ShellTag);
+    let coin = text(
+        &mut commands,
+        "INSERT CREDIT TO PLAY AGAIN",
+        24.0,
+        AMBER,
+        Vec3::new(0.0, -120.0, 50.0),
+    );
+    commands
+        .entity(coin)
+        .insert((ShellTag, Blink(Timer::from_seconds(0.6, TimerMode::Repeating))));
+}
+
+fn shell_out(mut commands: Commands, q: Query<Entity, With<ShellTag>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+/// Between rounds, every entity a game spawned is swept before the next
+/// round's OnEnter(Playing) setup runs.
+fn clear_game_entities(mut commands: Commands, q: Query<Entity, With<GameTag>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+fn blink(time: Res<Time>, mut q: Query<(&mut Blink, &mut Visibility)>) {
+    for (mut b, mut v) in &mut q {
+        if b.0.tick(time.delta()).just_finished() {
+            *v = match *v {
+                Visibility::Hidden => Visibility::Inherited,
+                _ => Visibility::Hidden,
+            };
+        }
+    }
+}
+
+fn poll_credit(
+    mut config: ResMut<CabinetConfig>,
+    mut net: ResMut<NetMode>,
+    mut next: ResMut<NextState<Phase>>,
+) {
+    if let Some((players, humans)) = take_credit() {
+        net.0 = None; // the plain coin slot always starts a LOCAL round
+        config.players = players.clamp(1, 12);
+        config.humans = humans.clamp(1, config.players);
+        next.set(Phase::Playing);
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "arcade-logic"
+version = "0.1.0"
+edition = "2021"
+
+# Pure rules for the thinking games (chess, go, hexfection). Zero
+# dependencies on purpose: `cargo test -p arcade-logic` runs in milliseconds
+# and never touches the graphics stack.
+[dependencies]
