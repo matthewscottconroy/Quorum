@@ -28,8 +28,31 @@ class PageBudget extends HTMLElement {
     this._selectedId = null;
     this._compare = new Set();
     this._seq = 0; // guards against out-of-order scenario-detail responses
+    this._accounts = []; // income/expense accounts for line linking
+    this._fyStart = 1;
     this.render();
     this.loadList();
+    this.loadAccounts();
+  }
+
+  async loadAccounts() {
+    try {
+      const all = await api('GET', '/accounting/accounts') ?? [];
+      this._accounts = all.filter(a => a.type === 'income' || a.type === 'expense');
+    } catch { /* linking stays optional */ }
+    try {
+      this._fyStart = Number((await api('GET', '/settings/org')).fiscal_year_start_month ?? 1) || 1;
+    } catch { /* calendar year default */ }
+  }
+
+  /** [from, to] ISO dates for the fiscal year containing/preceding today. */
+  fiscalYear(offset = 0) {
+    const now = new Date();
+    let year = now.getFullYear() + offset;
+    if (now.getMonth() + 1 < this._fyStart) year -= 1;
+    const from = new Date(Date.UTC(year, this._fyStart - 1, 1));
+    const to = new Date(Date.UTC(year + 1, this._fyStart - 1, 0)); // day 0 = last of prior month
+    return [from.toISOString().slice(0, 10), to.toISOString().slice(0, 10)];
   }
 
   render() {
@@ -115,12 +138,20 @@ class PageBudget extends HTMLElement {
 
   renderDetail(s) {
     const cur = s.currency;
+    const accountOpts = (kind, current) => ['<option value="">— GL account —</option>']
+      .concat(this._accounts.filter(a => a.type === kind).map(a =>
+        `<option value="${esc(a.id)}" ${a.id === current ? 'selected' : ''}>${esc(a.code)} ${esc(a.name)}</option>`))
+      .join('');
     const lineRows = kind => (s.lines ?? []).filter(l => l.kind === kind).map(l => `
       <tr class="b-line" data-id="${esc(l.id)}" data-currency="${esc(cur)}">
+        <td style="white-space:nowrap">
+          <button class="btn-ghost l-up" title="Move up" aria-label="Move line up" style="font-size:.7rem;padding:0 .2rem">▲</button><button class="btn-ghost l-down" title="Move down" aria-label="Move line down" style="font-size:.7rem;padding:0 .2rem">▼</button>
+        </td>
         <td><input class="l-label" value="${esc(l.label)}" style="width:100%;padding:.2rem .35rem;font-size:.85rem"></td>
-        <td><input class="l-cat" value="${esc(l.category ?? '')}" placeholder="—" style="width:90px;padding:.2rem .35rem;font-size:.8rem"></td>
-        <td><input class="l-qty" type="number" min="0" value="${l.quantity}" style="width:64px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
-        <td><input class="l-unit" value="${plainAmount(l.unit_amount_minor, cur)}" style="width:88px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
+        <td><input class="l-cat" value="${esc(l.category ?? '')}" placeholder="—" style="width:80px;padding:.2rem .35rem;font-size:.8rem"></td>
+        <td><select class="l-acct" title="Link to a GL account for budget-vs-actual" style="width:120px;padding:.2rem;font-size:.75rem">${accountOpts(kind, l.account_id)}</select></td>
+        <td><input class="l-qty" type="number" min="0" value="${l.quantity}" style="width:60px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
+        <td><input class="l-unit" value="${plainAmount(l.unit_amount_minor, cur)}" style="width:84px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
         <td class="l-amount" style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap">${formatMoney(l.amount_minor, cur)}</td>
         <td><button class="btn-ghost l-del" aria-label="Delete line" title="Delete line" style="color:var(--color-danger);font-size:.75rem">✕</button></td>
       </tr>`).join('');
@@ -130,7 +161,7 @@ class PageBudget extends HTMLElement {
         <div style="font-weight:700;font-size:.85rem;color:${color};margin-bottom:.35rem">${title}</div>
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="font-size:.68rem;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em">
-            <th style="text-align:left">Item</th><th style="text-align:left">Category</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Amount</th><th></th>
+            <th></th><th style="text-align:left">Item</th><th style="text-align:left">Category</th><th style="text-align:left">Account</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Amount</th><th></th>
           </tr></thead>
           <tbody data-kind="${kind}">${lineRows(kind)}</tbody>
         </table>
@@ -142,8 +173,11 @@ class PageBudget extends HTMLElement {
         <div style="display:flex;justify-content:space-between;gap:1rem;align-items:start;flex-wrap:wrap;margin-bottom:1rem">
           <div style="flex:1;min-width:200px">
             <input id="s-name" value="${esc(s.name)}" style="font-size:1.1rem;font-weight:700;width:100%;padding:.3rem .4rem;border:1px solid transparent;background:transparent" title="Scenario name">
-            <div style="display:flex;gap:.5rem;margin-top:.35rem;align-items:center">
-              <input id="s-period" value="${esc(s.period_label ?? '')}" placeholder="Period (e.g. FY2027)" style="width:150px;padding:.2rem .4rem;font-size:.8rem">
+            <div style="display:flex;gap:.5rem;margin-top:.35rem;align-items:center;flex-wrap:wrap">
+              <input id="s-period" value="${esc(s.period_label ?? '')}" placeholder="Period (e.g. FY2027)" style="width:130px;padding:.2rem .4rem;font-size:.8rem">
+              <input id="s-starts" type="date" value="${s.starts_on ? esc(String(s.starts_on).slice(0,10)) : ''}" title="Period start (enables proration and date defaults)" style="padding:.2rem .3rem;font-size:.78rem">
+              <span style="font-size:.75rem;color:var(--color-text-muted)">→</span>
+              <input id="s-ends" type="date" value="${s.ends_on ? esc(String(s.ends_on).slice(0,10)) : ''}" title="Period end" style="padding:.2rem .3rem;font-size:.78rem">
               <select id="s-status" style="width:auto;padding:.2rem .4rem;font-size:.8rem">${STATUSES.map(x=>`<option ${s.status===x?'selected':''}>${x}</option>`).join('')}</select>
             </div>
           </div>
@@ -188,48 +222,93 @@ class PageBudget extends HTMLElement {
       </div>`;
   }
 
-  /** Compares this scenario's budgeted totals to posted GL actuals over a period. */
+  /** Budget vs. actual: per-category variance, basis choice, FY presets,
+      time-elapsed proration, and honest multi-currency handling. */
   openVsActual(s) {
     const cur = s.currency;
+    const defFrom = s.starts_on ? String(s.starts_on).slice(0, 10) : this.fiscalYear()[0];
+    const defTo = s.ends_on ? String(s.ends_on).slice(0, 10) : this.fiscalYear()[1];
     const { dialog, close } = openModal({
       title: `Budget vs. actual — ${s.name}`,
-      maxWidth: '520px',
+      maxWidth: '660px',
       body: `
         <div class="modal-body">
-          <p style="color:var(--color-text-muted);font-size:.85rem">Compare budgeted income and expense against what's actually posted to the ledger over a date range.</p>
+          <p style="color:var(--color-text-muted);font-size:.85rem">Planned vs. posted, in ${esc(cur)} only. Link lines to GL accounts for the per-category rows.</p>
           <div style="display:flex;gap:.6rem;align-items:end;flex-wrap:wrap">
-            <div class="form-group" style="margin-bottom:0"><label for="va-from">From</label><input id="va-from" type="date"></div>
-            <div class="form-group" style="margin-bottom:0"><label for="va-to">To</label><input id="va-to" type="date"></div>
+            <div class="form-group" style="margin-bottom:0"><label for="va-from">From</label><input id="va-from" type="date" value="${esc(defFrom)}"></div>
+            <div class="form-group" style="margin-bottom:0"><label for="va-to">To</label><input id="va-to" type="date" value="${esc(defTo)}"></div>
+            <div class="form-group" style="margin-bottom:0"><label for="va-basis">Basis</label>
+              <select id="va-basis"><option value="accrual">Accrual</option><option value="cash">Cash</option></select></div>
             <button class="btn-primary" id="va-run">Compare</button>
+          </div>
+          <div style="display:flex;gap:.4rem;margin-top:.4rem">
+            <button class="btn-ghost" id="va-thisfy" style="font-size:.75rem">This fiscal year</button>
+            <button class="btn-ghost" id="va-lastfy" style="font-size:.75rem">Last fiscal year</button>
           </div>
           <div id="va-out" style="margin-top:1rem"></div>
         </div>
         <div class="modal-footer"><button class="btn-secondary" id="va-close">Close</button></div>`,
     });
     dialog.querySelector('#va-close').addEventListener('click', close);
+    const setRange = ([f, t]) => {
+      dialog.querySelector('#va-from').value = f;
+      dialog.querySelector('#va-to').value = t;
+    };
+    dialog.querySelector('#va-thisfy').addEventListener('click', () => setRange(this.fiscalYear()));
+    dialog.querySelector('#va-lastfy').addEventListener('click', () => setRange(this.fiscalYear(-1)));
     const run = dialog.querySelector('#va-run');
-    run.addEventListener('click', guardButton(run, async () => {
+    const doRun = guardButton(run, async () => {
       const from = dialog.querySelector('#va-from').value, to = dialog.querySelector('#va-to').value;
+      const basis = dialog.querySelector('#va-basis').value;
       if (!from || !to) { toast('Pick both dates', 'error'); return; }
       let d;
-      try { d = await api('GET', `/budgets/${s.id}/vs-actual?from=${from}&to=${to}`); }
+      try { d = await api('GET', `/budgets/${s.id}/vs-actual?from=${from}&to=${to}&basis=${basis}`); }
       catch (err) { toast(err.error ?? 'Failed', 'error'); return; }
-      const row = (label, budget, actual, variance, favGood) => {
+      const money = m => formatMoney(m, cur);
+      const row = (label, budget, actual, variance, favGood, dim) => {
         const good = favGood ? variance >= 0 : variance <= 0;
-        return `<tr>
+        return `<tr${dim ? ' style="color:var(--color-text-muted)"' : ''}>
           <td>${label}</td>
-          <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(budget, cur)}</td>
-          <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(actual, cur)}</td>
-          <td style="text-align:right;font-variant-numeric:tabular-nums;color:${good ? 'var(--color-success)' : 'var(--color-danger)'}">${variance >= 0 ? '+' : ''}${formatMoney(variance, cur)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">${money(budget)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">${money(actual)}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums;color:${dim ? 'inherit' : good ? 'var(--color-success)' : 'var(--color-danger)'}">${variance >= 0 ? '+' : ''}${money(variance)}</td>
         </tr>`;
       };
-      dialog.querySelector('#va-out').innerHTML = `
+      let html = '';
+      if (d.period_elapsed_pct != null) {
+        html += `<p style="font-size:.78rem;color:var(--color-text-muted);margin-bottom:.5rem">
+          ${d.period_elapsed_pct}% of the budget period has elapsed — the prorated rows show where you \u201Cshould\u201D be by now (straight-line).</p>`;
+      }
+      html += `
         <table><thead><tr><th></th><th style="text-align:right">Budget</th><th style="text-align:right">Actual</th><th style="text-align:right">Variance</th></tr></thead>
           <tbody>
             ${row('Income', d.budget_income, d.actual_income, d.income_variance, true)}
+            ${d.prorated_budget_income != null ? row('&nbsp;&nbsp;vs prorated', d.prorated_budget_income, d.actual_income, d.actual_income - d.prorated_budget_income, true, true) : ''}
             ${row('Expense', d.budget_expense, d.actual_expense, d.expense_variance, false)}
+            ${d.prorated_budget_expense != null ? row('&nbsp;&nbsp;vs prorated', d.prorated_budget_expense, d.actual_expense, d.actual_expense - d.prorated_budget_expense, false, true) : ''}
           </tbody></table>`;
-    }));
+      const cats = d.categories ?? [];
+      if (cats.length) {
+        html += `
+          <div style="font-weight:700;font-size:.8rem;margin:1rem 0 .3rem">By account</div>
+          <table><thead><tr><th>Account</th><th></th><th style="text-align:right">Budget</th><th style="text-align:right">Actual</th><th style="text-align:right">Variance</th></tr></thead>
+            <tbody>${cats.map(c => `
+              <tr${c.label === '(unlinked)' ? ' style="color:var(--color-text-muted)"' : ''}>
+                <td>${c.account_code ? esc(c.account_code) + ' ' : ''}${esc(c.label)}</td>
+                <td style="font-size:.7rem;color:var(--color-text-muted)">${esc(c.kind)}</td>
+                <td style="text-align:right;font-variant-numeric:tabular-nums">${money(c.budget_minor)}</td>
+                <td style="text-align:right;font-variant-numeric:tabular-nums">${c.label === '(unlinked)' ? '—' : money(c.actual_minor)}</td>
+                <td style="text-align:right;font-variant-numeric:tabular-nums">${c.label === '(unlinked)' ? '—' : (c.variance_minor >= 0 ? '+' : '') + money(c.variance_minor)}</td>
+              </tr>`).join('')}</tbody></table>`;
+      }
+      if ((d.excluded_currencies ?? []).length) {
+        html += `<p style="font-size:.78rem;color:var(--color-warning,#b45309);margin-top:.6rem">
+          ⚠ Ledger activity in ${d.excluded_currencies.map(esc).join(', ')} was excluded — this view never mixes currencies.</p>`;
+      }
+      dialog.querySelector('#va-out').innerHTML = html;
+    });
+    run.addEventListener('click', doRun);
+    doRun(); // dates are prefilled: show the comparison immediately
   }
 
   /** Leniently computes a line's amount in minor units from its live inputs. */
@@ -260,10 +339,28 @@ class PageBudget extends HTMLElement {
             category: row.querySelector('.l-cat').value.trim() || null,
             quantity: Number.parseInt(row.querySelector('.l-qty').value, 10) || 0,
             unit_amount_minor: unitMinor,
+            account_id: row.querySelector('.l-acct').value, // '' unlinks
           });
         } catch (err) { toast(err.error ?? 'Save failed','error'); }
       };
-      row.querySelectorAll('input').forEach(inp => inp.addEventListener('change', commit));
+      row.querySelectorAll('input, select').forEach(inp => inp.addEventListener('change', commit));
+      // Reorder: rewrite sort_order for the whole section from DOM order
+      // with this row shifted one slot.
+      const move = async dir => {
+        const tbody = row.closest('tbody');
+        const rows = [...tbody.querySelectorAll('.b-line')];
+        const i = rows.indexOf(row);
+        const j = i + dir;
+        if (j < 0 || j >= rows.length) return;
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+        try {
+          await Promise.all(rows.map((r, idx) =>
+            api('PATCH', `/budget-lines/${r.dataset.id}`, { sort_order: idx })));
+          this.select(id);
+        } catch (err) { toast(err.error ?? 'Reorder failed','error'); }
+      };
+      row.querySelector('.l-up').addEventListener('click', () => move(-1));
+      row.querySelector('.l-down').addEventListener('click', () => move(1));
       row.querySelector('.l-del').addEventListener('click', async () => {
         try { await api('DELETE', `/budget-lines/${row.dataset.id}`); this.select(id); this.loadList(); }
         catch { toast('Delete failed','error'); }
@@ -279,23 +376,36 @@ class PageBudget extends HTMLElement {
 
     // Scenario metadata commits on change.
     const saveMeta = async () => {
+      const body = {
+        name: detail.querySelector('#s-name').value.trim() || 'Untitled',
+        period_label: detail.querySelector('#s-period').value.trim() || null,
+        status: detail.querySelector('#s-status').value,
+      };
+      const starts = detail.querySelector('#s-starts').value;
+      const ends = detail.querySelector('#s-ends').value;
+      if (starts) body.starts_on = starts;
+      if (ends) body.ends_on = ends;
       try {
-        await api('PATCH', `/budgets/${id}`, {
-          name: detail.querySelector('#s-name').value.trim() || 'Untitled',
-          period_label: detail.querySelector('#s-period').value.trim() || null,
-          status: detail.querySelector('#s-status').value,
-        });
+        await api('PATCH', `/budgets/${id}`, body);
         this.loadList();
       } catch (err) { toast(err.error ?? 'Save failed','error'); }
     };
-    ['#s-name','#s-period','#s-status'].forEach(sel => detail.querySelector(sel).addEventListener('change', saveMeta));
+    ['#s-name','#s-period','#s-status','#s-starts','#s-ends'].forEach(sel => detail.querySelector(sel).addEventListener('change', saveMeta));
 
     detail.querySelector('#vsactual-btn').addEventListener('click', () => this.openVsActual(s));
 
     detail.querySelector('#seed-btn').addEventListener('click', async () => {
+      if (!await confirm('Seeding replaces every line in the “Dues” category (including hand-edited ones) with a fresh projection from the roster. Continue?', 'Seed dues income')) return;
       try {
         const res = await api('POST', `/budgets/${id}/seed-dues`);
         toast(res.lines_added ? `Added ${res.lines_added} dues line(s) from the roster` : 'No dues schedules to seed from', res.lines_added ? 'success' : 'info');
+        // Every skipped tier is a hole in the projection — name each one.
+        for (const sk of res.skipped ?? []) {
+          const why = sk.reason === 'no_fx_rate'
+            ? 'no FX rate into this scenario\u2019s currency'
+            : 'no active dues schedule';
+          toast(`Not projected: ${sk.members} member(s) in tier \u201C${sk.tier}\u201D — ${why}`, 'info');
+        }
         this.select(id); this.loadList();
       } catch (err) { toast(err.error ?? 'Seed failed','error'); }
     });
@@ -310,9 +420,10 @@ class PageBudget extends HTMLElement {
     });
 
     detail.querySelector('#del-btn').addEventListener('click', async () => {
-      if (!await confirm(`Delete scenario “${s.name}”? This cannot be undone.`)) return;
+      const typed = prompt(`Deleting a budget is permanent (admin only). Type the scenario name to confirm:\n${s.name}`);
+      if (typed == null) return;
       try {
-        await api('DELETE', `/budgets/${id}`);
+        await api('DELETE', `/budgets/${id}?confirm=${encodeURIComponent(typed.trim())}`);
         toast('Scenario deleted','success');
         this._selectedId = null;
         this.querySelector('#b-detail').innerHTML = '<div class="empty-state" style="padding:2rem"><p>Select a scenario.</p></div>';
@@ -329,6 +440,11 @@ class PageBudget extends HTMLElement {
         <div class="modal-body">
           <div class="form-group"><label for="c-name">Name *</label><input id="c-name" placeholder="e.g. FY2027 Base Case"></div>
           <div class="form-group"><label for="c-period">Period label</label><input id="c-period" placeholder="FY2027"></div>
+          <div style="display:flex;gap:.6rem">
+            <div class="form-group" style="flex:1"><label for="c-starts">Starts</label><input id="c-starts" type="date"></div>
+            <div class="form-group" style="flex:1"><label for="c-ends">Ends</label><input id="c-ends" type="date"></div>
+          </div>
+          <p style="font-size:.75rem;color:var(--color-text-muted);margin-top:-.4rem">Dates enable fiscal-year defaults and time-elapsed proration in “Vs actual”.</p>
         </div>
         <div class="modal-footer"><button class="btn-secondary" id="cancel-btn">Cancel</button><button class="btn-primary" id="save-btn">Create</button></div>`,
     });
@@ -337,7 +453,11 @@ class PageBudget extends HTMLElement {
       const name = dialog.querySelector('#c-name').value.trim();
       if (!name) { toast('Name is required','error'); return; }
       try {
-        const s = await api('POST', '/budgets', { name, period_label: dialog.querySelector('#c-period').value.trim() || null });
+        const body = { name, period_label: dialog.querySelector('#c-period').value.trim() || null };
+        const cs = dialog.querySelector('#c-starts').value, ce = dialog.querySelector('#c-ends').value;
+        if (cs) body.starts_on = cs;
+        if (ce) body.ends_on = ce;
+        const s = await api('POST', '/budgets', body);
         close(); await this.loadList(); this.select(s.id);
       } catch (err) { toast(err.error ?? 'Failed','error'); }
     });
@@ -349,22 +469,26 @@ class PageBudget extends HTMLElement {
     let data;
     try { data = await api('GET', `/budgets/compare?ids=${ids.join(',')}`); }
     catch { toast('Compare failed','error'); return; }
-    const cur = data[0]?.totals.currency ?? 'USD';
+    const currencies = [...new Set(data.map(s => s.totals.currency))];
+    const mixedWarning = currencies.length > 1
+      ? `<p style="font-size:.78rem;color:var(--color-warning,#b45309);margin-bottom:.8rem">⚠ These scenarios use different currencies (${currencies.map(esc).join(', ')}) — the bars are not directly comparable.</p>`
+      : '';
     const max = Math.max(1, ...data.flatMap(s => [s.totals.income_minor, s.totals.expense_minor]));
     const { dialog, close } = openModal({
       title: 'Compare scenarios',
       maxWidth: '620px',
       body: `
         <div class="modal-body">
+          ${mixedWarning}
           ${data.map(s => `
             <div style="margin-bottom:1rem">
-              <div style="display:flex;justify-content:space-between;font-size:.9rem;font-weight:600"><span>${esc(s.name)}</span><span>${netLabel(s.totals.net_minor, cur)}</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:.9rem;font-weight:600"><span>${esc(s.name)}</span><span>${netLabel(s.totals.net_minor, s.totals.currency)}</span></div>
               <div style="display:flex;align-items:center;gap:.5rem;margin-top:.25rem"><span style="width:64px;font-size:.72rem;color:var(--color-success)">Income</span>
                 <div style="flex:1;height:11px;background:var(--color-border);border-radius:5px;overflow:hidden"><div style="height:100%;width:${s.totals.income_minor/max*100}%;background:var(--color-success)"></div></div>
-                <span style="width:90px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${formatMoney(s.totals.income_minor, cur)}</span></div>
+                <span style="width:90px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${formatMoney(s.totals.income_minor, s.totals.currency)}</span></div>
               <div style="display:flex;align-items:center;gap:.5rem;margin-top:.2rem"><span style="width:64px;font-size:.72rem;color:var(--color-danger)">Expense</span>
                 <div style="flex:1;height:11px;background:var(--color-border);border-radius:5px;overflow:hidden"><div style="height:100%;width:${s.totals.expense_minor/max*100}%;background:var(--color-danger)"></div></div>
-                <span style="width:90px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${formatMoney(s.totals.expense_minor, cur)}</span></div>
+                <span style="width:90px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${formatMoney(s.totals.expense_minor, s.totals.currency)}</span></div>
             </div>`).join('')}
         </div>
         <div class="modal-footer"><button class="btn-primary" id="close-btn">Close</button></div>`,

@@ -1,6 +1,6 @@
 import { api, canWrite, isAuthenticated, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete, renderPager } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager, formatMoney, parseMoney } from '../utils.js';
 
 const PLAN_STATUSES = ['draft', 'active', 'completed', 'archived'];
 
@@ -62,8 +62,13 @@ class PagePlans extends HTMLElement {
             <div style="flex:1">
               <div style="font-weight:700">${esc(p.title)}</div>
               ${p.description ? `<div style="font-size:.85rem;color:var(--color-text-muted);margin-top:.2rem">${esc(p.description.slice(0,100))}${p.description.length>100?'…':''}</div>` : ''}
-              ${p.owner_name ? `<div style="font-size:.8rem;color:var(--color-text-muted)">Owner: ${esc(p.owner_name)}</div>` : ''}
+              <div style="font-size:.8rem;color:var(--color-text-muted)">
+                ${p.owner_name ? `Owner: ${esc(p.owner_name)}` : ''}
+                ${p.target_date ? ` · target ${esc(String(p.target_date).slice(0,10))}` : ''}
+                ${p.estimated_cost_minor != null ? ` · est. ${formatMoney(p.estimated_cost_minor, p.cost_currency || 'USD')}` : ''}
+              </div>
             </div>
+            ${p.status === 'active' && p.target_date && new Date(p.target_date) < new Date() ? '<span class="badge badge-overdue">overdue</span>' : ''}
             <span class="badge badge-${esc(p.status)}">${esc(p.status)}</span>
             ${isSuperadmin()?`<button class="btn-ghost del-btn" data-id="${esc(p.id)}" style="color:var(--color-danger)">Del</button>`:''}
           </div>`).join('')
@@ -113,6 +118,10 @@ class PagePlans extends HTMLElement {
             </div>
             <div class="form-group"><label for="f-date">Target date</label><input id="f-date" type="date"></div>
           </div>
+          <div class="form-row">
+            <div class="form-group"><label for="f-cost">Estimated cost</label><input id="f-cost" inputmode="decimal" placeholder="0.00"></div>
+            <div class="form-group"><label for="f-cost-cur">Currency</label><input id="f-cost-cur" maxlength="3" placeholder="USD" style="text-transform:uppercase"></div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
@@ -127,12 +136,21 @@ class PagePlans extends HTMLElement {
       const title = dialog.querySelector('#f-title').value.trim();
       if (!title) { toast('Title required','error'); return; }
       try {
-        const p = await api('POST', '/plans', {
+        const body = {
           title,
           description: dialog.querySelector('#f-desc').value.trim()||null,
           status:      dialog.querySelector('#f-status').value,
           target_date: dialog.querySelector('#f-date').value||null,
-        });
+        };
+        const costCur = (dialog.querySelector('#f-cost-cur').value.trim() || 'USD').toUpperCase();
+        const costRaw = dialog.querySelector('#f-cost').value.trim();
+        if (costRaw) {
+          const minor = parseMoney(costRaw, costCur);
+          if (minor == null || minor < 0) { toast('Enter a valid estimated cost','error'); return; }
+          body.estimated_cost_minor = minor;
+          body.cost_currency = costCur;
+        }
+        const p = await api('POST', '/plans', body);
         toast('Plan created','success'); close(); this.load();
         setTimeout(() => this.openDetail(p.id), 100);
       } catch (err) { toast(err.error??'Failed','error'); }
@@ -157,7 +175,17 @@ class PagePlans extends HTMLElement {
             </div>
           </div>
           <div class="form-group"><label for="f-desc">Description</label><textarea id="f-desc" rows="3">${esc(pl.description??'')}</textarea></div>
-          `:`<p style="margin-bottom:1rem;color:var(--color-text-muted)">${esc(pl.description??'No description.')}</p>`}
+          <div class="form-row">
+            <div class="form-group"><label for="f-cost">Estimated cost</label>
+              <input id="f-cost" inputmode="decimal" value="${pl.estimated_cost_minor != null ? (pl.estimated_cost_minor/100).toFixed(2) : ''}" placeholder="0.00"></div>
+            <div class="form-group"><label for="f-cost-cur">Currency</label>
+              <input id="f-cost-cur" maxlength="3" value="${esc(pl.cost_currency ?? '')}" placeholder="USD" style="text-transform:uppercase"></div>
+          </div>
+          `:`<p style="margin-bottom:1rem;color:var(--color-text-muted)">${esc(pl.description??'No description.')}</p>
+          ${pl.estimated_cost_minor != null ? `<p style="font-size:.85rem;color:var(--color-text-muted)">Estimated cost: ${formatMoney(pl.estimated_cost_minor, pl.cost_currency || 'USD')}</p>` : ''}`}
+
+          <h3 style="margin:.75rem 0 .5rem;font-size:.95rem">Linked work</h3>
+          <div id="plan-work"></div>
 
           <h3 style="margin:.75rem 0 .5rem;font-size:.95rem">Decision log</h3>
           <div id="decisions-list"></div>
@@ -208,6 +236,30 @@ class PagePlans extends HTMLElement {
 
     renderDecisions(pl.decisions);
 
+    // Linked work: the action items carrying this plan's id, with a progress
+    // bar so a plan page finally answers "how far along are we?".
+    {
+      const workEl = dialog.querySelector('#plan-work');
+      const items = pl.action_items ?? [];
+      if (!items.length) {
+        workEl.innerHTML = '<p style="color:var(--color-text-muted);font-size:.85rem">No linked action items yet — link cards to this plan from the Board.</p>';
+      } else {
+        const done = items.filter(i => i.status === 'done').length;
+        const pct = Math.round(done / items.length * 100);
+        workEl.innerHTML = `
+          <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+            <div style="flex:1;height:10px;background:var(--color-border);border-radius:5px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:var(--color-success)"></div></div>
+            <span style="font-size:.78rem;color:var(--color-text-muted)">${done}/${items.length} done</span>
+          </div>
+          ${items.map(i => `
+            <div style="display:flex;justify-content:space-between;gap:.5rem;font-size:.85rem;padding:.2rem 0;border-bottom:1px solid var(--color-border)">
+              <span>${esc(i.title)}</span>
+              <span class="badge badge-${esc(i.status)}" style="font-size:.65rem">${esc(i.status)}</span>
+            </div>`).join('')}`;
+      }
+    }
+
     // Reload the list whenever the detail dialog closes (close button, Close, or Escape),
     // but only while still mounted and authenticated so a logout-triggered close
     // (openModal force-closes on auth-changed) doesn't fire a stray authed fetch.
@@ -217,11 +269,20 @@ class PagePlans extends HTMLElement {
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn?.addEventListener('click', guardButton(saveBtn, async () => {
       try {
-        await api('PATCH', `/plans/${id}`, {
+        const body = {
           title:       dialog.querySelector('#f-title').value.trim()||null,
           description: dialog.querySelector('#f-desc').value.trim()||null,
           status:      dialog.querySelector('#f-status').value,
-        });
+        };
+        const costCur = (dialog.querySelector('#f-cost-cur').value.trim() || 'USD').toUpperCase();
+        const costRaw = dialog.querySelector('#f-cost').value.trim();
+        if (costRaw) {
+          const minor = parseMoney(costRaw, costCur);
+          if (minor == null || minor < 0) { toast('Enter a valid estimated cost','error'); return; }
+          body.estimated_cost_minor = minor;
+          body.cost_currency = costCur;
+        }
+        await api('PATCH', `/plans/${id}`, body);
         toast('Saved','success');
       } catch { toast('Save failed','error'); }
     }));

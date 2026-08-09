@@ -24,6 +24,7 @@ class PageBoard extends HTMLElement {
     this._sprints = [];
     this._items = [];
     this._members = [];
+    this._plans = [];
     this._columns = [];
     this._scope = ''; // '' all | 'none' backlog | sprint id
     this._assignee = '';
@@ -39,12 +40,16 @@ class PageBoard extends HTMLElement {
       const qs = new URLSearchParams({ limit: '500' });
       if (this._scope) qs.set('sprint_id', this._scope);
       const fetches = [api('GET', '/action-items?' + qs), api('GET', '/sprints'), api('GET', '/board/columns')];
-      if (withRefs) fetches.push(api('GET', '/members?limit=200'));
-      const [items, sprints, columns, members] = await Promise.all(fetches);
+      if (withRefs) {
+        fetches.push(api('GET', '/members?limit=200'));
+        fetches.push(api('GET', '/plans?limit=200').catch(() => null));
+      }
+      const [items, sprints, columns, members, plans] = await Promise.all(fetches);
       this._items = items?.data ?? [];
       this._sprints = sprints ?? [];
       this._columns = columns ?? [];
       if (members) this._members = members?.data ?? [];
+      if (plans) this._plans = plans?.data ?? [];
       this.renderBoard();
     } catch {
       toast('Failed to load the board', 'error');
@@ -410,6 +415,9 @@ class PageBoard extends HTMLElement {
       this._members.map(m => `<option value="${esc(m.id)}" ${sel === m.id ? 'selected' : ''}>${esc(m.display_name)}</option>`).join('');
     const sprintOpts = sel => `<option value="">— backlog —</option>` +
       this._sprints.map(s => `<option value="${esc(s.id)}" ${sel === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+    const planOpts = sel => `<option value="">— no plan —</option>` +
+      (this._plans ?? []).filter(p => p.status === 'active' || p.status === 'draft' || p.id === sel)
+        .map(p => `<option value="${esc(p.id)}" ${sel === p.id ? 'selected' : ''}>${esc(p.title)}</option>`).join('');
     if (!officer) { this.openCardViewModal(item); return; }
     const { dialog, close } = openModal({
       title: 'Work item',
@@ -430,6 +438,7 @@ class PageBoard extends HTMLElement {
           <div class="form-row">
             <div class="form-group"><label for="c-assignee">Assignee</label><select id="c-assignee">${memberOpts(item.assignee_id)}</select></div>
             <div class="form-group"><label for="c-sprint">Sprint</label><select id="c-sprint">${sprintOpts(item.sprint_id)}</select></div>
+            <div class="form-group"><label for="c-plan" title="Ties this card to a strategic plan — the plan page shows linked work and progress">Plan</label><select id="c-plan">${planOpts(item.plan_id)}</select></div>
           </div>
           <div class="form-group">
             <label>Additional contributors</label>
@@ -489,6 +498,7 @@ class PageBoard extends HTMLElement {
           card_type: dialog.querySelector('#c-type').value,
           story_points: ptsRaw === '' ? null : Number(ptsRaw),
           parent_id: dialog.querySelector('#c-parent').value || null,
+          plan_id: dialog.querySelector('#c-plan').value || null,
         });
         const contribIDs = [...dialog.querySelectorAll('.c-contrib-cb:checked')].map(cb => cb.value);
         const before = (item.contributors ?? []).map(c => c.member_id).sort().join(',');

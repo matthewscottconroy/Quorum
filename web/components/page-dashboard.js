@@ -127,6 +127,10 @@ class PageDashboard extends HTMLElement {
           <div class="stat-value">${d.open_action_items.length}</div>
           <div class="stat-label">Open action items</div>
         </div>
+        <div class="stat-card card">
+          <div class="stat-value ${d.overdue_plan_count > 0 ? 'danger' : ''}">${d.active_plan_count ?? 0}${d.overdue_plan_count > 0 ? ` <span style="font-size:.6em">(${d.overdue_plan_count} overdue)</span>` : ''}</div>
+          <div class="stat-label"><a href="#/plans" style="color:inherit">Active plans</a></div>
+        </div>
         ${canWrite() ? `<div class="stat-card card">
           <div class="stat-value ${d.open_bills_count > 0 ? 'danger' : ''}">${d.open_bills_count ?? 0}</div>
           <div class="stat-label"><a href="#/payables" style="color:inherit">Open bills</a></div>

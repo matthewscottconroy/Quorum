@@ -230,6 +230,20 @@ class PageFunds extends HTMLElement {
         (accts ?? []).filter(a => a.type === 'expense' && a.active)
           .map(a => `<option value="${esc(a.id)}">${esc(a.code)} ${esc(a.name)}</option>`).join('');
     }).catch(() => {});
+    // Read-only budget context: when the chosen account is covered by the
+    // active budget, say how much of that envelope is left.
+    dialog.querySelector('#pr-exp').addEventListener('change', async e => {
+      const hint = dialog.querySelector('#pr-budget-hint');
+      if (!hint) return;
+      hint.textContent = '';
+      const acct = e.target.value;
+      if (!acct) return;
+      try {
+        const b = await api('GET', `/budgets/remaining?account_id=${acct}`);
+        const over = b.remaining_minor < 0;
+        hint.innerHTML = `Budget \u201C${esc(b.scenario)}\u201D: <strong style="color:${over ? 'var(--color-danger)' : 'var(--color-success)'}">${formatMoney(b.remaining_minor, b.currency)}</strong> of ${formatMoney(b.budget_minor, b.currency)} remaining`;
+      } catch { /* no active budget for this account — say nothing */ }
+    });
     const saveBtn = dialog.querySelector('#pr-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const currency = dialog.querySelector('#pr-cur').value.trim().toUpperCase();

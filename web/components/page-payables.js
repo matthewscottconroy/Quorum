@@ -96,7 +96,8 @@ class PagePayables extends HTMLElement {
               <input id="nb-cur" value="USD" maxlength="3" list="nb-cur-list" style="max-width:90px">
               ${currencyDatalist('nb-cur-list', currencies)}</div>
             <div class="form-group"><label for="nb-exp">Expense account *</label>
-              <select id="nb-exp">${expenses.map(a => `<option value="${esc(a.id)}">${esc(a.code)} ${esc(a.name)}</option>`).join('')}</select></div>
+              <select id="nb-exp">${expenses.map(a => `<option value="${esc(a.id)}">${esc(a.code)} ${esc(a.name)}</option>`).join('')}</select>
+              <div id="nb-budget-hint" style="font-size:.75rem;color:var(--color-text-muted);margin-top:.2rem"></div></div>
           </div>
           <div class="form-row">
             <div class="form-group"><label for="nb-billdate">Bill date</label><input id="nb-billdate" type="date"></div>
@@ -111,6 +112,21 @@ class PagePayables extends HTMLElement {
         </div>`,
     });
     dialog.querySelector('#nb-cancel').addEventListener('click', close);
+    // Read-only budget context for the chosen expense account.
+    const budgetHint = async () => {
+      const hint = dialog.querySelector('#nb-budget-hint');
+      if (!hint) return;
+      hint.textContent = '';
+      const acct = dialog.querySelector('#nb-exp').value;
+      if (!acct) return;
+      try {
+        const b = await api('GET', `/budgets/remaining?account_id=${acct}`);
+        const over = b.remaining_minor < 0;
+        hint.innerHTML = `Budget \u201C${esc(b.scenario)}\u201D: <strong style="color:${over ? 'var(--color-danger)' : 'var(--color-success)'}">${formatMoney(b.remaining_minor, b.currency)}</strong> of ${formatMoney(b.budget_minor, b.currency)} remaining`;
+      } catch { /* no active budget for this account */ }
+    };
+    dialog.querySelector('#nb-exp').addEventListener('change', budgetHint);
+    budgetHint();
     const saveBtn = dialog.querySelector('#nb-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const currency = dialog.querySelector('#nb-cur').value.trim().toUpperCase();
