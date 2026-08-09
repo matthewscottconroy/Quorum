@@ -151,7 +151,7 @@ class PageSettings extends HTMLElement {
             <h2 style="font-size:1rem">User accounts</h2>
             <button class="btn-primary" id="add-user-btn" style="font-size:.8rem;padding:.3rem .75rem">+ Add user</button>
           </div>
-          <table>
+          <div style="overflow-x:auto"><table>
             <thead><tr><th>Email</th><th>Role</th><th>Linked member</th><th></th></tr></thead>
             <tbody>
               ${users.map(u => `
@@ -173,7 +173,7 @@ class PageSettings extends HTMLElement {
                   </td>
                 </tr>`).join('')}
             </tbody>
-          </table>
+          </table></div>
           <p style="font-size:.8rem;color:var(--color-text-muted);margin-top:.75rem">Linking a user to a member record is what lets a <strong>restricted</strong> user see their own profile, dues, and action items. Choose “— none —” to unlink.</p>
         </section>` : '<div></div>'}
       </div>

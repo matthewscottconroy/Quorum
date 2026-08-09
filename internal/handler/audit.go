@@ -140,8 +140,8 @@ func (h *AuditHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	err = h.verifier.ExportRows(r.Context(), func(e model.AuditEntry) error {
 		return cw.Write([]string{
-			strconv.FormatInt(e.Seq, 10), e.ID, deref(e.UserID), deref(e.UserEmail), e.Action,
-			deref(e.EntityType), deref(e.EntityID), e.Detail,
+			strconv.FormatInt(e.Seq, 10), e.ID, deref(e.UserID), csvSafe(deref(e.UserEmail)), e.Action,
+			deref(e.EntityType), deref(e.EntityID), csvSafe(e.Detail),
 			e.CreatedAt.UTC().Format("2006-01-02 15:04:05.000000"),
 			e.PrevHash, e.EntryHash,
 		})

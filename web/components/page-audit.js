@@ -58,7 +58,7 @@ class PageAudit extends HTMLElement {
           To <input id="f-until" type="date" style="width:auto"></label>
         <button class="btn-secondary" id="clear-btn">Clear</button>
       </div>
-      <div class="card" style="overflow:hidden">
+      <div class="card" style="overflow-x:auto">
         <table>
           <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Resource</th><th>Record</th></tr></thead>
           <tbody id="tbody"></tbody>

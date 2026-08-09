@@ -11,6 +11,21 @@ import (
 	"quorum/internal/repo"
 )
 
+// csvSafe neutralizes spreadsheet formula injection: a cell that a spreadsheet
+// would evaluate (leading = + - @, or a leading tab/CR that some parsers strip
+// to reveal one) is prefixed with an apostrophe so Excel/Sheets treat it as
+// literal text. Applied to every user-influenced text field in an export.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 // exportPageSize is how many rows each internal pagination step pulls when
 // streaming a full-table export. The repo List methods cap a page at 200.
 const exportPageSize = 200
@@ -103,8 +118,8 @@ func (h *ExportHandler) ExportMembersCSV(w http.ResponseWriter, r *http.Request)
 	cw.Write([]string{"id", "display_name", "email", "phone", "address", "tier", "status", "joined_at", "dues_status", "created_at"}) //nolint:errcheck
 	for _, m := range members {
 		cw.Write([]string{ //nolint:errcheck
-			m.ID, m.DisplayName, derefStr(m.Email), derefStr(m.Phone), derefStr(m.Address),
-			m.Tier, m.Status, fmtTime(m.JoinedAt), m.DuesStatus, fmtTime(m.CreatedAt),
+			m.ID, csvSafe(m.DisplayName), csvSafe(derefStr(m.Email)), csvSafe(derefStr(m.Phone)), csvSafe(derefStr(m.Address)),
+			csvSafe(m.Tier), m.Status, fmtTime(m.JoinedAt), m.DuesStatus, fmtTime(m.CreatedAt),
 		})
 	}
 	cw.Flush()
@@ -123,9 +138,9 @@ func (h *ExportHandler) ExportDuesCSV(w http.ResponseWriter, r *http.Request) {
 	cw.Write([]string{"id", "member_id", "member_name", "amount_minor", "amount", "currency", "period_label", "due_date", "status", "created_at"}) //nolint:errcheck
 	for _, inv := range invoices {
 		cw.Write([]string{ //nolint:errcheck
-			inv.ID, inv.MemberID, inv.MemberName,
+			inv.ID, inv.MemberID, csvSafe(inv.MemberName),
 			strconv.FormatInt(inv.AmountMinor, 10), model.FormatMoney(inv.AmountMinor, inv.Currency), inv.Currency,
-			inv.PeriodLabel, fmtTime(inv.DueDate), inv.Status, fmtTime(inv.CreatedAt),
+			csvSafe(inv.PeriodLabel), fmtTime(inv.DueDate), inv.Status, fmtTime(inv.CreatedAt),
 		})
 	}
 	cw.Flush()
@@ -144,9 +159,9 @@ func (h *ExportHandler) ExportTransactionsCSV(w http.ResponseWriter, r *http.Req
 	cw.Write([]string{"id", "invoice_id", "member_id", "member_name", "amount_minor", "amount", "currency", "provider", "provider_reference_id", "occurred_at"}) //nolint:errcheck
 	for _, t := range txns {
 		cw.Write([]string{ //nolint:errcheck
-			t.ID, derefStr(t.InvoiceID), derefStr(t.MemberID), t.MemberName,
+			t.ID, derefStr(t.InvoiceID), derefStr(t.MemberID), csvSafe(t.MemberName),
 			strconv.FormatInt(t.AmountMinor, 10), model.FormatMoney(t.AmountMinor, t.Currency), t.Currency,
-			t.Provider, derefStr(t.ProviderReferenceID), fmtTime(t.OccurredAt),
+			csvSafe(t.Provider), csvSafe(derefStr(t.ProviderReferenceID)), fmtTime(t.OccurredAt),
 		})
 	}
 	cw.Flush()

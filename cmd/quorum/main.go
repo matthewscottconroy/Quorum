@@ -353,6 +353,7 @@ func main() {
 
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth)
+			r.Use(mw.APIRateLimit) // after Auth: keyed per user, before audit writes
 			r.Use(handler.AuditMiddleware(auditRepo))
 
 			r.Post("/auth/logout", authH.Logout)

@@ -187,10 +187,10 @@ func (h *AccountingPackHandler) Zip(w http.ResponseWriter, r *http.Request) {
 			signers += s.Name
 		}
 		if len(f.Balances) == 0 {
-			fundsRows = append(fundsRows, []string{f.Name, f.CashAccountCode, fmt.Sprint(f.ApprovalsRequired), signers, "", "0"})
+			fundsRows = append(fundsRows, []string{csvSafe(f.Name), f.CashAccountCode, fmt.Sprint(f.ApprovalsRequired), csvSafe(signers), "", "0"})
 		}
 		for _, b := range f.Balances {
-			fundsRows = append(fundsRows, []string{f.Name, f.CashAccountCode, fmt.Sprint(f.ApprovalsRequired), signers, b.Currency, fmt.Sprint(b.Balance)})
+			fundsRows = append(fundsRows, []string{csvSafe(f.Name), f.CashAccountCode, fmt.Sprint(f.ApprovalsRequired), csvSafe(signers), b.Currency, fmt.Sprint(b.Balance)})
 		}
 	}
 	agingRows := [][]string{{"currency", "bucket", "invoices", "amount_minor"}}
@@ -218,8 +218,8 @@ func (h *AccountingPackHandler) Zip(w http.ResponseWriter, r *http.Request) {
 			if b.Memo != nil {
 				memo = *b.Memo
 			}
-			billsRows = append(billsRows, []string{b.ContactName, fmt.Sprint(b.Amount), b.Currency,
-				b.ExpenseAccountCode, b.ExpenseAccountName, b.BillDate.Format("2006-01-02"), due, b.Status, paid, memo})
+			billsRows = append(billsRows, []string{csvSafe(b.ContactName), fmt.Sprint(b.Amount), b.Currency,
+				b.ExpenseAccountCode, csvSafe(b.ExpenseAccountName), b.BillDate.Format("2006-01-02"), due, b.Status, paid, csvSafe(memo)})
 		}
 		apAging, err := h.bills.APAging(ctx, to)
 		if err != nil {

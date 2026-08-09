@@ -179,6 +179,11 @@ type Middleware struct {
 	// share login's tight budget.
 	loginLimiter   *rateLimiter
 	refreshLimiter *rateLimiter
+	// apiLimiter caps total authenticated API calls per user. It sits far above
+	// any legitimate SPA burst; its only job is to stop a pathological client
+	// (e.g. a loop hammering above-role endpoints, each denial writing an audit
+	// row) from amplifying load or the audit chain without bound.
+	apiLimiter *rateLimiter
 	// trustProxy makes the limiter key on the proxy-supplied client IP header
 	// instead of the socket address. Enable ONLY when a trusted reverse proxy
 	// (e.g. the k8s ingress) sets X-Real-IP / X-Forwarded-For, otherwise all
@@ -193,6 +198,7 @@ func NewMiddleware(secret string, trustProxy bool) *Middleware {
 		jwtSecret:      secret,
 		loginLimiter:   newRateLimiter(10, time.Minute),
 		refreshLimiter: newRateLimiter(60, time.Minute),
+		apiLimiter:     newRateLimiter(1200, time.Minute),
 		trustProxy:     trustProxy,
 	}
 }
@@ -228,6 +234,24 @@ func (m *Middleware) rateLimit(limiter *rateLimiter, msg string, next http.Handl
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.Allow(m.clientIP(r)) {
 			writeError(w, http.StatusTooManyRequests, msg, "rate_limited")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// APIRateLimit throttles authenticated API calls per user (keyed on the user id
+// Auth placed in context, so it can't be evaded by rotating IPs and doesn't
+// punish colleagues sharing one NAT). Apply it right after Auth. The ceiling is
+// generous — it targets abuse loops, not normal use.
+func (m *Middleware) APIRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key, _ := r.Context().Value(ctxUserID).(string)
+		if key == "" {
+			key = m.clientIP(r)
+		}
+		if !m.apiLimiter.Allow(key) {
+			writeError(w, http.StatusTooManyRequests, "too many requests: slow down", "rate_limited")
 			return
 		}
 		next.ServeHTTP(w, r)
