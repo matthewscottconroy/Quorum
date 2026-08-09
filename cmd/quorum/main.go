@@ -219,6 +219,8 @@ func main() {
 	billsRepo := repo.NewBillsRepo(pool)
 	billsH := handler.NewBillsHandler(billsRepo)
 	accountingH.SetAPAging(billsRepo)
+	packH.SetBills(billsRepo)
+	dashH.SetOpenBills(billsRepo)
 	fundsH := handler.NewFundsHandler(fundsRepo, repo.NewPurchasesRepo(pool), authRepo, resourcesRepo, mw.ClientIP)
 	foldersH := handler.NewFoldersHandler(repo.NewFoldersRepo(pool))
 	groupsH := handler.NewGroupsHandler(groupsRepo)

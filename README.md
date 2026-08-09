@@ -242,7 +242,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `GET` / `POST` / `PATCH` | `/accounting/accounts[/:id]` | officer / admin | Chart of accounts; code+type freeze once posted (DB trigger) |
 | `POST` | `/accounting/entries` | admin | Adjusting journal entry (balanced per currency or the DB refuses) |
 | `GET` / `PUT` | `/accounting/posting-rules` | officer / admin | The automatic-posting account mappings, admin-editable (incl. `cash.provider.<name>` per payment provider); future postings only |
-| `GET` | `/reports/accounting-pack.zip?from=&to=` | admin | CPA export: sealed statements PDF + trial balance/GL/statements/funds/aging CSVs + evidence file; ZIP SHA-256 audited |
+| `GET` | `/reports/accounting-pack.zip?from=&to=` | admin | CPA export: sealed statements PDF + trial balance/GL/statements/funds/AR-aging + bills/AP-aging CSVs + evidence file; ZIP SHA-256 audited |
 | `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings (`fiscal_year_start_month`, `how_to_pay`, `require_2fa` = off\|admin\|officer\|member; admin-only: `infrastructure_facts`, `continuity_*`) |
 | `GET`/`POST`/`PATCH`/`DELETE` + `/attest` | `/continuity/custody[...]` | admin | Secret-custody registry (locations/holders, never values) with recorded attestations |
 | `GET` | `/continuity/checks` | admin | Bus-factor health: superadmin count, custody staleness, watchdog config, TLS days-left |

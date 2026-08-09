@@ -541,6 +541,7 @@ type Page[T any] struct {
 type DashboardSummary struct {
 	OverdueDuesCount  int          `json:"overdue_dues_count"`
 	PendingDuesCount  int          `json:"pending_dues_count"`
+	OpenBillsCount    int          `json:"open_bills_count"`
 	UpcomingMeetings  []Meeting    `json:"upcoming_meetings"`
 	OpenActionItems   []ActionItem `json:"open_action_items"`
 	ActiveMemberCount int          `json:"active_member_count"`

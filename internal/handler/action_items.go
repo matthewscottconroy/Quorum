@@ -252,10 +252,27 @@ func (h *ActionItemsHandler) SetContributors(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	// Snapshot the prior roster so only newly-added contributors are notified,
+	// not everyone on every edit.
+	prior := map[string]bool{}
+	if before, err := h.repo.Get(r.Context(), id); err == nil {
+		for _, c := range before.Contributors {
+			prior[c.MemberID] = true
+		}
+	}
 	item, err := h.repo.SetContributors(r.Context(), id, body.MemberIDs)
 	if err != nil {
 		writeRepoError(w, err, "action item or member not found", "update error")
 		return
+	}
+	if h.events != nil {
+		link := "#/board"
+		body := "You have been added as a contributor to a card in Quorum."
+		for _, c := range item.Contributors {
+			if !prior[c.MemberID] {
+				h.events.NotifyMember(c.MemberID, "action_item.contributor_added", "Added to: "+item.Title, &body, &link)
+			}
+		}
 	}
 	setAuditDetail(r, map[string]any{"title": item.Title, "contributors": len(body.MemberIDs)})
 	writeJSON(w, 200, item)

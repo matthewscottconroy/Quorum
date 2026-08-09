@@ -1,4 +1,4 @@
-import { api, isSuperadmin } from '../app.js';
+import { api, isSuperadmin, canWrite } from '../app.js';
 import { esc, fmtDate, confirmDelete } from '../utils.js';
 import { toast } from './toast-notification.js';
 
@@ -58,6 +58,10 @@ class PageDashboard extends HTMLElement {
           <div class="stat-value">${d.open_action_items.length}</div>
           <div class="stat-label">Open action items</div>
         </div>
+        ${canWrite() ? `<div class="stat-card card">
+          <div class="stat-value ${d.open_bills_count > 0 ? 'danger' : ''}">${d.open_bills_count ?? 0}</div>
+          <div class="stat-label"><a href="#/payables" style="color:inherit">Open bills</a></div>
+        </div>` : ''}
       </div>
 
       <div class="dash-grid">

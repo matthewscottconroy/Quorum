@@ -213,6 +213,13 @@ func (r *BillsRepo) Void(ctx context.Context, id string) (*model.Bill, error) {
 	return r.Get(ctx, id)
 }
 
+// CountOpen returns how many bills are currently open (unpaid, unvoided).
+func (r *BillsRepo) CountOpen(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `SELECT count(*) FROM bills WHERE status = 'open'`).Scan(&n)
+	return n, err
+}
+
 // APAging buckets open bills by days overdue as of a date.
 func (r *BillsRepo) APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error) {
 	rows, err := r.db.Query(ctx, `
