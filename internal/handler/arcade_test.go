@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 type mockArcadeRepo struct {
@@ -16,6 +18,9 @@ type mockArcadeRepo struct {
 	SubmitScoreFn  func(ctx context.Context, userID, game string, score int64) error
 	TopScoresFn    func(ctx context.Context, game string, n int) ([]model.ArcadeScore, error)
 	StatsFn        func(ctx context.Context, userID string) ([]model.ArcadeGameStats, error)
+	SaveLevelFn    func(ctx context.Context, game, name, author, data string) (string, error)
+	GetLevelFn     func(ctx context.Context, id string) (*model.ArcadeLevel, error)
+	DeleteLevelFn  func(ctx context.Context, id, authorOnly string) error
 }
 
 func (m *mockArcadeRepo) InsertCredit(ctx context.Context, userID, game string) (int, error) {
@@ -29,6 +34,27 @@ func (m *mockArcadeRepo) TopScores(ctx context.Context, game string, n int) ([]m
 }
 func (m *mockArcadeRepo) Stats(ctx context.Context, userID string) ([]model.ArcadeGameStats, error) {
 	return m.StatsFn(ctx, userID)
+}
+func (m *mockArcadeRepo) SaveLevel(ctx context.Context, game, name, author, data string) (string, error) {
+	if m.SaveLevelFn != nil {
+		return m.SaveLevelFn(ctx, game, name, author, data)
+	}
+	return "lvl-1", nil
+}
+func (m *mockArcadeRepo) ListLevels(ctx context.Context, game string) ([]model.ArcadeLevel, error) {
+	return []model.ArcadeLevel{}, nil
+}
+func (m *mockArcadeRepo) GetLevel(ctx context.Context, id string) (*model.ArcadeLevel, error) {
+	if m.GetLevelFn != nil {
+		return m.GetLevelFn(ctx, id)
+	}
+	return nil, pgx.ErrNoRows
+}
+func (m *mockArcadeRepo) DeleteLevel(ctx context.Context, id, authorOnly string) error {
+	if m.DeleteLevelFn != nil {
+		return m.DeleteLevelFn(ctx, id, authorOnly)
+	}
+	return nil
 }
 
 func TestArcadeInsertCredit_Success(t *testing.T) {
@@ -127,5 +153,87 @@ func TestArcadeStats_AllCabinets(t *testing.T) {
 	h.Stats(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("status: got %d", rr.Code)
+	}
+}
+
+// ---- community levels ----
+
+func TestArcadeSaveLevel_ValidatesAndStores(t *testing.T) {
+	var gotGame, gotName, gotAuthor string
+	h := NewArcadeHandler(&mockArcadeRepo{
+		SaveLevelFn: func(_ context.Context, game, name, author, data string) (string, error) {
+			gotGame, gotName, gotAuthor = game, name, author
+			if !json.Valid([]byte(data)) {
+				t.Error("data should be JSON")
+			}
+			return "lvl-9", nil
+		},
+	})
+	body := `{"name":"  Ramp Works ","data":{"v":1,"rects":[[0,200,360,20]]}}`
+	req := chiRequest("POST", "/arcade/interns/levels", body, map[string]string{"game": "interns"})
+	req = withCtxUser(req, "u-author", "member")
+	rr := httptest.NewRecorder()
+	h.SaveLevel(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	if gotGame != "interns" || gotName != "Ramp Works" || gotAuthor != "u-author" {
+		t.Errorf("passed through: %q %q %q", gotGame, gotName, gotAuthor)
+	}
+}
+
+func TestArcadeSaveLevel_RefusesGarbage(t *testing.T) {
+	h := NewArcadeHandler(&mockArcadeRepo{})
+	for _, body := range []string{
+		`{"name":"","data":{"v":1}}`, // empty name
+		`{"name":"x"}`,               // no data
+		`{"name":"x","data":"` + strings.Repeat("A", maxLevelBytes+10) + `"}`, // too big
+	} {
+		req := chiRequest("POST", "/arcade/interns/levels", body, map[string]string{"game": "interns"})
+		req = withCtxUser(req, "u", "member")
+		rr := httptest.NewRecorder()
+		h.SaveLevel(rr, req)
+		if rr.Code != 400 {
+			t.Errorf("body %.40s...: got %d, want 400", body, rr.Code)
+		}
+	}
+}
+
+func TestArcadeSaveLevel_NameConflict(t *testing.T) {
+	h := NewArcadeHandler(&mockArcadeRepo{
+		SaveLevelFn: func(_ context.Context, _, _, _, _ string) (string, error) {
+			return "", repo.ErrArcadeLevelNameTaken
+		},
+	})
+	req := chiRequest("POST", "/arcade/interns/levels", `{"name":"Taken","data":{"v":1}}`, map[string]string{"game": "interns"})
+	req = withCtxUser(req, "u", "member")
+	rr := httptest.NewRecorder()
+	h.SaveLevel(rr, req)
+	if rr.Code != 409 {
+		t.Errorf("got %d, want 409", rr.Code)
+	}
+}
+
+func TestArcadeDeleteLevel_AuthorScopedUnlessAdmin(t *testing.T) {
+	var gotAuthorOnly *string
+	h := NewArcadeHandler(&mockArcadeRepo{
+		DeleteLevelFn: func(_ context.Context, _, authorOnly string) error {
+			gotAuthorOnly = &authorOnly
+			return nil
+		},
+	})
+	req := chiRequest("DELETE", "/arcade/levels/"+testUUID, "", map[string]string{"id": testUUID})
+	req = withCtxUser(req, "u-member", "member")
+	rr := httptest.NewRecorder()
+	h.DeleteLevel(rr, req)
+	if rr.Code != 204 || gotAuthorOnly == nil || *gotAuthorOnly != "u-member" {
+		t.Errorf("member delete: status %d, authorOnly %v", rr.Code, gotAuthorOnly)
+	}
+	req = chiRequest("DELETE", "/arcade/levels/"+testUUID, "", map[string]string{"id": testUUID})
+	req = withCtxUser(req, "u-admin", "admin")
+	rr = httptest.NewRecorder()
+	h.DeleteLevel(rr, req)
+	if gotAuthorOnly == nil || *gotAuthorOnly != "" {
+		t.Errorf("admin delete should moderate any level, got %v", gotAuthorOnly)
 	}
 }

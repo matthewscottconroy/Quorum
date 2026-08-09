@@ -2,7 +2,10 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,6 +19,10 @@ type arcadeRepo interface {
 	SubmitScore(ctx context.Context, userID, game string, score int64) error
 	TopScores(ctx context.Context, game string, n int) ([]model.ArcadeScore, error)
 	Stats(ctx context.Context, userID string) ([]model.ArcadeGameStats, error)
+	SaveLevel(ctx context.Context, game, name, author, data string) (string, error)
+	ListLevels(ctx context.Context, game string) ([]model.ArcadeLevel, error)
+	GetLevel(ctx context.Context, id string) (*model.ArcadeLevel, error)
+	DeleteLevel(ctx context.Context, id, authorOnly string) error
 }
 
 // ArcadeHandler serves the Top Secret arcade: credit insertions (play tokens,
@@ -107,4 +114,97 @@ func (h *ArcadeHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// ---- community levels ----
+
+const maxLevelBytes = 48 * 1024
+
+// SaveLevel stores a level from the editor (member+). Re-saving your own
+// name updates it; someone else's name is a conflict.
+func (h *ArcadeHandler) SaveLevel(w http.ResponseWriter, r *http.Request) {
+	game, ok := arcadeGame(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name string          `json:"name"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" || len(body.Name) > 60 {
+		writeError(w, http.StatusBadRequest, "name (1-60 chars) required", "bad_request")
+		return
+	}
+	if len(body.Data) == 0 || len(body.Data) > maxLevelBytes {
+		writeError(w, http.StatusBadRequest, "level data must be 1 byte to 48 KB of JSON", "bad_request")
+		return
+	}
+	if !json.Valid(body.Data) {
+		writeError(w, http.StatusBadRequest, "level data must be valid JSON", "bad_request")
+		return
+	}
+	id, err := h.repo.SaveLevel(r.Context(), game, body.Name, userIDFromCtx(r), string(body.Data))
+	switch {
+	case errors.Is(err, repo.ErrArcadeLevelQuota):
+		writeError(w, http.StatusConflict, "this cabinet's level shelf is full", "conflict")
+		return
+	case errors.Is(err, repo.ErrArcadeLevelNameTaken):
+		writeError(w, http.StatusConflict, "another member owns a level with this name", "conflict")
+		return
+	case err != nil:
+		writeRepoError(w, err, "", "save error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"game": game, "level": body.Name})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": body.Name})
+}
+
+// ListLevels returns a cabinet's community levels (member+), sans data.
+func (h *ArcadeHandler) ListLevels(w http.ResponseWriter, r *http.Request) {
+	game, ok := arcadeGame(w, r)
+	if !ok {
+		return
+	}
+	levels, err := h.repo.ListLevels(r.Context(), game)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, levels)
+}
+
+// GetLevel returns one level including its data document (member+).
+func (h *ArcadeHandler) GetLevel(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	l, err := h.repo.GetLevel(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "level not found", "not_found")
+		return
+	}
+	writeJSON(w, http.StatusOK, l)
+}
+
+// DeleteLevel removes a level: its author may always; admins may moderate.
+func (h *ArcadeHandler) DeleteLevel(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	authorOnly := userIDFromCtx(r)
+	if roleAtLeast(roleFromCtx(r), "admin") {
+		authorOnly = "" // moderation: any level
+	}
+	if err := h.repo.DeleteLevel(r.Context(), id, authorOnly); err != nil {
+		writeRepoError(w, err, "level not found (or not yours)", "delete error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

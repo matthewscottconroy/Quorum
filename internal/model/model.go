@@ -1041,3 +1041,16 @@ type BudgetSeedSkip struct {
 	Members int    `json:"members"`
 	Reason  string `json:"reason"` // "no_active_schedule" | "no_fx_rate"
 }
+
+// ArcadeLevel is a community-built level for an arcade cabinet. Data is the
+// raw JSON document the cartridge understands (opaque to the server beyond
+// being valid JSON under the size cap).
+type ArcadeLevel struct {
+	ID         string    `json:"id"`
+	Game       string    `json:"game,omitempty"`
+	Name       string    `json:"name"`
+	AuthorID   string    `json:"author_id,omitempty"`
+	AuthorName string    `json:"author_name"`
+	Data       string    `json:"data,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}

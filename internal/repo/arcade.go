@@ -2,17 +2,25 @@ package repo
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"quorum/internal/model"
 )
 
+// Level-storage refusals the handler translates into 4xx responses.
+var (
+	ErrArcadeLevelQuota     = errors.New("level quota reached for this game")
+	ErrArcadeLevelNameTaken = errors.New("another member owns a level with this name")
+)
+
 // ArcadeGames is the cabinet allowlist — the only values accepted anywhere
 // (API, DB CHECKs). Order here is the display order on the arcade floor.
 var ArcadeGames = []string{
-	"chess", "go", "comet-buster", "penny-pincher", "brickfall", "powder-keg", "hexfection",
+	"chess", "go", "comet-buster", "penny-pincher", "brickfall", "powder-keg", "hexfection", "interns",
 }
 
 // ArcadeRepo records credit insertions and high scores for the Top Secret
@@ -154,4 +162,99 @@ func (r *ArcadeRepo) Stats(ctx context.Context, userID string) ([]model.ArcadeGa
 		}
 	}
 	return out, srows.Err()
+}
+
+// ---- community levels (the level editor's storage) ----
+
+// maxLevelsPerGame keeps the community list arcade-sized.
+const maxLevelsPerGame = 500
+
+// SaveLevel stores a level document. Same-name levels by the SAME author are
+// replaced (iterate-and-save from the editor); a name taken by someone else
+// is a conflict surfaced via the unique constraint.
+func (r *ArcadeRepo) SaveLevel(ctx context.Context, game, name, author, data string) (string, error) {
+	var count int
+	if err := r.db.QueryRow(ctx,
+		`SELECT count(*)::int FROM arcade_levels WHERE game = $1`, game).Scan(&count); err != nil {
+		return "", err
+	}
+	if count >= maxLevelsPerGame {
+		return "", ErrArcadeLevelQuota
+	}
+	var id string
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO arcade_levels (game, name, author, data)
+		VALUES ($1, $2, $3::uuid, $4::jsonb)
+		ON CONFLICT (game, name) DO UPDATE
+			SET data = EXCLUDED.data, created_at = now()
+			WHERE arcade_levels.author = EXCLUDED.author
+		RETURNING id::text`, game, name, author, data).Scan(&id)
+	if err == pgx.ErrNoRows {
+		// The ON CONFLICT WHERE clause rejected the update: someone else owns
+		// this name.
+		return "", ErrArcadeLevelNameTaken
+	}
+	return id, err
+}
+
+// ListLevels returns a game's community levels, newest first.
+func (r *ArcadeRepo) ListLevels(ctx context.Context, game string) ([]model.ArcadeLevel, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT l.id::text, l.name, coalesce(m.display_name, 'MYSTERY PLAYER'), l.author::text, l.created_at
+		FROM arcade_levels l
+		JOIN users u ON u.id = l.author
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE l.game = $1
+		ORDER BY l.created_at DESC
+		LIMIT 200`, game)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.ArcadeLevel{}
+	for rows.Next() {
+		var l model.ArcadeLevel
+		if err := rows.Scan(&l.ID, &l.Name, &l.AuthorName, &l.AuthorID, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// GetLevel returns one level with its full data document.
+func (r *ArcadeRepo) GetLevel(ctx context.Context, id string) (*model.ArcadeLevel, error) {
+	var l model.ArcadeLevel
+	err := r.db.QueryRow(ctx, `
+		SELECT l.id::text, l.game, l.name, coalesce(m.display_name, 'MYSTERY PLAYER'),
+		       l.author::text, l.data::text, l.created_at
+		FROM arcade_levels l
+		JOIN users u ON u.id = l.author
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE l.id = $1::uuid`, id).
+		Scan(&l.ID, &l.Game, &l.Name, &l.AuthorName, &l.AuthorID, &l.Data, &l.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
+// DeleteLevel removes a level; only its author (or callers the handler has
+// already vetted as admin) may do so — the authorOnly id enforces the former.
+func (r *ArcadeRepo) DeleteLevel(ctx context.Context, id, authorOnly string) error {
+	var tag pgconn.CommandTag
+	var err error
+	if authorOnly == "" {
+		tag, err = r.db.Exec(ctx, `DELETE FROM arcade_levels WHERE id = $1::uuid`, id)
+	} else {
+		tag, err = r.db.Exec(ctx,
+			`DELETE FROM arcade_levels WHERE id = $1::uuid AND author = $2::uuid`, id, authorOnly)
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }

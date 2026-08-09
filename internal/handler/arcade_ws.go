@@ -27,13 +27,16 @@ var arcadeNetGames = map[string]struct{ minSeats, maxSeats int }{
 	"go":         {2, 2},
 	"powder-keg": {2, 12},
 	"hexfection": {2, 12},
+	"interns":    {2, 2},
 }
 
 const (
-	wsAuthDeadline  = 5 * time.Second
-	wsIdleDeadline  = 70 * time.Second
-	wsPingEvery     = 30 * time.Second
-	wsMaxMsgBytes   = 8 * 1024
+	wsAuthDeadline = 5 * time.Second
+	wsIdleDeadline = 70 * time.Second
+	wsPingEvery    = 30 * time.Second
+	// Big enough for an INTERNS level document (48 KB cap) plus envelope —
+	// the host relays the level to its guest at round start.
+	wsMaxMsgBytes   = 56 * 1024
 	wsSendQueue     = 64
 	maxArcadeRooms  = 200
 	roomIdleTimeout = 30 * time.Minute
