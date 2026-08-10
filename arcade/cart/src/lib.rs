@@ -167,9 +167,10 @@ mod wasm_api {
         crate::shell::push_net_event(msg);
     }
 
-    /// Opens the INTERNS level editor — a tool, so no credit required.
+    /// Opens the active cabinet's level editor — a tool, so no credit
+    /// required. INTERNS, Powder Keg, Hexfection, and Chess honor it.
     #[wasm_bindgen]
     pub fn arcade_start_editor() {
-        *crate::interns::EDITOR_START.lock().unwrap() = true;
+        crate::shell::request_editor();
     }
 }

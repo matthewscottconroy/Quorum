@@ -1,6 +1,8 @@
 //! CHESS cabinet: hotseat, versus the machine, or online over the room
 //! relay. Click a piece, click a destination; promotion pops a picker; R-R
-//! resigns. Rules and the sparring bot live in arcade-logic.
+//! resigns. Fischer Random deals a scrambled back rank; the POSITION
+//! EDITOR builds puzzles and absurd starts for the community shelf. Rules
+//! and the sparring bot live in arcade-logic.
 
 use arcade_logic::chess::{file, rank, Board, Color as Side, DrawKind, Move, Piece, Status};
 use arcade_logic::chess_bot;
@@ -14,9 +16,173 @@ use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "HOTSEAT, VS THE MACHINE, OR ONLINE.",
-    "CLICK A PIECE, CLICK A SQUARE.",
-    "R TWICE RESIGNS. MATE PAYS 1000.",
+    "CLICK A PIECE, CLICK A SQUARE. R TWICE RESIGNS.",
+    "FISCHER RANDOM DEALS. THE EDITOR BUILDS PUZZLES.",
 ];
+
+// ---- position documents (puzzles, absurd starts, Fischer deals) ----
+
+/// A shareable position: 64 chars a1..h8 (KQRBNP white, kqrbnp black,
+/// '.' empty) plus whose move it is. Castling is not encoded — custom
+/// positions play without castling rights, the honest house rule.
+#[derive(Serialize, Deserialize, Clone)]
+struct ChessDoc {
+    v: u32,
+    #[serde(default)]
+    name: String,
+    board: String,
+    turn: String, // "w" | "b"
+}
+
+fn piece_char(side: Side, p: Piece) -> char {
+    let c = match p {
+        Piece::Pawn => 'p',
+        Piece::Knight => 'n',
+        Piece::Bishop => 'b',
+        Piece::Rook => 'r',
+        Piece::Queen => 'q',
+        Piece::King => 'k',
+    };
+    if side == Side::White {
+        c.to_ascii_uppercase()
+    } else {
+        c
+    }
+}
+
+fn char_piece(ch: char) -> Option<(Side, Piece)> {
+    let side = if ch.is_ascii_uppercase() { Side::White } else { Side::Black };
+    let p = match ch.to_ascii_lowercase() {
+        'p' => Piece::Pawn,
+        'n' => Piece::Knight,
+        'b' => Piece::Bishop,
+        'r' => Piece::Rook,
+        'q' => Piece::Queen,
+        'k' => Piece::King,
+        _ => return None,
+    };
+    Some((side, p))
+}
+
+fn cells_to_string(cells: &[Option<(Side, Piece)>; 64]) -> String {
+    cells.iter().map(|c| c.map(|(s, p)| piece_char(s, p)).unwrap_or('.')).collect()
+}
+
+fn doc_to_board(doc: &ChessDoc) -> Option<Board> {
+    let chars: Vec<char> = doc.board.chars().collect();
+    if chars.len() != 64 {
+        return None;
+    }
+    let mut cells: [Option<(Side, Piece)>; 64] = [None; 64];
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch != '.' {
+            cells[i] = Some(char_piece(ch)?);
+        }
+    }
+    let turn = if doc.turn == "b" { Side::Black } else { Side::White };
+    let board = Board { cells, turn, castle: [false; 4], ep: None, halfmove: 0 };
+    validate_position(&board).is_none().then_some(board)
+}
+
+/// Position sanity: one king per side, no pawns on the back ranks, and the
+/// side NOT to move isn't already in check (their king would just be taken).
+fn validate_position(board: &Board) -> Option<String> {
+    let count = |side, piece| {
+        board.cells.iter().flatten().filter(|&&(s, p)| s == side && p == piece).count()
+    };
+    if count(Side::White, Piece::King) != 1 || count(Side::Black, Piece::King) != 1 {
+        return Some("EACH SIDE NEEDS EXACTLY ONE KING".into());
+    }
+    for (sq, cell) in board.cells.iter().enumerate() {
+        if let Some((_, Piece::Pawn)) = cell {
+            if rank(sq) == 0 || rank(sq) == 7 {
+                return Some("NO PAWNS ON THE BACK RANKS".into());
+            }
+        }
+    }
+    if board.in_check(board.turn.other()) {
+        return Some("THE SIDE NOT TO MOVE IS IN CHECK".into());
+    }
+    None
+}
+
+/// A Fischer Random (chess960-style) deal: bishops on opposite colors, the
+/// king somewhere between the rooks, mirrored for both sides. Castling is
+/// off in this cabinet's Fischer games — the honest house rule, stated on
+/// the HUD, rather than a half-right implementation of 960 castling.
+fn fischer_cells(seed: u64) -> [Option<(Side, Piece)>; 64] {
+    let mut s = seed | 1;
+    let mut next = move |n: usize| -> usize {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s % n as u64) as usize
+    };
+    let mut back: [Option<Piece>; 8] = [None; 8];
+    // Bishops: one on a light file, one on a dark file.
+    back[[0, 2, 4, 6][next(4)]] = Some(Piece::Bishop);
+    back[[1, 3, 5, 7][next(4)]] = Some(Piece::Bishop);
+    // Queen on any remaining file.
+    let mut free: Vec<usize> = (0..8).filter(|&i| back[i].is_none()).collect();
+    back[free.remove(next(6))] = Some(Piece::Queen);
+    // Two knights on the remaining five.
+    let k1 = free.remove(next(5));
+    back[k1] = Some(Piece::Knight);
+    let k2 = free.remove(next(4));
+    back[k2] = Some(Piece::Knight);
+    // What's left is rook, king, rook — king in the middle by construction.
+    free = (0..8).filter(|&i| back[i].is_none()).collect();
+    back[free[0]] = Some(Piece::Rook);
+    back[free[1]] = Some(Piece::King);
+    back[free[2]] = Some(Piece::Rook);
+
+    let mut cells: [Option<(Side, Piece)>; 64] = [None; 64];
+    for f in 0..8 {
+        let p = back[f].expect("all eight files filled");
+        cells[f] = Some((Side::White, p));
+        cells[8 + f] = Some((Side::White, Piece::Pawn));
+        cells[48 + f] = Some((Side::Black, Piece::Pawn));
+        cells[56 + f] = Some((Side::Black, p));
+    }
+    cells
+}
+
+/// What the page asked this round to start from.
+enum StartSpec {
+    Standard,
+    Fischer,
+    Doc(ChessDoc),
+    Blank, // editor: an empty board with just the kings
+}
+
+fn page_start() -> StartSpec {
+    #[derive(Deserialize)]
+    struct FischerRef {
+        fischer: bool,
+    }
+    #[derive(Deserialize)]
+    struct BlankRef {
+        blank: bool,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let raw = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_LEVEL".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let raw: Option<String> = None;
+    if let Some(raw) = raw {
+        if serde_json::from_str::<FischerRef>(&raw).map(|f| f.fischer).unwrap_or(false) {
+            return StartSpec::Fischer;
+        }
+        if serde_json::from_str::<BlankRef>(&raw).map(|b| b.blank).unwrap_or(false) {
+            return StartSpec::Blank;
+        }
+        if let Ok(doc) = serde_json::from_str::<ChessDoc>(&raw) {
+            return StartSpec::Doc(doc);
+        }
+    }
+    StartSpec::Standard
+}
 
 const CELL: f32 = 64.0;
 const X0: f32 = -320.0; // left edge of a1 (unflipped)
@@ -52,13 +218,21 @@ fn square_at(world: Vec2, flip: bool) -> Option<usize> {
 /// Relayed messages: seat 0 is White, seat 1 is Black.
 #[derive(Serialize, Deserialize)]
 struct WireMove {
-    t: String, // "mv" | "rs" (resign)
+    t: String, // "mv" | "rs" (resign) | "st8" (custom start, see WireSetup)
     #[serde(default)]
     from: usize,
     #[serde(default)]
     to: usize,
     #[serde(default)]
     promo: Option<String>,
+}
+
+/// Host → guest: play from this position (Fischer deal or community puzzle).
+#[derive(Serialize, Deserialize)]
+struct WireSetup {
+    t: String, // "st8"
+    board: String,
+    turn: String,
 }
 
 fn promo_str(p: Option<Piece>) -> Option<String> {
@@ -102,8 +276,10 @@ struct Table {
     hashes: Vec<u64>,
     /// First R press arms resignation for a moment; second confirms.
     resign_arm: Option<Timer>,
-    /// The machine plays Black in local single-player rounds.
+    /// The machine plays `bot_side` in local single-player rounds — Black
+    /// from a standard start, whichever side the human ISN'T for puzzles.
     bot: bool,
+    bot_side: Side,
     bot_think: Timer,
     /// In-flight incremental search: a few root moves per frame, no hitch.
     search: Option<BotSearch>,
@@ -127,6 +303,42 @@ struct BotSearch {
 /// not a blitz clock.
 const TURN_SECS: f32 = 150.0;
 
+/// The position editor: place pieces, pick the side to move, test against
+/// the machine, save to the community shelf. Survives test rounds.
+#[derive(Resource)]
+struct PosEditor {
+    active: bool,
+    testing: bool,
+    piece: Piece,
+    side: Side,
+    /// Snapshot of the canvas, restored when a test-play ends.
+    setup_cells: [Option<(Side, Piece)>; 64],
+    setup_turn: Side,
+    warning: Option<(String, Timer)>,
+}
+
+impl PosEditor {
+    fn idle() -> PosEditor {
+        PosEditor {
+            active: false,
+            testing: false,
+            piece: Piece::Pawn,
+            side: Side::White,
+            setup_cells: [None; 64],
+            setup_turn: Side::White,
+            warning: None,
+        }
+    }
+}
+
+/// A board holding only the two kings — the editor's blank canvas.
+fn blank_cells() -> [Option<(Side, Piece)>; 64] {
+    let mut cells: [Option<(Side, Piece)>; 64] = [None; 64];
+    cells[4] = Some((Side::White, Piece::King)); // e1
+    cells[60] = Some((Side::Black, Piece::King)); // e8
+    cells
+}
+
 #[derive(Component)]
 struct PieceSprite;
 
@@ -143,19 +355,113 @@ pub struct ChessPlugin;
 
 impl Plugin for ChessPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (net_apply, bot_move, clicks, turn_clock_run, endgame)
-                .chain()
-                .run_if(in_state(Phase::Playing))
-                .run_if(crate::unpaused),
-        );
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(
+                Update,
+                poll_editor_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
+            )
+            .add_systems(
+                Update,
+                (net_apply, editor_update, bot_move, clicks, turn_clock_run, endgame)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
     }
 }
 
-fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) {
+fn poll_editor_start(
+    mut next: ResMut<NextState<Phase>>,
+    mut net: ResMut<NetMode>,
+    mut cfg: ResMut<CabinetConfig>,
+) {
+    if crate::shell::take_editor_start() {
+        net.0 = None;
+        cfg.players = 2;
+        cfg.humans = 1;
+        crate::shell::mark_editor_pending();
+        next.set(Phase::Playing);
+    }
+}
+
+fn setup(
+    mut commands: Commands,
+    config: Res<CabinetConfig>,
+    net: Res<NetMode>,
+    mut rng: ResMut<Rng>,
+    existing_editor: Option<ResMut<PosEditor>>,
+) {
+    let editor_mode = crate::shell::take_editor_pending();
     let flip = matches!(&net.0, Some(cfg) if cfg.seat == 1);
-    let board = Board::start();
+    let spec = page_start();
+
+    // The starting position. Guests take whatever arrives over the wire
+    // ("st8"); the host generates and relays. Custom docs and Fischer deals
+    // carry no castling rights (stated on the HUD).
+    let is_guest = matches!(&net.0, Some(cfg) if !cfg.is_host());
+    let (board, fischer) = if editor_mode {
+        let cells = match &spec {
+            StartSpec::Doc(doc) => doc_to_board(doc).map(|b| b.cells).unwrap_or_else(blank_cells),
+            _ => blank_cells(),
+        };
+        (Board { cells, turn: Side::White, castle: [false; 4], ep: None, halfmove: 0 }, false)
+    } else if is_guest {
+        (Board::start(), false) // replaced by "st8" if the host customized
+    } else {
+        match &spec {
+            StartSpec::Fischer => {
+                let cells = fischer_cells(rng.next_u64());
+                (Board { cells, turn: Side::White, castle: [false; 4], ep: None, halfmove: 0 }, true)
+            }
+            StartSpec::Doc(doc) => match doc_to_board(doc) {
+                Some(b) => (b, false),
+                None => (Board::start(), false),
+            },
+            _ => (Board::start(), false),
+        }
+    };
+    // Host with a non-standard start: relay it before anyone moves.
+    if let Some(cfg) = &net.0 {
+        if cfg.is_host() && !editor_mode {
+            let is_custom = !matches!(&spec, StartSpec::Standard | StartSpec::Blank);
+            if is_custom {
+                if let Ok(w) = serde_json::to_string(&WireSetup {
+                    t: "st8".into(),
+                    board: cells_to_string(&board.cells),
+                    turn: if board.turn == Side::White { "w".into() } else { "b".into() },
+                }) {
+                    net_send(&w);
+                }
+            }
+        }
+    }
+    // Vs the machine, the human plays the side to move at the start (the
+    // puzzle experience); from a standard start that is White as always.
+    let bot_side = board.turn.other();
+
+    // The editor survives test rounds — same pattern as INTERNS.
+    match (existing_editor, editor_mode) {
+        (Some(mut e), true) => {
+            e.active = true;
+            e.testing = false;
+            e.setup_cells = board.cells;
+            e.setup_turn = board.turn;
+        }
+        (Some(mut e), false) => {
+            e.active = false;
+            e.testing = false;
+        }
+        (None, editing) => {
+            let mut e = PosEditor::idle();
+            if editing {
+                e.active = true;
+                e.setup_cells = board.cells;
+                e.setup_turn = board.turn;
+            }
+            commands.insert_resource(e);
+        }
+    }
+
     let first_hash = board.position_hash();
     commands.insert_resource(Table {
         board,
@@ -169,13 +475,24 @@ fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) 
         last_move: None,
         hashes: vec![first_hash],
         resign_arm: None,
-        bot: net.0.is_none() && config.humans == 1,
+        bot: !editor_mode && net.0.is_none() && config.humans == 1,
+        bot_side,
         bot_think: Timer::from_seconds(0.55, TimerMode::Once),
         search: None,
         hotseat: net.0.is_none() && config.humans >= 2,
         turn_clock: Timer::from_seconds(TURN_SECS, TimerMode::Once),
         result: String::new(),
     });
+    if fischer {
+        let e = text(
+            &mut commands,
+            "FISCHER RANDOM\nNO CASTLING\n(HOUSE RULE)",
+            16.0,
+            DIM,
+            Vec3::new(275.0, -60.0, 2.0),
+        );
+        commands.entity(e).insert(GameTag);
+    }
     // The board: light/dark squares in muted CRT blues.
     for sq in 0..64 {
         let dark = (file(sq) + rank(sq)) % 2 == 0;
@@ -335,11 +652,17 @@ fn repaint(
 
 /// The machine's turn: think briefly, then search TWO root moves per frame —
 /// depth three never stalls a frame, the CRT keeps flickering.
-fn bot_move(time: Res<Time>, mut table: ResMut<Table>, mut rng: ResMut<Rng>, net: Res<NetMode>) {
-    if !table.bot || net.0.is_some() || table.over_wait.is_some() || table.promo.is_some() {
+fn bot_move(
+    time: Res<Time>,
+    editor: Res<PosEditor>,
+    mut table: ResMut<Table>,
+    mut rng: ResMut<Rng>,
+    net: Res<NetMode>,
+) {
+    if editor.active || !table.bot || net.0.is_some() || table.over_wait.is_some() || table.promo.is_some() {
         return;
     }
-    if table.board.turn != Side::Black {
+    if table.board.turn != table.bot_side {
         table.bot_think.reset();
         table.search = None;
         return;
@@ -385,6 +708,170 @@ fn bot_move(time: Res<Time>, mut table: ResMut<Table>, mut rng: ResMut<Rng>, net
     }
 }
 
+// ---- the position editor ----
+
+fn piece_name(p: Piece) -> &'static str {
+    match p {
+        Piece::Pawn => "PAWN",
+        Piece::Knight => "KNIGHT",
+        Piece::Bishop => "BISHOP",
+        Piece::Rook => "ROOK",
+        Piece::Queen => "QUEEN",
+        Piece::King => "KING",
+    }
+}
+
+fn side_name(s: Side) -> &'static str {
+    if s == Side::White {
+        "WHITE"
+    } else {
+        "BLACK"
+    }
+}
+
+/// Puts the canvas back exactly as it was before a test-play.
+fn return_to_editor(editor: &mut PosEditor, table: &mut Table) {
+    editor.testing = false;
+    editor.active = true;
+    table.board = Board {
+        cells: editor.setup_cells,
+        turn: editor.setup_turn,
+        castle: [false; 4],
+        ep: None,
+        halfmove: 0,
+    };
+    table.hashes = vec![table.board.position_hash()];
+    table.legal.clear();
+    table.selected = None;
+    table.promo = None;
+    table.over_wait = None;
+    table.result.clear();
+    table.last_move = None;
+    table.resign_arm = None;
+    table.bot = false;
+    table.search = None;
+    table.dirty = true;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn editor_update(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    mut editor: ResMut<PosEditor>,
+    mut table: ResMut<Table>,
+) {
+    if !editor.active {
+        // X bails out of a test-play early, canvas intact.
+        if editor.testing && keys.just_pressed(KeyCode::KeyX) {
+            return_to_editor(&mut editor, &mut table);
+        }
+        return;
+    }
+    if let Some((_, t)) = editor.warning.as_mut() {
+        if t.tick(time.delta()).finished() {
+            editor.warning = None;
+        }
+    }
+
+    // Palette.
+    for (key, p) in [
+        (KeyCode::Digit1, Piece::Pawn),
+        (KeyCode::Digit2, Piece::Knight),
+        (KeyCode::Digit3, Piece::Bishop),
+        (KeyCode::Digit4, Piece::Rook),
+        (KeyCode::Digit5, Piece::Queen),
+        (KeyCode::Digit6, Piece::King),
+    ] {
+        if keys.just_pressed(key) {
+            editor.piece = p;
+            sfx("tick");
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        editor.side = editor.side.other();
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        table.board.turn = table.board.turn.other();
+        table.dirty = true;
+        sfx("tick");
+    }
+
+    if keys.just_pressed(KeyCode::KeyG) {
+        match validate_position(&table.board) {
+            Some(w) => {
+                editor.warning = Some((w, Timer::from_seconds(2.5, TimerMode::Once)));
+                sfx("buzz");
+            }
+            None => {
+                editor.setup_cells = table.board.cells;
+                editor.setup_turn = table.board.turn;
+                editor.active = false;
+                editor.testing = true;
+                // Arm the table for a round: the human plays the side to
+                // move, the machine defends the other chairs.
+                table.hashes = vec![table.board.position_hash()];
+                table.legal = table.board.legal_moves();
+                table.last_move = None;
+                table.over_wait = None;
+                table.result.clear();
+                table.final_score = 0;
+                table.bot = true;
+                table.bot_side = table.board.turn.other();
+                table.hotseat = false;
+                table.bot_think.reset();
+                table.search = None;
+                table.dirty = true;
+                sfx("coin");
+                check_end(&mut table); // a stalemate setup ends immediately
+            }
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyS) {
+        match validate_position(&table.board) {
+            Some(w) => {
+                editor.warning = Some((w, Timer::from_seconds(2.5, TimerMode::Once)));
+                sfx("buzz");
+            }
+            None => {
+                let doc = ChessDoc {
+                    v: 1,
+                    name: String::new(),
+                    board: cells_to_string(&table.board.cells),
+                    turn: if table.board.turn == Side::White { "w".into() } else { "b".into() },
+                };
+                if let Ok(json) = serde_json::to_string(&doc) {
+                    crate::shell::save_level(&json);
+                    sfx("clear");
+                }
+            }
+        }
+        return;
+    }
+
+    // Place / clear pieces.
+    let place = buttons.just_pressed(MouseButton::Left);
+    let erase = buttons.just_pressed(MouseButton::Right);
+    if !place && !erase {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Ok((camera, cam_tf)) = cameras.single() else { return };
+    let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) else { return };
+    let Some(sq) = square_at(world, table.flip) else { return };
+    if place {
+        table.board.cells[sq] = Some((editor.side, editor.piece));
+    } else {
+        table.board.cells[sq] = None;
+    }
+    table.dirty = true;
+    sfx("place");
+}
+
 #[allow(clippy::too_many_arguments)]
 fn clicks(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -395,6 +882,7 @@ fn clicks(
     mut commands: Commands,
     mut table: ResMut<Table>,
     net: Res<NetMode>,
+    editor: Res<PosEditor>,
     pieces: Query<Entity, With<PieceSprite>>,
     highlights: Query<Entity, With<Highlight>>,
     promo_buttons: Query<(&PromoButton, &Transform)>,
@@ -403,6 +891,26 @@ fn clicks(
     if table.dirty {
         table.dirty = false;
         repaint(&mut commands, &table, &pieces, &highlights);
+    }
+    // The position editor owns input while active; keep its HUD current.
+    if editor.active {
+        if let Ok(mut t) = hud.single_mut() {
+            let warn = editor
+                .warning
+                .as_ref()
+                .map(|(w, _)| format!("\n\n!! {w} !!"))
+                .unwrap_or_default();
+            let s = format!(
+                "EDITOR\n\nBRUSH:\n{} {}\n\n1-6 PIECE\nC COLOR\nT TO MOVE\n({})\nCLICK PLACE\nRCLICK CLEAR\n\nG TEST\nS SAVE{warn}",
+                side_name(editor.side),
+                piece_name(editor.piece),
+                side_name(table.board.turn),
+            );
+            if t.0 != s {
+                t.0 = s;
+            }
+        }
+        return;
     }
 
     // Resign: R arms, a second R inside two seconds confirms.
@@ -416,7 +924,7 @@ fn clicks(
         // never be able to hold your seat hostage.
         let its_my_input = match &net.0 {
             Some(_) => true,
-            None => !(table.bot && table.board.turn == Side::Black),
+            None => !(table.bot && table.board.turn == table.bot_side),
         };
         if its_my_input {
             if table.resign_arm.is_some() {
@@ -460,7 +968,7 @@ fn clicks(
             let whose = match (&net.0, table.bot) {
                 (Some(cfg), _) if table.board.turn == seat_side(cfg.seat) => "\n(YOUR MOVE)",
                 (Some(_), _) => "\n(THEIR MOVE)",
-                (None, true) if table.board.turn == Side::Black => "\nMACHINE\nTHINKING...",
+                (None, true) if table.board.turn == table.bot_side => "\nMACHINE\nTHINKING...",
                 _ => "",
             };
             let resign = if table.resign_arm.is_some() { "\n\nR AGAIN\nTO RESIGN" } else { "" };
@@ -497,7 +1005,7 @@ fn clicks(
         if table.board.turn != seat_side(cfg.seat) {
             return;
         }
-    } else if table.bot && table.board.turn == Side::Black {
+    } else if table.bot && table.board.turn == table.bot_side {
         return;
     }
 
@@ -591,6 +1099,22 @@ fn net_apply(
         }
         let Ok(wire) = serde_json::from_str::<WireMove>(&ev.data) else { continue };
         match wire.t.as_str() {
+            // Custom start (Fischer deal or a community puzzle) from the
+            // host, accepted only before anyone has moved.
+            "st8" if table.hashes.len() <= 1 => {
+                if let Ok(su) = serde_json::from_str::<WireSetup>(&ev.data) {
+                    let doc = ChessDoc { v: 1, name: String::new(), board: su.board, turn: su.turn };
+                    if let Some(b) = doc_to_board(&doc) {
+                        table.board = b;
+                        table.hashes = vec![table.board.position_hash()];
+                        table.legal = table.board.legal_moves();
+                        table.last_move = None;
+                        table.selected = None;
+                        table.turn_clock.reset();
+                        table.dirty = true;
+                    }
+                }
+            }
             "rs" => {
                 table.result = "OPPONENT RESIGNS\nYOU WIN".into();
                 table.final_score = 700;
@@ -639,7 +1163,7 @@ fn check_end(table: &mut Table) {
         Status::Checkmate { winner } => {
             let edge = table.board.material(winner).max(0) as u32;
             // Vs the machine, the purse is only for beating it.
-            let human_won = if table.bot { winner == Side::White } else { true };
+            let human_won = if table.bot { winner != table.bot_side } else { true };
             table.final_score = if human_won { 1000 + edge * 20 } else { 150 };
             table.result = format!(
                 "CHECKMATE\n{} WINS",
@@ -695,10 +1219,20 @@ fn turn_clock_run(time: Res<Time>, net: Res<NetMode>, mut table: ResMut<Table>) 
 fn endgame(
     time: Res<Time>,
     net: Res<NetMode>,
+    mut editor: ResMut<PosEditor>,
     mut table: ResMut<Table>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
 ) {
+    // A finished TEST-PLAY returns to the canvas: no score, nothing lost.
+    if editor.testing {
+        if let Some(t) = table.over_wait.as_mut() {
+            if t.tick(time.delta()).finished() {
+                return_to_editor(&mut editor, &mut table);
+            }
+        }
+        return;
+    }
     // Online mate payouts: the loser gets a consolation, not the pot.
     if let (Some(cfg), Some(_)) = (&net.0, &table.over_wait) {
         if table.result.starts_with("CHECKMATE") {

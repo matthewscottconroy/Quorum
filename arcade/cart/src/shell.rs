@@ -36,6 +36,22 @@ pub fn push_net_event(msg: String) {
     NET_IN.lock().unwrap().push(msg);
 }
 
+/// Editor entry request from the page (arcade_start_editor). Each
+/// editor-capable cabinet polls this from Attract/GameOver; only the active
+/// cabinet's plugin is compiled in, so one flag serves them all.
+static EDITOR_START: Mutex<bool> = Mutex::new(false);
+
+pub fn request_editor() {
+    *EDITOR_START.lock().unwrap() = true;
+}
+
+pub fn take_editor_start() -> bool {
+    let mut p = EDITOR_START.lock().unwrap();
+    let v = *p;
+    *p = false;
+    v
+}
+
 /// Editor handshake: poll_editor_start (game side) sets this; the game's
 /// setup consumes it to boot into authoring mode instead of a round.
 static EDITOR_PENDING: Mutex<bool> = Mutex::new(false);

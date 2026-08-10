@@ -43,6 +43,11 @@ pub struct HexMove {
     pub to: usize,
 }
 
+/// A blocked cell (a hole punched by the dish editor): occupies space, is
+/// never landable (`moves_for` targets empty cells only), never converts,
+/// and belongs to nobody.
+pub const HOLE: u8 = 254;
+
 impl HexBoard {
     /// Board radius scales with the head count so a dozen players fit AND
     /// nobody starts inside a neighbor's turn-one kill range: starting blobs
@@ -99,6 +104,21 @@ impl HexBoard {
             for p in 0..players {
                 let idx = rim_sorted[(p as usize * n) / players as usize];
                 board.cells[idx] = Some(p);
+            }
+        }
+        board
+    }
+
+    /// A standard board with holes punched into it (the dish editor's
+    /// output). Holes never bury a starting blob, and coordinates outside
+    /// this player-count's radius are ignored.
+    pub fn with_holes(players: u8, holes: &[(i32, i32)]) -> HexBoard {
+        let mut board = HexBoard::new(players);
+        for &(q, r) in holes {
+            if let Some(i) = board.index(Hex { q, r }) {
+                if board.cells[i].is_none() {
+                    board.cells[i] = Some(HOLE);
+                }
             }
         }
         board
@@ -163,7 +183,7 @@ impl HexBoard {
         for n in self.coords[m.to].neighbors() {
             if let Some(idx) = self.index(n) {
                 if let Some(owner) = self.cells[idx] {
-                    if owner != p {
+                    if owner != p && owner != HOLE {
                         self.cells[idx] = Some(p);
                         converted.push(idx);
                     }
@@ -247,7 +267,8 @@ impl HexBoard {
                 continue;
             }
             let enemy_reaches = self.cells.iter().enumerate().any(|(i, &c)| {
-                matches!(c, Some(o) if o != p) && self.coords[i].dist(self.coords[e]) <= 2
+                matches!(c, Some(o) if o != p && o != HOLE)
+                    && self.coords[i].dist(self.coords[e]) <= 2
             });
             if enemy_reaches {
                 worst = mine_adjacent;
@@ -262,7 +283,7 @@ impl HexBoard {
             .neighbors()
             .iter()
             .filter_map(|&n| self.index(n))
-            .filter(|&i| matches!(self.cells[i], Some(o) if o != p))
+            .filter(|&i| matches!(self.cells[i], Some(o) if o != p && o != HOLE))
             .count() as i64;
         let clone_bonus = if self.coords[m.from].dist(self.coords[m.to]) == 1 { 1 } else { 0 };
         let mut sim = self.clone();
@@ -397,6 +418,49 @@ mod tests {
             }
             assert_eq!(b.index(Hex { q: b.radius + 1, r: 0 }), None);
         }
+    }
+
+    #[test]
+    fn holes_block_landings_and_never_convert_or_bury_starts() {
+        // Punch out the center and a ring cell; verify nobody can land
+        // there, conversions skip it, and start blobs survive the punch.
+        let start_cells: Vec<(i32, i32)> = {
+            let b = HexBoard::new(2);
+            (0..b.cells.len())
+                .filter(|&i| b.cells[i].is_some())
+                .map(|i| (b.coords[i].q, b.coords[i].r))
+                .collect()
+        };
+        let mut holes = vec![(0, 0)];
+        holes.extend(start_cells.iter().copied()); // trying to bury starts…
+        let b = HexBoard::with_holes(2, &holes);
+        for p in 0..2 {
+            assert_eq!(b.count(p), 1, "start blob for {p} must survive");
+        }
+        let center = b.index(Hex { q: 0, r: 0 }).unwrap();
+        assert_eq!(b.cells[center], Some(HOLE));
+        for p in 0..2 {
+            assert!(
+                b.moves_for(p).iter().all(|m| m.to != center),
+                "no landing on a hole"
+            );
+        }
+        // A landing adjacent to the hole converts nothing there.
+        let mut c = HexBoard::with_holes(2, &[(1, 0)]);
+        for cell in c.cells.iter_mut() {
+            if *cell != Some(HOLE) {
+                *cell = None;
+            }
+        }
+        let src = c.index(Hex { q: -1, r: 0 }).unwrap();
+        let center = c.index(Hex { q: 0, r: 0 }).unwrap();
+        c.cells[src] = Some(0);
+        c.turn = 0;
+        c.out = vec![false, false];
+        let converted = c.apply(HexMove { from: src, to: center });
+        assert!(converted.is_empty(), "holes never convert");
+        let hole = c.index(Hex { q: 1, r: 0 }).unwrap();
+        assert_eq!(c.cells[hole], Some(HOLE), "the hole is untouched");
     }
 
     #[test]

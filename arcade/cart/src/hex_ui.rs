@@ -1,7 +1,7 @@
 //! HEXFECTION cabinet: clone-and-jump territory war on a hex dish for up to
 //! twelve players — any mix of hotseat humans and bots. Rules in arcade-logic.
 
-use arcade_logic::hex::{HexBoard, HexMove};
+use arcade_logic::hex::{HexBoard, HexMove, HOLE};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,69 @@ pub const BLURB: &[&str] = &[
     "SPREAD. CONVERT. OUTGROW THEM ALL.",
     "STEP 1 CELL TO SPLIT, JUMP 2 TO LEAP.",
     "LANDING CONVERTS EVERY NEIGHBOUR.",
+    "THE EDITOR PUNCHES HOLES IN THE DISH.",
 ];
+
+// ---- dish documents (the editor's format) ----
+
+/// A shareable dish: axial coordinates of blocked cells. Play uses the
+/// normal player-count radius; holes outside a smaller dish are ignored,
+/// and holes never bury a starting blob. Local rounds only — online rooms
+/// always deal the standard dish.
+#[derive(Serialize, Deserialize, Clone)]
+struct HexDoc {
+    v: u32,
+    #[serde(default)]
+    name: String,
+    holes: Vec<[i32; 2]>,
+}
+
+fn sanitize_dish(doc: &mut HexDoc) {
+    doc.holes.truncate(200);
+}
+
+enum DishSpec {
+    Standard,
+    Doc(HexDoc),
+    Blank,
+}
+
+fn page_dish() -> DishSpec {
+    #[derive(Deserialize)]
+    struct BlankRef {
+        blank: bool,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let raw = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_LEVEL".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let raw: Option<String> = None;
+    if let Some(raw) = raw {
+        if serde_json::from_str::<BlankRef>(&raw).map(|b| b.blank).unwrap_or(false) {
+            return DishSpec::Blank;
+        }
+        if let Ok(mut doc) = serde_json::from_str::<HexDoc>(&raw) {
+            sanitize_dish(&mut doc);
+            return DishSpec::Doc(doc);
+        }
+    }
+    DishSpec::Standard
+}
+
+/// The dish editor: click punches (or fills) holes on the full radius-6
+/// dish, G test-plays a 12-seat round against bots, S saves the document.
+#[derive(Resource)]
+struct DishEditor {
+    active: bool,
+    testing: bool,
+    holes: Vec<(i32, i32)>,
+    want_return: bool,
+}
+
+fn hex_editor_off(editor: Option<Res<DishEditor>>) -> bool {
+    editor.map(|e| !e.active).unwrap_or(true)
+}
 
 const BOARD_X: f32 = -80.0;
 
@@ -50,6 +112,7 @@ const BOARD_X: f32 = -80.0;
 #[derive(Resource)]
 struct HexFx {
     empty: Handle<ColorMaterial>,
+    hole: Handle<ColorMaterial>,
     players: Vec<Handle<ColorMaterial>>,
     selected: Vec<Handle<ColorMaterial>>,
     targets: Vec<Handle<ColorMaterial>>,
@@ -93,16 +156,47 @@ pub struct HexPlugin;
 
 impl Plugin for HexPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (
-                (net_apply, human_clicks, bot_turns, afk_watch, eliminations),
-                (turn_splash, splash_fade, pulse_fade, paint, hud, endgame),
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(
+                Update,
+                poll_editor_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
             )
-                .chain()
-                .run_if(in_state(Phase::Playing))
-                .run_if(crate::unpaused),
-        );
+            .add_systems(
+                Update,
+                dish_editor.run_if(in_state(Phase::Playing)).run_if(crate::unpaused),
+            )
+            .add_systems(
+                Update,
+                (
+                    (net_apply, human_clicks, bot_turns, afk_watch, eliminations),
+                    (turn_splash, hud, endgame),
+                )
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused)
+                    .run_if(hex_editor_off),
+            )
+            // Display systems run even while the editor owns the dish.
+            .add_systems(
+                Update,
+                (splash_fade, pulse_fade, paint)
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
+    }
+}
+
+fn poll_editor_start(
+    mut next: ResMut<NextState<Phase>>,
+    mut net: ResMut<NetMode>,
+    mut cfg: ResMut<CabinetConfig>,
+) {
+    if crate::shell::take_editor_start() {
+        net.0 = None;
+        cfg.players = 12; // the full radius-6 dish; play uses any seat count
+        cfg.humans = 1;
+        crate::shell::mark_editor_pending();
+        next.set(Phase::Playing);
     }
 }
 
@@ -119,10 +213,48 @@ fn setup(
     net: Res<NetMode>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    existing_editor: Option<ResMut<DishEditor>>,
 ) {
+    let editor_mode = crate::shell::take_editor_pending();
     let players = config.players.clamp(2, 12) as u8;
     let humans = if net.0.is_some() { 0 } else { config.humans.clamp(1, players as u32) as u8 };
-    let board = HexBoard::new(players);
+
+    // Custom dishes are a LOCAL pleasure; online rooms deal the standard
+    // dish so every client agrees without a relay step.
+    let spec = if net.0.is_some() { DishSpec::Standard } else { page_dish() };
+    let spec_holes: Vec<(i32, i32)> = match &spec {
+        DishSpec::Doc(d) => d.holes.iter().map(|h| (h[0], h[1])).collect(),
+        _ => Vec::new(),
+    };
+    // The editor survives test rounds; fresh entry loads the page template.
+    let mut editor_holes = spec_holes.clone();
+    match (existing_editor, editor_mode) {
+        (Some(mut e), true) => {
+            if matches!(&spec, DishSpec::Doc(_)) {
+                e.holes = spec_holes.clone();
+            }
+            editor_holes = e.holes.clone();
+            e.active = true;
+            e.testing = false;
+            e.want_return = false;
+        }
+        (Some(mut e), false) => {
+            e.active = false;
+            e.testing = false;
+            e.want_return = false;
+        }
+        (None, editing) => {
+            commands.insert_resource(DishEditor {
+                active: editing,
+                testing: false,
+                holes: editor_holes.clone(),
+                want_return: false,
+            });
+        }
+    }
+    let holes = if editor_mode { editor_holes } else { spec_holes };
+    let board =
+        if holes.is_empty() { HexBoard::new(players) } else { HexBoard::with_holes(players, &holes) };
     let cell_size = if board.radius <= 4 { 30.0 } else { 25.0 };
 
     let cell_mesh = meshes.add(RegularPolygon::new(cell_size * 0.94, 6));
@@ -130,6 +262,7 @@ fn setup(
     let empty_mat = materials.add(Color::srgb(0.07, 0.08, 0.13));
     let fx = HexFx {
         empty: empty_mat.clone(),
+        hole: materials.add(Color::srgb(0.30, 0.10, 0.12)),
         players: (0..12).map(|i| materials.add(PLAYER_COLORS[i])).collect(),
         selected: (0..12).map(|i| materials.add(PLAYER_COLORS[i].with_alpha(0.5))).collect(),
         targets: (0..12).map(|i| materials.add(PLAYER_COLORS[i].with_alpha(0.22))).collect(),
@@ -520,7 +653,9 @@ fn paint(
     }
     let seat = dish.board.turn as usize % 12;
     for (cell, mut mat) in &mut cells {
-        let want = if Some(cell.0) == dish.selected {
+        let want = if dish.board.cells[cell.0] == Some(HOLE) {
+            &fx.hole
+        } else if Some(cell.0) == dish.selected {
             &fx.selected[seat]
         } else if target_of[cell.0] {
             &fx.targets[seat]
@@ -533,14 +668,14 @@ fn paint(
     }
     for (blob, mut mat, mut vis) in &mut blobs {
         match dish.board.cells[blob.0] {
-            Some(p) => {
+            Some(p) if p != HOLE => {
                 let want = &fx.players[p as usize % 12];
                 if mat.0 != *want {
                     mat.0 = want.clone();
                 }
                 *vis = Visibility::Inherited;
             }
-            None => {
+            _ => {
                 *vis = Visibility::Hidden;
             }
         }
@@ -664,6 +799,7 @@ fn hud(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut hud: Quer
 
 fn endgame(
     time: Res<Time>,
+    editor: Option<ResMut<DishEditor>>,
     mut dish: ResMut<Dish>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
@@ -671,8 +807,118 @@ fn endgame(
     let score = dish.final_score;
     if let Some(timer) = dish.over_wait.as_mut() {
         if timer.tick(time.delta()).finished() {
+            // A finished TEST round returns to the canvas — no score.
+            if let Some(mut e) = editor {
+                if e.testing {
+                    e.want_return = true;
+                    return;
+                }
+            }
             final_score.0 = score;
             next.set(Phase::GameOver);
         }
+    }
+}
+
+/// The dish editor: runs alongside the (gated) game systems. Click punches
+/// or fills a hole; starting blobs are untouchable; G test-plays the full
+/// 12-seat dish against bots; S saves; X (during a test) returns.
+#[allow(clippy::too_many_arguments)]
+fn dish_editor(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    editor: Option<ResMut<DishEditor>>,
+    dish: Option<ResMut<Dish>>,
+    mut hud: Query<&mut Text2d, With<Hud>>,
+) {
+    let Some(mut editor) = editor else { return };
+    let Some(mut dish) = dish else { return };
+
+    let reset_dish = |dish: &mut Dish, holes: &[(i32, i32)]| {
+        dish.board = HexBoard::with_holes(12, holes);
+        dish.over_wait = None;
+        dish.selected = None;
+        dish.skip_flash.clear();
+        dish.last_turn = None;
+        dish.final_score = 0;
+        dish.afk_turn = None;
+        dish.alive_prev = (0..dish.board.players).map(|p| dish.board.count(p) > 0).collect();
+    };
+
+    if !editor.active {
+        if editor.testing && (editor.want_return || keys.just_pressed(KeyCode::KeyX)) {
+            editor.testing = false;
+            editor.want_return = false;
+            editor.active = true;
+            let holes = editor.holes.clone();
+            reset_dish(&mut dish, &holes);
+            sfx("tick");
+        }
+        return;
+    }
+
+    if let Ok(mut t) = hud.single_mut() {
+        let s = format!(
+            "DISH EDITOR\n{} HOLES\n\nCLICK PUNCHES\nOR FILLS\n(STARTS STAY)\n\nS SAVE\nG TEST (12P)\nX RETURNS",
+            editor.holes.len()
+        );
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::KeyS) {
+        let doc = HexDoc {
+            v: 1,
+            name: String::new(),
+            holes: editor.holes.iter().map(|&(q, r)| [q, r]).collect(),
+        };
+        if let Ok(json) = serde_json::to_string(&doc) {
+            crate::shell::save_level(&json);
+            sfx("clear");
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        editor.active = false;
+        editor.testing = true;
+        let holes = editor.holes.clone();
+        reset_dish(&mut dish, &holes);
+        sfx("coin");
+        return;
+    }
+
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Ok((camera, cam_tf)) = cameras.single() else { return };
+    let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) else { return };
+    let size = dish.cell_size;
+    let mut nearest: Option<(usize, f32)> = None;
+    for i in 0..dish.board.cells.len() {
+        let d = (cell_world(&dish.board, i, size) - world).length();
+        if d < size && nearest.map(|(_, bd)| d < bd).unwrap_or(true) {
+            nearest = Some((i, d));
+        }
+    }
+    let Some((cell, _)) = nearest else { return };
+    let coord = dish.board.coords[cell];
+    match dish.board.cells[cell] {
+        Some(p) if p == HOLE => {
+            dish.board.cells[cell] = None;
+            editor.holes.retain(|&(q, r)| (q, r) != (coord.q, coord.r));
+            sfx("tick");
+        }
+        None => {
+            if editor.holes.len() < 200 {
+                dish.board.cells[cell] = Some(HOLE);
+                editor.holes.push((coord.q, coord.r));
+                sfx("place");
+            }
+        }
+        _ => {} // a starting blob: untouchable
     }
 }

@@ -63,6 +63,30 @@ const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min:
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
 const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 } };
+// Level-capable cabinets: house options, the editor's blank-canvas label,
+// and the toast shown when the editor opens.
+const LEVELS = {
+  interns: {
+    house: [['b1', 'HOUSE: ORIENTATION DAY'], ['b2', 'HOUSE: THE BASEMENT'], ['b3', 'HOUSE: CUBICLE WALLS'], ['b4', 'HOUSE: TWO TOWERS (WIDE)']],
+    blank: 'EDITOR: BLANK CANVAS', playFallback: { builtin: 1 },
+    toast: 'Editor: paint (Shift+click lines, F mirrors, U undoes), W widens, S saves, G test-plays, X returns',
+  },
+  'powder-keg': {
+    house: [['std', 'HOUSE: RANDOM CELLAR']],
+    blank: 'EDITOR: BLANK CELLAR', playFallback: null,
+    toast: 'Editor: 1 crate / 2 wall / 3 erase, click paints, rings mark spawns, S saves, G test-plays, X returns',
+  },
+  hexfection: {
+    house: [['std', 'HOUSE: STANDARD DISH']],
+    blank: 'EDITOR: PUNCH HOLES', playFallback: null, localOnly: true,
+    toast: 'Editor: click punches or fills holes (starting blobs stay), S saves, G test-plays 12 seats, X returns',
+  },
+  chess: {
+    house: [['std', 'STANDARD GAME'], ['fischer', 'FISCHER RANDOM']],
+    blank: 'EDITOR: SET UP A POSITION', playFallback: null,
+    toast: 'Editor: 1-6 picks a piece, C flips its color, click places, right-click clears, T sets who moves, G test-plays, S saves, X returns',
+  },
+};
 
 /**
  * A tiny WebAudio chip synth for the cartridges (window.__arcadeSfx).
@@ -295,16 +319,13 @@ class PageArcade extends HTMLElement {
                   <select id="sel-humans" class="tsc-sel">${Array.from({ length: multi.humans },
                     (_, i) => `<option ${i === 0 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>
                 </label>` : ''}
-              ${cab.id === 'interns' ? `
+              ${LEVELS[cab.id] ? `
                 <label class="tsc-note">LEVEL
                   <select id="sel-level" class="tsc-sel" style="max-width:180px">
-                    <option value="b1">HOUSE: ORIENTATION DAY</option>
-                    <option value="b2">HOUSE: THE BASEMENT</option>
-                    <option value="b3">HOUSE: CUBICLE WALLS</option>
-                    <option value="b4">HOUSE: TWO TOWERS (WIDE)</option>
+                    ${LEVELS[cab.id].house.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
                   </select>
                 </label>
-                <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">LEVEL EDITOR</button>
+                <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>
                 <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
               <button class="tsc-coin" id="coin" disabled>◉ INSERT CREDIT</button>
               <span class="tsc-note" id="boot-note">booting cartridge…</span>
@@ -411,7 +432,7 @@ class PageArcade extends HTMLElement {
     this._wasmStarted = true;
     this._mod = mod;
     if (note) note.textContent = '';
-    if (cab.id === 'interns') this.wireLevels(cab, mod);
+    if (LEVELS[cab.id]) this.wireLevels(cab, mod);
     // Keyboard cabinets: when the canvas loses focus the keys go dead — say
     // so instead of letting the player mash a silent keyboard.
     if (KEY_GAMES.has(cab.id)) {
@@ -455,18 +476,28 @@ class PageArcade extends HTMLElement {
     if (NET[cab.id]) this.wireNet(cab);
   }
 
-  // ---- INTERNS levels & editor ----
+  // ---- community levels & editors ----
 
-  /** Sets window.__ARCADE_LEVEL from the picker: builtin ref, blank-canvas
+  /** Sets window.__ARCADE_LEVEL from the picker: house option, blank-canvas
       marker (editor only), or a fetched community document. */
   async resolveLevel(cab, forEditor = false) {
-    if (cab.id !== 'interns') return;
+    const cfg = LEVELS[cab.id];
     const sel = this.querySelector('#sel-level');
-    if (!sel) return;
+    if (!cfg || !sel) return;
     const v = sel.value;
+    if (v === 'std') {
+      delete window.__ARCADE_LEVEL; // the cabinet's standard setup
+      return;
+    }
+    if (v === 'fischer') {
+      window.__ARCADE_LEVEL = JSON.stringify({ fischer: true });
+      return;
+    }
     if (v === 'blank') {
-      // Playing a blank canvas makes no sense; house 1 stands in.
-      window.__ARCADE_LEVEL = forEditor ? JSON.stringify({ blank: true }) : JSON.stringify({ builtin: 1 });
+      // Playing a blank canvas makes no sense; the standard setup stands in.
+      if (forEditor) window.__ARCADE_LEVEL = JSON.stringify({ blank: true });
+      else if (cfg.playFallback) window.__ARCADE_LEVEL = JSON.stringify(cfg.playFallback);
+      else delete window.__ARCADE_LEVEL;
       return;
     }
     if (v.startsWith('b')) {
@@ -481,18 +512,19 @@ class PageArcade extends HTMLElement {
     const sel = this.querySelector('#sel-level');
     const editorBtn = this.querySelector('#editor-btn');
     const delBtn = this.querySelector('#del-level-btn');
+    const cfg = LEVELS[cab.id];
+    const isHouse = v => v === 'blank' || v === 'std' || v === 'fischer' || v.startsWith('b');
     const updateDel = () => {
-      if (delBtn) delBtn.style.display = sel.value.startsWith('b') || sel.value === 'blank' ? 'none' : '';
+      if (delBtn) delBtn.style.display = isHouse(sel.value) ? 'none' : '';
     };
     const refresh = async () => {
       try {
         const community = await api('GET', `/arcade/${cab.id}/levels`) ?? [];
         // Rebuild options: house levels, blank canvas, then the shelf.
         const current = sel.value;
-        sel.innerHTML = [1, 2, 3, 4].map(n =>
-          `<option value="b${n}">HOUSE: ${['ORIENTATION DAY', 'THE BASEMENT', 'CUBICLE WALLS', 'TWO TOWERS (WIDE)'][n - 1]}</option>`).join('') +
-          '<option value="blank">EDITOR: BLANK CANVAS</option>' +
-          community.map(l => `<option value="${esc(l.id)}">${esc(l.name)} — ${esc(l.author_name)}</option>`).join('');
+        sel.innerHTML = cfg.house.map(([v, l]) => `<option value="${v}">${l}</option>`).join('') +
+          `<option value="blank">${cfg.blank}</option>` +
+          community.map(l => `<option value="${esc(l.id)}">${esc(l.name)} — ${esc(l.author_name)}${cfg.localOnly ? ' (LOCAL)' : ''}</option>`).join('');
         if ([...sel.options].some(o => o.value === current)) sel.value = current;
         updateDel();
       } catch { /* house levels always exist */ }
@@ -501,12 +533,12 @@ class PageArcade extends HTMLElement {
     sel.addEventListener('change', updateDel);
     delBtn?.addEventListener('click', async () => {
       const opt = sel.options[sel.selectedIndex];
-      if (!opt || sel.value.startsWith('b') || sel.value === 'blank') return;
+      if (!opt || isHouse(sel.value)) return;
       if (!confirm(`Delete level “${opt.textContent}” from the community shelf? Authors and admins only.`)) return;
       try {
         await api('DELETE', `/arcade/levels/${sel.value}`);
         toast('Level deleted', 'success');
-        sel.value = 'b1';
+        sel.value = cfg.house[0][0];
         await refresh();
       } catch (err) {
         toast(err.error ?? 'Not yours to delete', 'error');
@@ -536,7 +568,7 @@ class PageArcade extends HTMLElement {
         mod.arcade_start_editor();
         this._playing = true;
         this.querySelector('#arcade-canvas')?.focus();
-        toast('Editor: paint (Shift+click lines, F mirrors, U undoes), W widens, S saves, G test-plays, X returns', 'info');
+        toast(cfg.toast, 'info');
       });
     }
   }

@@ -14,7 +14,135 @@ pub const BLURB: &[&str] = &[
     "LAST ONE STANDING KEEPS THE CELLAR.",
     "P1: WASD + SPACE   P2: ARROWS + ENTER",
     "CRATES HIDE UPGRADES. WALLS CLOSE IN.",
+    "THE EDITOR BUILDS CELLARS OF YOUR OWN.",
 ];
+
+// ---- cellar documents (the level editor's format) ----
+
+/// A shareable cellar: 19x13 tiles, row-major, '0' empty '1' solid
+/// '2' crate. The border is forced solid and spawn pockets are cleared at
+/// load, so no document can brick a round.
+#[derive(Serialize, Deserialize, Clone)]
+struct PowderDoc {
+    v: u32,
+    #[serde(default)]
+    name: String,
+    tiles: String,
+}
+
+fn doc_tiles(doc: &PowderDoc) -> Option<Vec<Tile>> {
+    let chars: Vec<char> = doc.tiles.chars().collect();
+    if chars.len() != (COLS * ROWS) as usize {
+        return None;
+    }
+    let mut tiles: Vec<Tile> = chars
+        .iter()
+        .map(|c| match c {
+            '1' => Tile::Solid,
+            '2' => Tile::Crate,
+            _ => Tile::Empty,
+        })
+        .collect();
+    enforce_shell(&mut tiles);
+    Some(tiles)
+}
+
+/// The invariants every cellar keeps: a solid border ring.
+fn enforce_shell(tiles: &mut [Tile]) {
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            if r == 0 || r == ROWS - 1 || c == 0 || c == COLS - 1 {
+                tiles[Arena::idx(c, r)] = Tile::Solid;
+            }
+        }
+    }
+}
+
+/// Clears breathing room around each active spawn.
+fn clear_spawn_pockets(tiles: &mut [Tile], players: usize) {
+    for &(sc, sr) in SPAWNS.iter().take(players) {
+        for (dc, dr) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let (c, r) = (sc + dc, sr + dr);
+            if c > 0 && c < COLS - 1 && r > 0 && r < ROWS - 1 {
+                if tiles[Arena::idx(c, r)] != Tile::Empty {
+                    tiles[Arena::idx(c, r)] = Tile::Empty;
+                }
+            }
+        }
+    }
+}
+
+enum CellarSpec {
+    Random,
+    Doc(PowderDoc),
+    Blank, // editor: the classic frame with an empty floor
+}
+
+fn page_cellar() -> CellarSpec {
+    #[derive(Deserialize)]
+    struct BlankRef {
+        blank: bool,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let raw = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_LEVEL".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let raw: Option<String> = None;
+    if let Some(raw) = raw {
+        if serde_json::from_str::<BlankRef>(&raw).map(|b| b.blank).unwrap_or(false) {
+            return CellarSpec::Blank;
+        }
+        if let Ok(doc) = serde_json::from_str::<PowderDoc>(&raw) {
+            return CellarSpec::Doc(doc);
+        }
+    }
+    CellarSpec::Random
+}
+
+/// The cellar editor: paint solid walls and crates, test with bots, save to
+/// the community shelf. Fighters idle hidden while the canvas is open.
+#[derive(Resource)]
+struct CellarEditor {
+    active: bool,
+    testing: bool,
+    tiles: Vec<Tile>,
+    brush: Tile,
+    /// Set by `finish` when a test round ends; editor_update executes the
+    /// return (it owns the queries needed to reset the scene).
+    want_return: bool,
+}
+
+fn editor_off(editor: Option<Res<CellarEditor>>) -> bool {
+    editor.map(|e| !e.active).unwrap_or(true)
+}
+
+fn blank_cellar() -> Vec<Tile> {
+    let mut tiles = vec![Tile::Empty; (COLS * ROWS) as usize];
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            if r % 2 == 0 && c % 2 == 0 {
+                tiles[Arena::idx(c, r)] = Tile::Solid; // the pillar lattice
+            }
+        }
+    }
+    enforce_shell(&mut tiles);
+    tiles
+}
+
+/// The classic randomized cellar: lattice, crates, clear spawn pockets.
+fn random_cellar(rng: &mut Rng, players: usize) -> Vec<Tile> {
+    let mut tiles = blank_cellar();
+    for r in 1..ROWS - 1 {
+        for c in 1..COLS - 1 {
+            if tiles[Arena::idx(c, r)] == Tile::Empty && rng.chance(0.62) {
+                tiles[Arena::idx(c, r)] = Tile::Crate;
+            }
+        }
+    }
+    clear_spawn_pockets(&mut tiles, players);
+    tiles
+}
 
 const COLS: i32 = 19;
 const ROWS: i32 = 13;
@@ -230,33 +358,63 @@ struct TileSprite(usize);
 #[derive(Component)]
 struct Hud;
 
+/// End-of-round banner text, swept when a test round returns to the editor.
+#[derive(Component)]
+struct Banner;
+
 pub struct PowderPlugin;
 
 impl Plugin for PowderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (
-                host_net_input,
-                human_input,
-                bot_brains,
-                movement,
-                bombs_and_flames,
-                pickups,
-                closing_walls,
-                host_broadcast,
-                finish,
-                guest_input,
-                guest_apply,
-                guest_smooth,
-                bomb_telegraph,
-                wall_warning,
-                hud,
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(
+                Update,
+                poll_editor_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
             )
-                .chain()
-                .run_if(in_state(Phase::Playing))
-                .run_if(crate::unpaused),
-        );
+            .add_systems(
+                Update,
+                editor_update
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            )
+            .add_systems(
+                Update,
+                (
+                    host_net_input,
+                    human_input,
+                    bot_brains,
+                    movement,
+                    bombs_and_flames,
+                    pickups,
+                    closing_walls,
+                    host_broadcast,
+                    finish,
+                    guest_input,
+                    guest_apply,
+                    guest_smooth,
+                    bomb_telegraph,
+                    wall_warning,
+                    hud,
+                )
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused)
+                    .run_if(editor_off),
+            );
+    }
+}
+
+fn poll_editor_start(
+    mut next: ResMut<NextState<Phase>>,
+    mut net: ResMut<NetMode>,
+    mut cfg: ResMut<CabinetConfig>,
+) {
+    if crate::shell::take_editor_start() {
+        net.0 = None;
+        cfg.players = 4; // test rounds: you + three bots
+        cfg.humans = 1;
+        crate::shell::mark_editor_pending();
+        next.set(Phase::Playing);
     }
 }
 
@@ -276,35 +434,68 @@ const SPAWNS: [(i32, i32); 12] = [
     (5, 11),
 ];
 
-fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig>, net: Res<NetMode>) {
+fn setup(
+    mut commands: Commands,
+    mut rng: ResMut<Rng>,
+    config: Res<CabinetConfig>,
+    net: Res<NetMode>,
+    existing_editor: Option<ResMut<CellarEditor>>,
+) {
+    let editor_mode = crate::shell::take_editor_pending();
     let players = config.players.clamp(2, 12) as usize;
     let humans = if net.0.is_some() { 1 } else { config.humans.clamp(1, 2.min(players as u32)) as usize };
 
-    let mut tiles = vec![Tile::Empty; (COLS * ROWS) as usize];
-    // Border ring + classic pillar lattice.
-    for r in 0..ROWS {
-        for c in 0..COLS {
-            if r == 0 || r == ROWS - 1 || c == 0 || c == COLS - 1 || (r % 2 == 0 && c % 2 == 0) {
-                tiles[Arena::idx(c, r)] = Tile::Solid;
+    // The editor survives rounds; fresh entry loads the page's template.
+    let mut canvas: Option<Vec<Tile>> = None;
+    match (existing_editor, editor_mode) {
+        (Some(mut e), true) => {
+            if let CellarSpec::Doc(doc) = page_cellar() {
+                if let Some(t) = doc_tiles(&doc) {
+                    e.tiles = t;
+                }
             }
+            e.active = true;
+            e.testing = false;
+            e.want_return = false;
+            canvas = Some(e.tiles.clone());
+        }
+        (Some(mut e), false) => {
+            e.active = false;
+            e.testing = false;
+            e.want_return = false;
+        }
+        (None, editing) => {
+            let t = match page_cellar() {
+                CellarSpec::Doc(ref doc) if editing => doc_tiles(doc).unwrap_or_else(blank_cellar),
+                _ => blank_cellar(),
+            };
+            if editing {
+                canvas = Some(t.clone());
+            }
+            commands.insert_resource(CellarEditor {
+                active: editing,
+                testing: false,
+                tiles: t,
+                brush: Tile::Crate,
+                want_return: false,
+            });
         }
     }
-    // Crates everywhere else, except spawn pockets.
-    for r in 1..ROWS - 1 {
-        for c in 1..COLS - 1 {
-            if tiles[Arena::idx(c, r)] == Tile::Empty && rng.chance(0.62) {
-                tiles[Arena::idx(c, r)] = Tile::Crate;
+
+    let mut tiles = if let Some(canvas) = canvas {
+        canvas // the editor shows its canvas; the round starts on G
+    } else if let CellarSpec::Doc(doc) = page_cellar() {
+        match doc_tiles(&doc) {
+            Some(mut t) => {
+                clear_spawn_pockets(&mut t, players);
+                t
             }
+            None => random_cellar(&mut rng, players),
         }
-    }
-    for &(sc, sr) in SPAWNS.iter().take(players) {
-        for (dc, dr) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let (c, r) = (sc + dc, sr + dr);
-            if c > 0 && c < COLS - 1 && r > 0 && r < ROWS - 1 && tiles[Arena::idx(c, r)] == Tile::Crate {
-                tiles[Arena::idx(c, r)] = Tile::Empty;
-            }
-        }
-    }
+    } else {
+        random_cellar(&mut rng, players)
+    };
+    enforce_shell(&mut tiles);
 
     // Sudden-death spiral: perimeter-inward walk over the inner field.
     let mut spiral = Vec::new();
@@ -380,7 +571,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
             None => (if seat < humans { Some(seat as u8) } else { None }, false),
         };
         let p = world(sc, sr);
-        commands
+        let mut fighter_entity = commands
             .spawn((
                 Fighter {
                     seat,
@@ -407,15 +598,20 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
                 },
                 Transform::from_xyz(p.x, p.y, 6.0),
                 GameTag,
-            ))
-            .with_children(|kid| {
-                if human.is_some() {
-                    kid.spawn((
-                        Sprite { color: WHITE, custom_size: Some(Vec2::new(8.0, 3.0)), ..default() },
-                        Transform::from_xyz(0.0, CELL * 0.42, 0.1),
-                    ));
-                }
-            });
+            ));
+        fighter_entity.with_children(|kid| {
+            if human.is_some() {
+                kid.spawn((
+                    Sprite { color: WHITE, custom_size: Some(Vec2::new(8.0, 3.0)), ..default() },
+                    Transform::from_xyz(0.0, CELL * 0.42, 0.1),
+                ));
+            }
+        });
+        if editor_mode {
+            // Fighters idle invisibly while the canvas is open; a test round
+            // resets and reveals them.
+            fighter_entity.insert(Visibility::Hidden);
+        }
     }
 
     let hud = text(&mut commands, "", 22.0, WHITE, Vec3::new(0.0, 292.0, 8.0));
@@ -1038,10 +1234,12 @@ fn placement_score(total: usize, rank: usize, kills: u32, alive: bool) -> u32 {
     kills * 100 + ((total.saturating_sub(rank)) as u32) * 50 + if alive { 300 } else { 0 }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish(
     time: Res<Time>,
     mut arena: ResMut<Arena>,
     net: Res<NetMode>,
+    editor: Option<ResMut<CellarEditor>>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
     fighters: Query<&Fighter>,
@@ -1091,9 +1289,17 @@ fn finish(
             None => "MUTUAL DESTRUCTION".to_string(),
         };
         let e = text(&mut commands, &banner, 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
-        commands.entity(e).insert(GameTag);
+        commands.entity(e).insert((GameTag, Banner));
     }
     if arena.finished && arena.finish_timer.tick(time.delta()).finished() {
+        // A finished TEST round returns to the editor's canvas — no score,
+        // no game over. editor_update owns the scene reset.
+        if let Some(mut e) = editor {
+            if e.testing {
+                e.want_return = true;
+                return;
+            }
+        }
         final_score.0 = arena.p1_score;
         next.set(Phase::GameOver);
     }
@@ -1350,7 +1556,7 @@ fn guest_apply(
                         None => "MUTUAL DESTRUCTION".to_string(),
                     };
                     let e = text(&mut commands, &banner, 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
-                    commands.entity(e).insert(GameTag);
+                    commands.entity(e).insert((GameTag, Banner));
                 }
             }
             _ => {}
@@ -1556,6 +1762,192 @@ fn bomb_telegraph(
             Color::srgb(0.25, 0.25, 0.3)
         };
         tf.scale = Vec3::splat(if on { 1.0 + 0.12 * urgency } else { 1.0 });
+    }
+}
+
+// ---- the cellar editor ----
+
+/// Clears every keg, flame, perk, and banner; resets the round clocks.
+fn reset_field(
+    arena: &mut Arena,
+    commands: &mut Commands,
+    bombs: &Query<Entity, With<BombSprite>>,
+    flames: &Query<Entity, With<FlameSprite>>,
+    banners: &Query<Entity, With<Banner>>,
+) {
+    for e in bombs.iter().chain(flames.iter()).chain(banners.iter()) {
+        commands.entity(e).despawn();
+    }
+    for b in arena.bombs.iter_mut() {
+        *b = None;
+    }
+    for f in arena.flames.iter_mut() {
+        *f = 0.0;
+    }
+    for p in arena.perks.iter_mut() {
+        if let Some((_, e)) = p.take() {
+            commands.entity(e).despawn();
+        }
+    }
+    arena.clock = 0.0;
+    arena.spiral_next = 0;
+    arena.finished = false;
+    arena.finish_timer.reset();
+    arena.death_groups.clear();
+    arena.end_sent = false;
+    arena.settle.reset();
+    arena.p1_score = 0;
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn editor_update(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    mut gizmos: Gizmos,
+    mut commands: Commands,
+    editor: Option<ResMut<CellarEditor>>,
+    arena: Option<ResMut<Arena>>,
+    mut fighters: Query<
+        (&mut Fighter, &mut Transform, &mut Sprite, &mut Visibility),
+        (Without<TileSprite>, Without<FlameSprite>, Without<BombSprite>),
+    >,
+    mut tiles_q: Query<(&TileSprite, &mut Sprite), (Without<Fighter>, Without<FlameSprite>)>,
+    bombs: Query<Entity, With<BombSprite>>,
+    flames: Query<Entity, With<FlameSprite>>,
+    banners: Query<Entity, With<Banner>>,
+    mut hud: Query<&mut Text2d, With<Hud>>,
+) {
+    let Some(mut editor) = editor else { return };
+    let Some(mut arena) = arena else { return };
+
+    // Return from a test round: X bails early, finish() requests it at the
+    // natural end. Either way the canvas comes back untouched.
+    if !editor.active {
+        if editor.testing && (editor.want_return || keys.just_pressed(KeyCode::KeyX)) {
+            editor.testing = false;
+            editor.want_return = false;
+            editor.active = true;
+            reset_field(&mut arena, &mut commands, &bombs, &flames, &banners);
+            arena.tiles = editor.tiles.clone();
+            for (_, _, _, mut vis) in &mut fighters {
+                *vis = Visibility::Hidden;
+            }
+            sfx("tick");
+        }
+        return;
+    }
+
+    // The canvas paints straight onto the tile sprites; spawn rings show
+    // where the twelve fighters would enter.
+    for (ts, mut sprite) in &mut tiles_q {
+        let want = tile_color(editor.tiles[ts.0]);
+        if sprite.color != want {
+            sprite.color = want;
+        }
+    }
+    for (i, &(sc, sr)) in SPAWNS.iter().enumerate() {
+        gizmos.circle_2d(world(sc, sr), CELL * 0.42, PLAYER_COLORS[i % 12].with_alpha(0.6));
+    }
+    if let Ok(mut t) = hud.single_mut() {
+        let b = match editor.brush {
+            Tile::Crate => "CRATE",
+            Tile::Solid => "WALL",
+            Tile::Empty => "ERASE",
+        };
+        let s = format!(
+            "EDITOR  BRUSH {b} (1/2/3)  CLICK PAINTS, R-CLICK ERASES  RINGS = SPAWNS  S SAVE  G TEST"
+        );
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::Digit1) {
+        editor.brush = Tile::Crate;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Digit2) {
+        editor.brush = Tile::Solid;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Digit3) {
+        editor.brush = Tile::Empty;
+        sfx("tick");
+    }
+
+    if keys.just_pressed(KeyCode::KeyS) {
+        let mut tiles = editor.tiles.clone();
+        enforce_shell(&mut tiles);
+        let doc = PowderDoc {
+            v: 1,
+            name: String::new(),
+            tiles: tiles
+                .iter()
+                .map(|t| match t {
+                    Tile::Empty => '0',
+                    Tile::Solid => '1',
+                    Tile::Crate => '2',
+                })
+                .collect(),
+        };
+        if let Ok(json) = serde_json::to_string(&doc) {
+            crate::shell::save_level(&json);
+            sfx("clear");
+        }
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::KeyG) {
+        editor.active = false;
+        editor.testing = true;
+        let mut tiles = editor.tiles.clone();
+        enforce_shell(&mut tiles);
+        clear_spawn_pockets(&mut tiles, fighters.iter().count());
+        reset_field(&mut arena, &mut commands, &bombs, &flames, &banners);
+        arena.tiles = tiles;
+        for (mut f, mut tf, mut sprite, mut vis) in &mut fighters {
+            let (sc, sr) = SPAWNS[f.seat];
+            f.tile = IVec2::new(sc, sr);
+            f.dir = IVec2::ZERO;
+            f.want = IVec2::ZERO;
+            f.progress = 0.0;
+            f.speed = 3.4;
+            f.range = 2;
+            f.max_bombs = 1;
+            f.live_bombs = 0;
+            f.alive = true;
+            f.kills = 0;
+            f.wants_bomb = false;
+            f.kick = false;
+            let p = world(sc, sr);
+            tf.translation.x = p.x;
+            tf.translation.y = p.y;
+            sprite.color.set_alpha(1.0);
+            *vis = Visibility::Inherited;
+        }
+        sfx("coin");
+        return;
+    }
+
+    // Paint. The border ring is immutable — the shell always holds.
+    let place = buttons.pressed(MouseButton::Left);
+    let erase = buttons.pressed(MouseButton::Right);
+    if !place && !erase {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Ok((camera, cam_tf)) = cameras.single() else { return };
+    let Some(w) = crate::retro::cursor_world(window, camera, cam_tf) else { return };
+    let c = (w.x / CELL + (COLS as f32 - 1.0) / 2.0).round() as i32;
+    let r = ((ROWS as f32 - 1.0) / 2.0 - (w.y - Y_OFF) / CELL).round() as i32;
+    if c > 0 && c < COLS - 1 && r > 0 && r < ROWS - 1 {
+        let v = if erase { Tile::Empty } else { editor.brush };
+        let i = Arena::idx(c, r);
+        if editor.tiles[i] != v {
+            editor.tiles[i] = v;
+        }
     }
 }
 

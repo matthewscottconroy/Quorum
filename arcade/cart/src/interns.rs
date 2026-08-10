@@ -480,8 +480,6 @@ struct SkillBar(u8);
 
 // ---- editor ----
 
-pub static EDITOR_START: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
-
 const EDITOR_WIDTHS: [i32; 3] = [360, 720, 1080];
 const UNDO_CAP: usize = 20;
 
@@ -597,9 +595,7 @@ fn poll_editor_start(
     mut net: ResMut<NetMode>,
     mut cfg: ResMut<CabinetConfig>,
 ) {
-    let mut flag = EDITOR_START.lock().unwrap();
-    if *flag {
-        *flag = false;
+    if crate::shell::take_editor_start() {
         net.0 = None;
         cfg.players = 1;
         cfg.humans = 1;
