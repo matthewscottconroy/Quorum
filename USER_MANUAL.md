@@ -905,9 +905,11 @@ your organization's server.
   bots: F folds, C checks or calls, R raises the pot, A shoves. Blinds
   climb every eight hands, busted bots leave, and your score is your
   final chip count. The chips are the same fictional play tokens as
-  every arcade credit — nothing is wagered, ever. (Local only: hole
-  cards are secrets, and the online relay shows every seat everything,
-  so an honest online table isn't possible with it.)
+  every arcade credit — nothing is wagered, ever. Online tables seat
+  two to six members (no bots), and the SERVER is the dealer: your hole
+  cards travel only down your own connection, so no other player's
+  browser ever sees them — not even in its developer tools. Stall on
+  your turn online and the table folds you after 35 seconds.
 - **Chess variety.** The LEVEL picker on the chess cabinet offers the
   standard game, **Fischer Random** (a fresh scrambled back rank every
   credit; castling is off, and the cabinet says so), and any position the
