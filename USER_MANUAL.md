@@ -901,6 +901,13 @@ your organization's server.
   supervise, build, bash, dig, quit-loudly — to route enough of them to the
   exit before the clock runs out; solo, two players at one machine, or two
   players online).
+- **HOLD 'EM.** Tournament Texas hold 'em against one to five house
+  bots: F folds, C checks or calls, R raises the pot, A shoves. Blinds
+  climb every eight hands, busted bots leave, and your score is your
+  final chip count. The chips are the same fictional play tokens as
+  every arcade credit — nothing is wagered, ever. (Local only: hole
+  cards are secrets, and the online relay shows every seat everything,
+  so an honest online table isn't possible with it.)
 - **Chess variety.** The LEVEL picker on the chess cabinet offers the
   standard game, **Fischer Random** (a fresh scrambled back rank every
   credit; castling is off, and the cabinet says so), and any position the
