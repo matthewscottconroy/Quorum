@@ -901,13 +901,20 @@ your organization's server.
   supervise, build, bash, dig, quit-loudly — to route enough of them to the
   exit before the clock runs out; solo, two players at one machine, or two
   players online).
-- **Building INTERNS levels.** The cabinet's **LEVEL EDITOR** button opens a
-  free authoring mode (no credit): paint and erase terrain with the mouse,
-  place both players' doors, tune the head-count and quota, test-play with
-  G, and save with S. Saved levels go on the organization's shared shelf —
-  everyone sees them in the LEVEL picker, credited to their author. You can
-  update your own levels by saving under the same name; admins can remove
-  anything unfit for the break room.
+- **Building INTERNS levels.** Pick any level (or the blank canvas) and the
+  **LEVEL EDITOR** button opens it as a template — free, no credit. Paint
+  and erase with the mouse (Shift-click draws straight lines, F mirrors
+  your strokes for symmetric two-player maps, U undoes), W cycles the level
+  width up to three screens, place all four doors, tune each job's pool and
+  the head-count, quota, flow, and clock. G test-plays in place — and a
+  test that runs to its natural end simply returns you to the canvas, work
+  intact, nothing scored. S saves to the organization's shared shelf,
+  credited to you; re-saving the same name updates it, the ✕ button deletes
+  your own levels, and admins can remove anything unfit for the break room.
+- **Wide floors.** Levels can be up to three screens wide: scroll with A/D,
+  by pushing the mouse against the play-area edge, or (P2) shoving the
+  crosshair; the minimap shows every walker, the doors, and where you're
+  looking.
 - Every cabinet has sound (mute your device if the basement should stay
   secret) and **Esc** pauses any local single-machine round.
 - **Playing online.** Chess, Go, Powder Keg, and Hexfection also play over
