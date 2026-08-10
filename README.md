@@ -265,7 +265,7 @@ Members see their own dues via `GET /members/:id/dues`; the `/dues` endpoints ab
 | `POST` | `/accounting/entries` | admin | Adjusting journal entry (balanced per currency or the DB refuses) |
 | `GET` / `PUT` | `/accounting/posting-rules` | officer / admin | The automatic-posting account mappings, admin-editable (incl. `cash.provider.<name>` per payment provider); future postings only |
 | `GET` | `/reports/accounting-pack.zip?from=&to=` | admin | CPA export: sealed statements PDF + trial balance/GL/statements/funds/AR-aging + bills/AP-aging CSVs + evidence file; ZIP SHA-256 audited |
-| `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings (`fiscal_year_start_month`, `how_to_pay`, `require_2fa` = off\|admin\|officer\|member, `lapse_after_days`; admin-only: `infrastructure_facts`, `continuity_*`, `audit_legal_hold`, `monthly_report_email`) |
+| `GET` / `PUT` | `/settings/org` | member / admin | Allowlisted org settings (`fiscal_year_start_month`, `how_to_pay`, `require_2fa` = off\|admin\|officer\|member, `lapse_after_days`, `arcade_visible` = on\|off; admin-only: `infrastructure_facts`, `continuity_*`, `audit_legal_hold`, `monthly_report_email`) |
 | `GET`/`POST`/`PATCH`/`DELETE` + `/attest` | `/continuity/custody[...]` | admin | Secret-custody registry (locations/holders, never values) with recorded attestations |
 | `GET` | `/continuity/checks` | admin | Bus-factor health: superadmin count, custody staleness, watchdog config, TLS days-left |
 | `GET` | `/reports/continuity-pack.zip` | superadmin | The successor's map: generated README, infrastructure facts, org snapshot, custody CSV — sealed & audited |
@@ -328,7 +328,7 @@ A basement arcade behind the **Top Secret** sidebar section: eight original cabi
 | `POST` | `/arcade/:game/score` | member | Record a final score (refused without a prior credited play; clamped) |
 | `GET`/`POST` | `/arcade/:game/levels` | member | Community level shelf: list / save (48 KB JSON cap, unique name per game; re-saving your own name updates it) |
 | `GET`/`DELETE` | `/arcade/levels/:id` | member | Fetch one level with data / delete (author always; admins moderate) |
-| `GET` | `/arcade/ws` | member¹ | WebSocket room relay for online play (chess, go, powder-keg, hexfection) |
+| `GET` | `/arcade/ws` | member¹ | WebSocket room relay for online play (chess, go, powder-keg, hexfection, interns) |
 
 ¹ Browsers cannot set an Authorization header on a WebSocket, so `/arcade/ws` authenticates via its **first message** (`{"op":"auth","token":<JWT>}`, member+) on a 5-second deadline; the route sits outside the normal auth middleware by necessity. After auth: `create {game, seats}` or `join {code}` → 4-letter room code, host (`seat 0`) sends `start`, then `msg {data}` frames are fanned out to the other seats with the sender's seat stamped **server-side**. The server is a seat-managing relay, not a referee — rules run in every player's cartridge (the same perft-tested logic crate); the host's cartridge is authoritative for the real-time cabinet (Powder Keg guests send inputs, the host broadcasts ~20 Hz snapshots), and turn-based cabinets validate every relayed move locally before applying it. Empty seats in a started room are host-driven bots; a player who disconnects mid-game becomes one. Rooms live in process memory (single-replica assumption, like the rate limiters); idle rooms are swept after 30 minutes.
 
@@ -342,6 +342,10 @@ make arcade-test   # runs the game-rules test suite
 ```
 
 `web/arcade/` is gitignored; the Go binary embeds whatever is there at build time via `//go:embed web`, so build the cartridge **before** building the binary or container image on the host that ships it. Optional `wasm-opt` (binaryen) shrinks the download ~40%; the server gzips `application/wasm` itself (~4 MB over the wire).
+
+Deployments that build **on the server** (`ops/upgrade.sh`) don't need Rust there: because `web/arcade/` is ignored by git, a cartridge copied into the server's checkout once survives every `git` fast-forward and is re-embedded by each upgrade's `go build`. Ship a new cartridge only when the games themselves change — build it on any machine with Rust and copy the three files over (see **UPGRADING.md → "The arcade cartridge"** for the exact steps). `ops/deploy.sh` builds locally, so there the usual rule applies: run `make arcade` first and the binary it ships carries the cartridge.
+
+Admins can switch the whole floor off from **Settings → Organization settings → Top Secret arcade** (`arcade_visible`): the sidebar section disappears for everyone and the arcade API + websocket answer 404 (checked server-side, cached ~30s). Nothing is deleted — plays, scores, and community levels survive the outage.
 
 The game-rules layer (`arcade/logic`) is dependency-free and unit-tested — chess legal-move generation is perft-verified, go covers captures/ko/suicide/area scoring, hexfection covers clone/jump/conversion. Scores are self-reported by the wasm client and lightly validated (bounds + a credited play required); treat leaderboards as friendly, not forensic.
 

@@ -50,6 +50,14 @@ else
 fi
 
 echo "==> building"
+# The arcade cartridge (web/arcade/, gitignored) is embedded as-is if present;
+# it survives the fetch/merge above, so installing it once is enough. See
+# UPGRADING.md "The arcade cartridge".
+if [ -f web/arcade/arcade_bg.wasm ]; then
+    echo "    arcade cartridge found — it will be embedded"
+else
+    echo "    no arcade cartridge in web/arcade — cabinets will say 'cartridge not installed'"
+fi
 as_owner go build -o quorum.next ./cmd/quorum
 
 [ -f quorum ] && cp -p quorum quorum.prev

@@ -917,8 +917,8 @@ your organization's server.
   looking.
 - Every cabinet has sound (mute your device if the basement should stay
   secret) and **Esc** pauses any local single-machine round.
-- **Playing online.** Chess, Go, Powder Keg, and Hexfection also play over
-  the network against other members of your organization. On the cabinet,
+- **Playing online.** Chess, Go, Powder Keg, Hexfection, and Interns also
+  play over the network against other members of your organization. On the cabinet,
   choose **HOST ROOM** (picking the seat count for the big cabinets) and read
   out the 4-letter room code; the others open the same cabinet, type the code,
   and **JOIN**. The host presses **START** — empty seats are filled by
@@ -929,8 +929,12 @@ your organization's server.
   rules: you walk away, the machine forgets you.
 - **If a cabinet says "CARTRIDGE NOT INSTALLED":** the arcade's WebAssembly
   build is an optional artifact your operator adds with `make arcade` before
-  building the server (it needs a Rust toolchain; see the README). Everything
-  else in Quorum works without it.
+  building the server (it needs a Rust toolchain; see the README and
+  UPGRADING.md). Everything else in Quorum works without it.
+- **If the Top Secret section is missing entirely:** an administrator has
+  switched the arcade off (Settings → Organization settings → **Top Secret
+  arcade**). Nothing is lost — plays, high scores, and saved levels all
+  return when it's switched back on.
 
 ## 5.12 Roster: office holders, committees & membership applications
 
@@ -1095,6 +1099,12 @@ by default, so Quorum works as-is for any organization until you turn them on.
 - **Monthly financial summary email** (`monthly_report_email`). Enter an address
   and the nightly cycle sends a monthly financial digest there — a hands-off way
   to keep a treasurer or board informed.
+- **Top Secret arcade** (`arcade_visible`). On by default. Switching it off
+  removes the arcade from every member's sidebar *and* disables its API and
+  game rooms server-side (within about 30 seconds). Use it if the basement
+  becomes a distraction — or has never been your org's style. Nothing is
+  deleted: plays, scores, and community levels are all there when it comes
+  back on.
 - **Audit legal hold** (`audit_legal_hold`, admin only). Normally the nightly
   cycle prunes old audit and bookkeeping records past their retention window.
   Turning legal hold **on** suspends that pruning entirely — nothing ages out —
