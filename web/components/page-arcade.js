@@ -53,7 +53,7 @@ const CABINETS = [
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
-    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns, 1-7 pick a job, R/T release rate, N-N everyone quits. P2 (local): arrows + Enter, Q/E job. Esc pause.',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-7 jobs, T/R flow, A/D or screen edge scrolls, N-N everyone quits. P2 (local): arrows + Enter, Q/E job. Wide levels get a minimap. Esc pause (you can still assign).',
   },
 ];
 
@@ -285,10 +285,11 @@ class PageArcade extends HTMLElement {
                     <option value="b1">HOUSE: ORIENTATION DAY</option>
                     <option value="b2">HOUSE: THE BASEMENT</option>
                     <option value="b3">HOUSE: CUBICLE WALLS</option>
-                    <option value="b4">HOUSE: TWO TOWERS</option>
+                    <option value="b4">HOUSE: TWO TOWERS (WIDE)</option>
                   </select>
                 </label>
-                <button class="tsc-btn" id="editor-btn" disabled>LEVEL EDITOR</button>` : ''}
+                <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">LEVEL EDITOR</button>
+                <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
               <button class="tsc-coin" id="coin" disabled>◉ INSERT CREDIT</button>
               <span class="tsc-note" id="boot-note">booting cartridge…</span>
             </div>
@@ -440,12 +441,18 @@ class PageArcade extends HTMLElement {
 
   // ---- INTERNS levels & editor ----
 
-  /** Sets window.__ARCADE_LEVEL from the picker: builtin ref or fetched doc. */
-  async resolveLevel(cab) {
+  /** Sets window.__ARCADE_LEVEL from the picker: builtin ref, blank-canvas
+      marker (editor only), or a fetched community document. */
+  async resolveLevel(cab, forEditor = false) {
     if (cab.id !== 'interns') return;
     const sel = this.querySelector('#sel-level');
     if (!sel) return;
     const v = sel.value;
+    if (v === 'blank') {
+      // Playing a blank canvas makes no sense; house 1 stands in.
+      window.__ARCADE_LEVEL = forEditor ? JSON.stringify({ blank: true }) : JSON.stringify({ builtin: 1 });
+      return;
+    }
     if (v.startsWith('b')) {
       window.__ARCADE_LEVEL = JSON.stringify({ builtin: Number(v.slice(1)) || 1 });
       return;
@@ -457,24 +464,48 @@ class PageArcade extends HTMLElement {
   async wireLevels(cab, mod) {
     const sel = this.querySelector('#sel-level');
     const editorBtn = this.querySelector('#editor-btn');
+    const delBtn = this.querySelector('#del-level-btn');
+    const updateDel = () => {
+      if (delBtn) delBtn.style.display = sel.value.startsWith('b') || sel.value === 'blank' ? 'none' : '';
+    };
     const refresh = async () => {
       try {
         const community = await api('GET', `/arcade/${cab.id}/levels`) ?? [];
-        // Rebuild options: four house levels, then the community shelf.
+        // Rebuild options: house levels, blank canvas, then the shelf.
         const current = sel.value;
         sel.innerHTML = [1, 2, 3, 4].map(n =>
-          `<option value="b${n}">HOUSE: ${['ORIENTATION DAY', 'THE BASEMENT', 'CUBICLE WALLS', 'TWO TOWERS'][n - 1]}</option>`).join('') +
+          `<option value="b${n}">HOUSE: ${['ORIENTATION DAY', 'THE BASEMENT', 'CUBICLE WALLS', 'TWO TOWERS (WIDE)'][n - 1]}</option>`).join('') +
+          '<option value="blank">EDITOR: BLANK CANVAS</option>' +
           community.map(l => `<option value="${esc(l.id)}">${esc(l.name)} — ${esc(l.author_name)}</option>`).join('');
         if ([...sel.options].some(o => o.value === current)) sel.value = current;
+        updateDel();
       } catch { /* house levels always exist */ }
     };
     await refresh();
+    sel.addEventListener('change', updateDel);
+    delBtn?.addEventListener('click', async () => {
+      const opt = sel.options[sel.selectedIndex];
+      if (!opt || sel.value.startsWith('b') || sel.value === 'blank') return;
+      if (!confirm(`Delete level “${opt.textContent}” from the community shelf? Authors and admins only.`)) return;
+      try {
+        await api('DELETE', `/arcade/levels/${sel.value}`);
+        toast('Level deleted', 'success');
+        sel.value = 'b1';
+        await refresh();
+      } catch (err) {
+        toast(err.error ?? 'Not yours to delete', 'error');
+      }
+    });
     // The editor hands us a compiled level document; we name and shelve it.
     window.__arcadeSaveLevel = async json => {
-      const name = prompt('Name this level (1-60 chars). Re-using one of your own names updates it:');
+      let suggested = '';
+      try { suggested = JSON.parse(json).name ?? ''; } catch { /* fine */ }
+      const name = prompt('Name this level (1-60 chars). Re-using one of your own names updates it:', suggested);
       if (!name || !name.trim()) return;
       try {
-        const res = await api('POST', `/arcade/${cab.id}/levels`, { name: name.trim(), data: JSON.parse(json) });
+        const doc = JSON.parse(json);
+        doc.name = name.trim();
+        const res = await api('POST', `/arcade/${cab.id}/levels`, { name: name.trim(), data: doc });
         toast(`Level “${res.name}” saved to the community shelf`, 'success');
         await refresh();
       } catch (err) {
@@ -483,11 +514,13 @@ class PageArcade extends HTMLElement {
     };
     if (editorBtn) {
       editorBtn.disabled = false;
-      editorBtn.addEventListener('click', () => {
+      editorBtn.addEventListener('click', async () => {
+        // The picker's selection becomes the editing template.
+        await this.resolveLevel(cab, true);
         mod.arcade_start_editor();
         this._playing = true;
         this.querySelector('#arcade-canvas')?.focus();
-        toast('Editor: paint with the mouse, S saves, G test-plays, X returns', 'info');
+        toast('Editor: paint (Shift+click lines, F mirrors, U undoes), W widens, S saves, G test-plays, X returns', 'info');
       });
     }
   }
