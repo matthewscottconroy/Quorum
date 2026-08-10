@@ -219,7 +219,9 @@ fn control(
 
     let turn = i32::from(keys.pressed(KeyCode::ArrowLeft)) - i32::from(keys.pressed(KeyCode::ArrowRight));
     ship.angle += TURN * dt * turn as f32;
-    if keys.pressed(KeyCode::ArrowUp) {
+    // Up or down: both thrust forward. There is no reverse in space — the
+    // second binding is for pilots whose thumb lands on the wrong arrow.
+    if keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::ArrowDown) {
         let dir = Vec2::new(ship.angle.cos(), ship.angle.sin());
         ship.vel = (ship.vel + dir * THRUST * dt).clamp_length_max(MAX_SPEED);
     }
@@ -490,7 +492,9 @@ fn draw(
             let right = rot(Vec2::new(-10.0, -9.0));
             let notch = rot(Vec2::new(-6.0, 0.0));
             gizmos.linestrip_2d([nose, left, notch, right, nose], GREEN);
-            if keys.pressed(KeyCode::ArrowUp) && (time.elapsed_secs() * 20.0) as i32 % 2 == 0 {
+            if (keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::ArrowDown))
+                && (time.elapsed_secs() * 20.0) as i32 % 2 == 0
+            {
                 gizmos.linestrip_2d([rot(Vec2::new(-8.0, 4.0)), rot(Vec2::new(-16.0, 0.0)), rot(Vec2::new(-8.0, -4.0))], AMBER);
             }
         }

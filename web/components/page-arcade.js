@@ -33,7 +33,7 @@ const CABINETS = [
   },
   {
     id: 'comet-buster', name: 'COMET BUSTER', tag: 'Vector rocks, one ship, and now a saucer with opinions.',
-    players: '1P', controls: '← → rotate · ↑ thrust · Space fire · H hyperspace · Esc pause.',
+    players: '1P', controls: '← → rotate · ↑ or ↓ thrust · Space fire · H hyperspace · Esc pause.',
   },
   {
     id: 'penny-pincher', name: 'PENNY PINCHER', tag: 'Grab every coin. The auditors want a word.',
