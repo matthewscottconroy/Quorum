@@ -23,7 +23,74 @@ type arcadeRepo interface {
 	ListLevels(ctx context.Context, game string) ([]model.ArcadeLevel, error)
 	GetLevel(ctx context.Context, id string) (*model.ArcadeLevel, error)
 	DeleteLevel(ctx context.Context, id, authorOnly string) error
+	BumpStats(ctx context.Context, userID, game string, stats map[string]int64) error
+	PlayerStats(ctx context.Context, userID string) (map[string]map[string]int64, error)
+	Players(ctx context.Context) ([]model.ArcadePlayer, error)
 }
+
+// The service-record vocabulary: every counter a cartridge may report, per
+// cabinet. Anything else in a report is silently dropped — the table stays
+// tidy no matter what a creative client sends. Values are self-reported,
+// like scores: friendly numbers, not forensic ones.
+var arcadeStatNames = map[string][]string{
+	"": {"seconds_played", "rounds_finished"}, // every cabinet reports these
+	"comet-buster": {
+		"bullets_fired", "rocks_smashed", "saucers_downed", "ships_lost",
+		"hyperspace_jumps", "hyperspace_misfires", "waves_cleared", "extra_ships",
+	},
+	"penny-pincher": {
+		"coins_pocketed", "gold_bars", "auditors_bitten", "times_audited",
+		"shifts_cleared", "tunnel_trips", "extra_lives", "about_faces",
+	},
+	"brickfall": {
+		"pieces_locked", "lines_cleared", "quads", "hard_drops", "soft_cells",
+		"holds_used", "top_outs", "levels_reached",
+	},
+	"chess": {
+		"moves_played", "captures_made", "pieces_lost", "checks_given",
+		"pawns_promoted", "knight_promotions", "machine_beaten", "beaten_by_machine",
+		"draws", "wins_online", "losses_online", "resignations", "hotseat_rounds",
+		"fischer_deals", "puzzles_tested",
+	},
+	"go": {
+		"stones_placed", "stones_captured", "stones_lost", "passes", "takebacks",
+		"resignations", "machine_beaten", "beaten_by_machine", "wins_online",
+		"losses_online", "hotseat_rounds", "dead_stones_marked",
+	},
+	"powder-keg": {
+		"bombs_laid", "kills", "deaths", "self_demolitions", "crates_smashed",
+		"perks_grabbed", "kegs_kicked", "wall_crushes", "steps_walked",
+		"cellar_wins", "settle_draws",
+	},
+	"hexfection": {
+		"clones", "jumps", "blobs_converted", "blobs_lost", "times_consumed",
+		"dish_wins", "seats_skipped",
+	},
+	"interns": {
+		"interns_saved", "interns_lost", "gravity_lessons", "quits_ordered",
+		"nukes_ordered", "climbers_hired", "chutes_issued", "supervisors_promoted",
+		"bridges_ordered", "bashers_unleashed", "diggers_deployed", "floor_wins",
+	},
+}
+
+var validArcadeStat = func() map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(repo.ArcadeGames))
+	for _, g := range repo.ArcadeGames {
+		set := map[string]bool{}
+		for _, s := range arcadeStatNames[""] {
+			set[s] = true
+		}
+		for _, s := range arcadeStatNames[g] {
+			set[s] = true
+		}
+		out[g] = set
+	}
+	return out
+}()
+
+// A single report may not bump any counter by more than this: one round's
+// honest output fits easily, a firehose does not.
+const maxStatDelta = 200_000
 
 // ArcadeHandler serves the Top Secret arcade: credit insertions (play tokens,
 // not money — deliberately disjoint from the ledger) and high-score tables.
@@ -130,6 +197,67 @@ func (h *ArcadeHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// ReportStats accumulates one round's counters into the caller's lifetime
+// service record (member+). Unknown or absurd entries are dropped, not
+// rejected — the round already happened, we keep what's plausible.
+func (h *ArcadeHandler) ReportStats(w http.ResponseWriter, r *http.Request) {
+	game, ok := arcadeGame(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Stats map[string]int64 `json:"stats"`
+	}
+	if err := decodeJSON(r, &body); err != nil || len(body.Stats) == 0 {
+		writeError(w, http.StatusBadRequest, "a non-empty {stats: {name: count}} object is required", "bad_request")
+		return
+	}
+	allowed := validArcadeStat[game]
+	clean := make(map[string]int64, len(body.Stats))
+	for name, v := range body.Stats {
+		if allowed[name] && v > 0 && v <= maxStatDelta {
+			clean[name] = v
+		}
+	}
+	if len(clean) > 0 {
+		if err := h.repo.BumpStats(r.Context(), userIDFromCtx(r), game, clean); err != nil {
+			writeError(w, http.StatusInternalServerError, "stats error", "internal_error")
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Players lists everyone with an arcade footprint — the service-record
+// browser's roster (member+; the arcade is a shared basement, stats are
+// deliberately public within the org, like the leaderboards).
+func (h *ArcadeHandler) Players(w http.ResponseWriter, r *http.Request) {
+	players, err := h.repo.Players(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, players)
+}
+
+// PlayerStats returns one member's full service record, grouped by cabinet
+// (member+). ?user=<id> reads anyone's; default is your own.
+func (h *ArcadeHandler) PlayerStats(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user")
+	if userID == "" {
+		userID = userIDFromCtx(r)
+	} else if !isValidUUID(userID) {
+		writeError(w, http.StatusBadRequest, "user must be a UUID", "bad_request")
+		return
+	}
+	stats, err := h.repo.PlayerStats(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "games": stats})
 }
 
 // ---- community levels ----

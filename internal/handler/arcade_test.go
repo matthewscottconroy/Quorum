@@ -22,6 +22,7 @@ type mockArcadeRepo struct {
 	SaveLevelFn    func(ctx context.Context, game, name, author, data string) (string, error)
 	GetLevelFn     func(ctx context.Context, id string) (*model.ArcadeLevel, error)
 	DeleteLevelFn  func(ctx context.Context, id, authorOnly string) error
+	BumpStatsFn    func(ctx context.Context, userID, game string, stats map[string]int64) error
 }
 
 func (m *mockArcadeRepo) InsertCredit(ctx context.Context, userID, game string) (int, error) {
@@ -56,6 +57,18 @@ func (m *mockArcadeRepo) DeleteLevel(ctx context.Context, id, authorOnly string)
 		return m.DeleteLevelFn(ctx, id, authorOnly)
 	}
 	return nil
+}
+func (m *mockArcadeRepo) BumpStats(ctx context.Context, userID, game string, stats map[string]int64) error {
+	if m.BumpStatsFn != nil {
+		return m.BumpStatsFn(ctx, userID, game, stats)
+	}
+	return nil
+}
+func (m *mockArcadeRepo) PlayerStats(_ context.Context, _ string) (map[string]map[string]int64, error) {
+	return map[string]map[string]int64{"chess": {"moves_played": 42}}, nil
+}
+func (m *mockArcadeRepo) Players(_ context.Context) ([]model.ArcadePlayer, error) {
+	return []model.ArcadePlayer{{UserID: testUUID, Name: "Ada Lovelace", TotalPlays: 7}}, nil
 }
 
 func TestArcadeInsertCredit_Success(t *testing.T) {
@@ -154,6 +167,79 @@ func TestArcadeStats_AllCabinets(t *testing.T) {
 	h.Stats(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("status: got %d", rr.Code)
+	}
+}
+
+func TestArcadeReportStats_FiltersJunkKeepsTheHonest(t *testing.T) {
+	var got map[string]int64
+	h := NewArcadeHandler(&mockArcadeRepo{
+		BumpStatsFn: func(_ context.Context, userID, game string, stats map[string]int64) error {
+			if userID != "u1" || game != "powder-keg" {
+				t.Errorf("passed through: %q %q", userID, game)
+			}
+			got = stats
+			return nil
+		},
+	})
+	body := `{"stats":{"bombs_laid":12,"kills":3,"grandmas_startled":9,"deaths":-4,"steps_walked":99999999}}`
+	req := chiRequest("POST", "/arcade/powder-keg/stats-report", body, map[string]string{"game": "powder-keg"})
+	req = withCtxUser(req, "u1", "member")
+	rr := httptest.NewRecorder()
+	h.ReportStats(rr, req)
+	if rr.Code != 204 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	// Unknown key, negative value, and firehose value all dropped.
+	if len(got) != 2 || got["bombs_laid"] != 12 || got["kills"] != 3 {
+		t.Errorf("cleaned stats: %v", got)
+	}
+}
+
+func TestArcadeReportStats_GlobalCountersWorkOnEveryCabinet(t *testing.T) {
+	var got map[string]int64
+	h := NewArcadeHandler(&mockArcadeRepo{
+		BumpStatsFn: func(_ context.Context, _, _ string, stats map[string]int64) error {
+			got = stats
+			return nil
+		},
+	})
+	req := chiRequest("POST", "/arcade/brickfall/stats-report",
+		`{"stats":{"seconds_played":95,"rounds_finished":1,"lines_cleared":4}}`,
+		map[string]string{"game": "brickfall"})
+	req = withCtxUser(req, "u1", "member")
+	rr := httptest.NewRecorder()
+	h.ReportStats(rr, req)
+	if rr.Code != 204 || len(got) != 3 {
+		t.Fatalf("status %d, stats %v", rr.Code, got)
+	}
+}
+
+func TestArcadePlayerStats_DefaultsToSelfAndValidatesUUID(t *testing.T) {
+	h := NewArcadeHandler(&mockArcadeRepo{})
+	req := httptest.NewRequest("GET", "/arcade/player-stats", nil)
+	req = withCtxUser(req, "u-self", "member")
+	rr := httptest.NewRecorder()
+	h.PlayerStats(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status %d", rr.Code)
+	}
+	var out struct {
+		UserID string                      `json:"user_id"`
+		Games  map[string]map[string]int64 `json:"games"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.UserID != "u-self" || out.Games["chess"]["moves_played"] != 42 {
+		t.Errorf("got %+v", out)
+	}
+
+	req = httptest.NewRequest("GET", "/arcade/player-stats?user=not-a-uuid", nil)
+	req = withCtxUser(req, "u-self", "member")
+	rr = httptest.NewRecorder()
+	h.PlayerStats(rr, req)
+	if rr.Code != 400 {
+		t.Errorf("bad uuid: got %d, want 400", rr.Code)
 	}
 }
 

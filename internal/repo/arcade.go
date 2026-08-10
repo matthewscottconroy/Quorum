@@ -164,6 +164,76 @@ func (r *ArcadeRepo) Stats(ctx context.Context, userID string) ([]model.ArcadeGa
 	return out, srows.Err()
 }
 
+// ---- per-player statistics (the service records) ----
+
+// BumpStats accumulates a round's counters into the player's lifetime
+// numbers. Keys are pre-validated by the handler.
+func (r *ArcadeRepo) BumpStats(ctx context.Context, userID, game string, stats map[string]int64) error {
+	if len(stats) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for stat, delta := range stats {
+		batch.Queue(`
+			INSERT INTO arcade_player_stats (user_id, game, stat, value)
+			VALUES ($1::uuid, $2, $3, $4)
+			ON CONFLICT (user_id, game, stat) DO UPDATE
+				SET value = arcade_player_stats.value + EXCLUDED.value`,
+			userID, game, stat, delta)
+	}
+	return r.db.SendBatch(ctx, batch).Close()
+}
+
+// PlayerStats returns every counter one player has accrued, grouped by game.
+func (r *ArcadeRepo) PlayerStats(ctx context.Context, userID string) (map[string]map[string]int64, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT game, stat, value FROM arcade_player_stats
+		WHERE user_id = $1::uuid ORDER BY game, stat`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]int64{}
+	for rows.Next() {
+		var game, stat string
+		var value int64
+		if err := rows.Scan(&game, &stat, &value); err != nil {
+			return nil, err
+		}
+		if out[game] == nil {
+			out[game] = map[string]int64{}
+		}
+		out[game][stat] = value
+	}
+	return out, rows.Err()
+}
+
+// Players lists everyone with an arcade footprint (for the service-record
+// browser), busiest first.
+func (r *ArcadeRepo) Players(ctx context.Context) ([]model.ArcadePlayer, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id::text, coalesce(m.display_name, 'MYSTERY PLAYER'), count(p.id)::int
+		FROM arcade_plays p
+		JOIN users u ON u.id = p.user_id
+		LEFT JOIN members m ON m.id = u.member_id
+		GROUP BY u.id, m.display_name
+		ORDER BY count(p.id) DESC, coalesce(m.display_name, 'MYSTERY PLAYER')
+		LIMIT 200`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.ArcadePlayer{}
+	for rows.Next() {
+		var p model.ArcadePlayer
+		if err := rows.Scan(&p.UserID, &p.Name, &p.TotalPlays); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ---- community levels (the level editor's storage) ----
 
 // maxLevelsPerGame keeps the community list arcade-sized.

@@ -1054,3 +1054,11 @@ type ArcadeLevel struct {
 	Data       string    `json:"data,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+// ArcadePlayer is one row of the service-record browser: a member with an
+// arcade footprint.
+type ArcadePlayer struct {
+	UserID     string `json:"user_id"`
+	Name       string `json:"name"`
+	TotalPlays int    `json:"total_plays"`
+}

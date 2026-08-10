@@ -529,6 +529,9 @@ func main() {
 			r.Group(func(r chi.Router) {
 				r.Use(arcadeGate)
 				r.With(mw.RequireRole("member")).Get("/arcade/stats", arcadeH.Stats)
+				r.With(mw.RequireRole("member")).Get("/arcade/players", arcadeH.Players)
+				r.With(mw.RequireRole("member")).Get("/arcade/player-stats", arcadeH.PlayerStats)
+				r.With(mw.RequireRole("member")).Post("/arcade/{game}/stats-report", arcadeH.ReportStats)
 				r.With(mw.RequireRole("member")).Get("/arcade/{game}/scores", arcadeH.TopScores)
 				r.With(mw.RequireRole("member")).Post("/arcade/{game}/credit", arcadeH.InsertCredit)
 				r.With(mw.RequireRole("member")).Post("/arcade/{game}/score", arcadeH.SubmitScore)
