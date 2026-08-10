@@ -5,7 +5,7 @@ use bevy::prelude::*;
 
 use crate::retro::{popup, text, AMBER, GREEN, SCREEN_H, SCREEN_W, WHITE};
 use crate::rng::Rng;
-use crate::shell::sfx;
+use crate::shell::{sfx, stat};
 use crate::{FinalScore, GameTag, Phase};
 use crate::retro::MAGENTA;
 
@@ -235,6 +235,7 @@ fn control(
 
     if keys.just_pressed(KeyCode::Space) && bullets.iter().count() < MAX_BULLETS {
         sfx("fire");
+        stat("bullets_fired", 1);
         let dir = Vec2::new(ship.angle.cos(), ship.angle.sin());
         commands.spawn((
             Bullet {
@@ -249,6 +250,7 @@ fn control(
     // Hyperspace: instant relocation, one-in-eight chance the drive eats you.
     if keys.just_pressed(KeyCode::KeyH) && game.hyper_cooldown.finished() {
         sfx("hyper");
+        stat("hyperspace_jumps", 1);
         game.hyper_cooldown.reset();
         tf.translation.x = rng.between(-330.0, 330.0);
         tf.translation.y = rng.between(-290.0, 290.0);
@@ -258,6 +260,7 @@ fn control(
             // is gone (despawned, not left as a ghost) and a last life ends
             // the game here, since collide's check never sees this death.
             let at = tf.translation.truncate();
+            stat("hyperspace_misfires", 1);
             commands.entity(ship_e).despawn();
             explode_ship(&mut commands, &mut rng, at, &mut game);
             if game.lives <= 0 {
@@ -317,6 +320,7 @@ fn physics(
 
 fn explode_ship(commands: &mut Commands, rng: &mut Rng, pos: Vec2, game: &mut Game) {
     sfx("death");
+    stat("ships_lost", 1);
     game.lives -= 1;
     game.waiting_spawn = true;
     game.respawn.reset();
@@ -362,6 +366,7 @@ fn collide(
                 dead_rocks.push(re);
                 dead_bullets.push(be);
                 sfx("boom");
+                stat("rocks_smashed", 1);
                 game.score += match rock.size {
                     2 => 20,
                     1 => 50,
@@ -404,6 +409,7 @@ fn collide(
                 commands.entity(se).despawn();
                 sfx("boom");
                 let pay = if saucer.small { 1000 } else { 200 };
+                stat("saucers_downed", 1);
                 game.score += pay;
                 popup(&mut commands, &format!("+{pay}"), 20.0, MAGENTA, sp);
             }
@@ -414,6 +420,7 @@ fn collide(
         game.lives += 1;
         game.next_extra_life += 10_000;
         sfx("extra");
+        stat("extra_ships", 1);
         popup(&mut commands, "EXTRA SHIP", 20.0, GREEN, Vec2::new(-220.0, 250.0));
     }
     // Ship vs rocks and hostile fire.
@@ -510,6 +517,7 @@ fn waves(
         if game.clear.finished() {
             game.waiting_wave = false;
             let bonus = 300 + 100 * game.level;
+            stat("waves_cleared", 1);
             game.score += bonus; // wave-clear bonus
             game.level += 1;
             let avoid = ships.single().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);

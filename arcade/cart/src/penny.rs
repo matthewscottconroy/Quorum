@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use crate::retro::{popup, text, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::rng::Rng;
-use crate::shell::sfx;
+use crate::shell::{sfx, stat};
 use crate::{FinalScore, GameTag, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -264,6 +264,7 @@ fn advance(
     let dt = time.delta_secs();
     for (mut r, mut tf, player) in &mut runners {
         if player.is_some() && r.dir != IVec2::ZERO && r.want == -r.dir && r.progress > 0.0 {
+            stat("about_faces", 1);
             // Instant about-face: re-express the same position walking back.
             let d = r.dir;
             r.tile += d;
@@ -289,6 +290,9 @@ fn advance(
                 // Arrived at the next tile center.
                 let d = r.dir;
                 r.tile += d;
+                if player.is_some() && (r.tile.x < 0 || r.tile.x >= W) {
+                    stat("tunnel_trips", 1);
+                }
                 r.tile.x = (r.tile.x + W) % W; // tunnel wrap
                 r.progress = 0.0;
                 r.arrived = true; // decision point for the brains this frame
@@ -446,6 +450,7 @@ fn munch(
         maze.lives += 1;
         maze.next_extra_life += 10_000;
         sfx("extra");
+        stat("extra_lives", 1);
         popup(&mut commands, "EXTRA LIFE", 20.0, GREEN, Vec2::new(0.0, 270.0));
     }
 
@@ -464,10 +469,12 @@ fn munch(
             maze.fright.reset();
             reverse_auditors = true;
             sfx("power");
+            stat("gold_bars", 1);
             popup(&mut commands, "+50", 16.0, AMBER, ptf.translation.truncate());
         } else {
             maze.score += 10;
             sfx("coin");
+            stat("coins_pocketed", 1);
         }
         if maze.coins_left == 0 {
             // Board cleared — next shift, a touch faster. Reuse the death
@@ -475,6 +482,7 @@ fn munch(
             // (no more shift-two spawn camping by a lucky auditor).
             maze.score += 500;
             maze.level += 1;
+            stat("shifts_cleared", 1);
             final_score.0 = maze.score; // provisional, in case they bail
             respawn_board(&mut commands, &mut maze);
             pr.speed = SPEED * (1.0 + 0.08 * (maze.level - 1) as f32).min(1.25);
@@ -521,10 +529,12 @@ fn munch(
                 ar.speed = SPEED * 1.4;
                 sprite.color.set_alpha(0.35);
                 sfx("eat");
+                stat("auditors_bitten", 1);
                 popup(&mut commands, &format!("+{pay}"), 18.0, WHITE, atf.translation.truncate());
             } else {
                 maze.lives -= 1;
                 sfx("death");
+                stat("times_audited", 1);
                 if maze.lives <= 0 {
                     final_score.0 = maze.score;
                     next.set(Phase::GameOver);

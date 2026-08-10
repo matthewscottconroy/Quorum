@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use crate::retro::{popup, text, AMBER, DIM, GREEN, WHITE};
 use crate::rng::Rng;
-use crate::shell::sfx;
+use crate::shell::{sfx, stat};
 use crate::{FinalScore, GameTag, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -349,12 +349,14 @@ fn lock_piece(
     // half-written piece behind.
     if PIECES[w.kind][w.rot].iter().any(|&(_, dy)| w.y + dy < 0) {
         *score_out = Some(w.score);
+        stat("top_outs", 1);
         return;
     }
     for &(dx, dy) in &PIECES[w.kind][w.rot] {
         let (cx, cy) = (w.x + dx, w.y + dy);
         w.grid[cy as usize][cx as usize] = true;
     }
+    stat("pieces_locked", 1);
     // Clear full rows.
     let mut cleared = 0;
     for row in 0..ROWS as usize {
@@ -369,6 +371,10 @@ fn lock_piece(
     }
     if cleared > 0 {
         sfx("clear");
+        stat("lines_cleared", cleared as u64);
+        if cleared >= 4 {
+            stat("quads", 1);
+        }
         let before = level(w.lines);
         let base = [0u32, 40, 100, 300, 1200][cleared.min(4)];
         w.score += base * (before + 1);
@@ -388,6 +394,7 @@ fn lock_piece(
     w.hold_used = false;
     if collides(w, w.kind, w.rot, w.x, w.y) {
         *score_out = Some(w.score);
+        stat("top_outs", 1);
     }
 }
 
@@ -444,6 +451,7 @@ fn steer(
     // Hold/swap: one stash per piece, C to trade.
     if keys.just_pressed(KeyCode::KeyC) && !w.hold_used {
         w.hold_used = true;
+        stat("holds_used", 1);
         let stashed = w.hold;
         w.hold = Some(w.kind);
         w.kind = match stashed {
@@ -470,12 +478,14 @@ fn steer(
             }
             w.y += 1;
             w.score += 1;
+            stat("soft_cells", 1);
         }
     }
 
     // Hard drop pays +2 per cell.
     if keys.just_pressed(KeyCode::Space) {
         sfx("drop");
+        stat("hard_drops", 1);
         while !collides(&w, w.kind, w.rot, w.x, w.y + 1) {
             w.y += 1;
             w.score += 2;
@@ -495,6 +505,7 @@ fn steer(
 fn announce_level(commands: &mut Commands, w: &Well, leveled: bool) {
     if leveled {
         sfx("levelup");
+        stat("levels_reached", 1);
         popup(
             commands,
             &format!("LEVEL {}", level(w.lines)),

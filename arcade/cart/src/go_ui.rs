@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{popup, text, AMBER, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::rng::Rng;
-use crate::shell::{net_send, sfx};
+use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 /// Relayed play: seat 0 is Black, seat 1 is White.
@@ -244,6 +244,10 @@ fn input(
             };
             table.result = format!("{} RESIGNS\n{} WINS", stone_name(quitter), stone_name(quitter.other()));
             table.final_score = 100;
+            stat("resignations", 1);
+            if net.0.is_some() {
+                stat("losses_online", 1);
+            }
             table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             return;
         }
@@ -280,6 +284,9 @@ fn input(
                 let group = table.board.group_at(pos);
                 if !group.is_empty() {
                     let flip = !table.dead[pos];
+                    if flip {
+                        stat("dead_stones_marked", group.len() as u64);
+                    }
                     for g in group {
                         table.dead[g] = flip;
                     }
@@ -307,6 +314,7 @@ fn input(
     if keys.just_pressed(KeyCode::KeyP) {
         table.board.pass();
         sfx("tick");
+        stat("passes", 1);
         if net.0.is_some() {
             send_wire("pass", 0);
         }
@@ -327,6 +335,7 @@ fn input(
         };
         if undone {
             sfx("tick");
+            stat("takebacks", 1);
             repaint(&mut commands, &table, &stones);
         }
         return;
@@ -340,6 +349,8 @@ fn input(
         Ok(()) => {
             let after = table.board.captures_black + table.board.captures_white;
             sfx(if after > before { "capture" } else { "place" });
+            stat("stones_placed", 1);
+            stat("stones_captured", (after - before) as u64);
             if net.0.is_some() {
                 send_wire("mv", pos);
             }
@@ -385,6 +396,7 @@ fn bot_play(time: Res<Time>, mut table: ResMut<Table>, mut rng: ResMut<Rng>, net
             if table.board.play(pos).is_ok() {
                 let after = table.board.captures_black + table.board.captures_white;
                 sfx(if after > before { "capture" } else { "place" });
+                stat("stones_lost", (after - before) as u64);
                 table.dirty = true;
             }
         }
@@ -413,6 +425,7 @@ fn net_apply(
         if ev.left {
             if table.over_wait.is_none() {
                 table.final_score = 700;
+                stat("wins_online", 1);
                 table.result = "OPPONENT LEFT\nYOU WIN".into();
                 table.over_wait = Some(Timer::from_seconds(2.0, TimerMode::Once));
                 let e = text(&mut commands, "OPPONENT LEFT - YOU WIN", 28.0, AMBER, Vec3::new(-60.0, 0.0, 30.0));
@@ -459,6 +472,7 @@ fn net_apply(
             "rs" => {
                 table.result = "OPPONENT RESIGNS\nYOU WIN".into();
                 table.final_score = 700;
+                stat("wins_online", 1);
                 table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             }
             "dead" if table.marking && wire.pos < SIZE * SIZE => {
@@ -506,6 +520,7 @@ fn settle(table: &mut Table, net: &NetMode) {
     // bonus capped so running up the score stays flavor, not strategy).
     // Hotseat pays a flat token — one person sat both chairs.
     table.final_score = if table.hotseat {
+        stat("hotseat_rounds", 1);
         100
     } else {
         let my_stone = match &net.0 {
@@ -513,6 +528,12 @@ fn settle(table: &mut Table, net: &NetMode) {
             None => Stone::Black, // vs the machine, the human holds Black
         };
         let i_won = (black > white) == (my_stone == Stone::Black);
+        match (&net.0, i_won) {
+            (Some(_), true) => stat("wins_online", 1),
+            (Some(_), false) => stat("losses_online", 1),
+            (None, true) => stat("machine_beaten", 1),
+            (None, false) => stat("beaten_by_machine", 1),
+        }
         if i_won {
             400 + margin_half.min(60) * 3
         } else {

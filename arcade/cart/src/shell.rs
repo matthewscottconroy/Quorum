@@ -67,6 +67,58 @@ pub fn take_editor_pending() -> bool {
     v
 }
 
+/// The round's service-record counters. Games sprinkle `stat("bombs_laid",
+/// 1)` wherever deeds happen; the shell flushes the whole map to the page
+/// at game over (editor test-plays never reach game over, so they never
+/// pollute anyone's record).
+static STATS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
+
+pub fn stat(name: &'static str, delta: u64) {
+    if delta == 0 {
+        return;
+    }
+    let mut s = STATS.lock().unwrap();
+    if let Some(entry) = s.iter_mut().find(|(n, _)| *n == name) {
+        entry.1 += delta;
+    } else if s.len() < 64 {
+        s.push((name, delta));
+    }
+}
+
+pub fn reset_stats() {
+    STATS.lock().unwrap().clear();
+}
+
+/// Serializes and clears the round's counters; None when nothing happened.
+fn take_stats() -> Option<String> {
+    let mut s = STATS.lock().unwrap();
+    if s.is_empty() {
+        return None;
+    }
+    let body: Vec<String> = s.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect();
+    s.clear();
+    Some(format!("{{{}}}", body.join(",")))
+}
+
+/// Reports the round's counters to the page (window.__arcadeStats), which
+/// POSTs them to the service-record ledger.
+fn report_stats() {
+    let Some(json) = take_stats() else { return };
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeStats".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &json.into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = json;
+    }
+}
+
 /// Hands a compiled level document to the page (window.__arcadeSaveLevel),
 /// which prompts for a name and POSTs it to the community shelf.
 pub fn save_level(json: &str) {
@@ -174,11 +226,12 @@ struct CabinetCard {
 impl Plugin for ShellPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(CabinetCard { title: self.title, blurb: self.blurb })
+            .init_resource::<RoundClock>()
             .add_systems(Startup, boot)
             .add_systems(OnEnter(Phase::Attract), attract_in)
             .add_systems(OnExit(Phase::Attract), shell_out)
             .add_systems(OnEnter(Phase::GameOver), (game_over_in, clear_pause))
-            .add_systems(OnEnter(Phase::Playing), clear_pause)
+            .add_systems(OnEnter(Phase::Playing), (clear_pause, round_begin))
             .add_systems(OnExit(Phase::GameOver), (shell_out, clear_game_entities))
             .add_systems(
                 Update,
@@ -306,9 +359,26 @@ fn attract_in(mut commands: Commands, card: Res<CabinetCard>) {
         .insert((ShellTag, Blink(Timer::from_seconds(0.6, TimerMode::Repeating))));
 }
 
-fn game_over_in(mut commands: Commands, score: Res<FinalScore>) {
+/// Wall-clock anchor for the round, feeding the seconds_played counter.
+#[derive(Resource, Default)]
+struct RoundClock(f32);
+
+fn round_begin(time: Res<Time>, mut clock: ResMut<RoundClock>) {
+    reset_stats();
+    clock.0 = time.elapsed_secs();
+}
+
+fn game_over_in(
+    mut commands: Commands,
+    score: Res<FinalScore>,
+    time: Res<Time>,
+    clock: Res<RoundClock>,
+) {
     sfx("over");
     report_score(score.0);
+    stat("seconds_played", (time.elapsed_secs() - clock.0).max(0.0) as u64);
+    stat("rounds_finished", 1);
+    report_stats();
     // Dim scrim so the final board stays faintly visible underneath.
     commands.spawn((
         Sprite {

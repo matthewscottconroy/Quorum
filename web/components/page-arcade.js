@@ -161,6 +161,67 @@ const SFX = {
 };
 window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
 
+// Service-record labels: every counter a cartridge reports, with the
+// display copy it deserves. Unknown keys fall back to SHOUTING_SNAKE_CASE.
+const STAT_LABELS = {
+  seconds_played: 'TIME ON THE FLOOR',
+  rounds_finished: 'ROUNDS FINISHED',
+  // Comet Buster
+  bullets_fired: 'BULLETS FIRED', rocks_smashed: 'ROCKS SMASHED',
+  saucers_downed: 'SAUCERS DOWNED', ships_lost: 'SHIPS LOST',
+  hyperspace_jumps: 'PANIC BUTTON PRESSES', hyperspace_misfires: 'EATEN BY OWN HYPERDRIVE',
+  waves_cleared: 'WAVES CLEARED', extra_ships: 'EXTRA SHIPS EARNED',
+  // Penny Pincher
+  coins_pocketed: 'COINS POCKETED', gold_bars: 'GOLD BARS SEIZED',
+  auditors_bitten: 'AUDITORS BITTEN', times_audited: 'AUDITS FAILED (CAUGHT)',
+  shifts_cleared: 'SHIFTS SURVIVED', tunnel_trips: 'TUNNEL COMMUTES',
+  extra_lives: 'EXTRA LIVES EARNED', about_faces: 'PANICKED U-TURNS',
+  // Brickfall
+  pieces_locked: 'BRICKS LAID', lines_cleared: 'LINES CLEARED',
+  quads: 'FOUR-LINERS', hard_drops: 'SLAMS', soft_cells: 'CELLS NUDGED DOWN',
+  holds_used: 'BRICKS POCKETED FOR LATER', top_outs: 'CEILINGS MET',
+  levels_reached: 'GEARS SHIFTED UP',
+  // Chess
+  moves_played: 'MOVES PLAYED', captures_made: 'PIECES TAKEN',
+  pieces_lost: 'PIECES DONATED', checks_given: 'CHECKS DELIVERED',
+  pawns_promoted: 'PAWNS PROMOTED', knight_promotions: 'PROMOTED TO KNIGHT (WHY?)',
+  machine_beaten: 'MACHINE HUMBLED', beaten_by_machine: 'HUMBLED BY MACHINE',
+  draws: 'PEACE TREATIES', wins_online: 'ONLINE WINS', losses_online: 'ONLINE LOSSES',
+  resignations: 'TABLES FLIPPED (RESIGNED)', hotseat_rounds: 'HOTSEAT ROUNDS',
+  fischer_deals: 'FISCHER DEALS TAKEN', puzzles_tested: 'PUZZLES TESTED',
+  // Go
+  stones_placed: 'STONES PLACED', stones_captured: 'PRISONERS TAKEN',
+  stones_lost: 'STONES SURRENDERED', passes: 'POLITE PASSES',
+  takebacks: 'TAKEBACKS BEGGED', dead_stones_marked: 'STONES DECLARED DEAD',
+  // Powder Keg
+  bombs_laid: 'KEGS PLANTED', kills: 'RIVALS RETIRED', deaths: 'TIMES RETIRED',
+  self_demolitions: 'SELF-DEMOLITIONS', crates_smashed: 'CRATES SMASHED',
+  perks_grabbed: 'UPGRADES LOOTED', kegs_kicked: 'KEGS PUNTED',
+  wall_crushes: 'FLATTENED BY MASONRY', steps_walked: 'TILES SPRINTED',
+  cellar_wins: 'CELLARS KEPT', settle_draws: 'MUTUAL STANDOFFS',
+  // Hexfection
+  clones: 'BLOBS SPLIT', jumps: 'BLOBS LEAPT', blobs_converted: 'NEIGHBOURS CONVERTED',
+  blobs_lost: 'BLOBS LOST TO THE CAUSE', times_consumed: 'TIMES CONSUMED ENTIRELY',
+  dish_wins: 'DISHES TAKEN', seats_skipped: 'RIVALS BOXED IN',
+  // INTERNS
+  interns_saved: 'INTERNS RESCUED', interns_lost: 'INTERNS LOST (REGRETTABLE)',
+  gravity_lessons: 'GRAVITY LESSONS TAUGHT', quits_ordered: 'LOUD QUITS ARRANGED',
+  nukes_ordered: 'MASS RESIGNATIONS FILED', climbers_hired: 'CLIMBERS CERTIFIED',
+  chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
+  bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
+  diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
+};
+function statLabel(key) {
+  return STAT_LABELS[key] ?? key.replace(/_/g, ' ').toUpperCase();
+}
+function statValue(key, v) {
+  if (key === 'seconds_played') {
+    const h = Math.floor(v / 3600), m = Math.floor((v % 3600) / 60);
+    return h > 0 ? `${h}H ${m}M` : `${m}M ${v % 60}S`;
+  }
+  return Number(v).toLocaleString();
+}
+
 // Cabinets steered by keys: these get the click-to-refocus overlay.
 const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns']);
 
@@ -233,12 +294,23 @@ class PageArcade extends HTMLElement {
             <div class="meta"><span></span><span class="hs" id="h-${esc(c.id)}"></span></div>
           </div>`).join('')}
         </div>
+        <div class="tsx-head" style="margin-top:1rem">
+          <h2 class="tsx-title" style="font-size:1.05rem">SERVICE RECORDS</h2>
+          <div class="tsx-sub" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">
+            PERSONNEL FILE OF
+            <select id="rec-player" style="background:#11121f;color:#7CFC9A;border:1px solid #232338;
+                    font-family:inherit;font-size:.8rem;padding:.2rem .4rem"></select>
+            <span style="color:#6d6d88">— every deed on this floor is a matter of public record.</span>
+          </div>
+          <div id="rec-cards" class="tsx-grid" style="margin-top:.8rem"></div>
+        </div>
       </div>`;
     this.querySelectorAll('.tsx-cab').forEach(el => {
       const open = () => { location.hash = `#/arcade?g=${el.dataset.g}`; };
       el.addEventListener('click', open);
       el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
+    this.wireRecords();
     try {
       const stats = await api('GET', '/arcade/stats') ?? [];
       for (const s of stats) {
@@ -358,6 +430,49 @@ class PageArcade extends HTMLElement {
     this.bootCartridge(cab);
   }
 
+  /** The service-record browser: pick any member, read their whole file. */
+  async wireRecords() {
+    const sel = this.querySelector('#rec-player');
+    const cards = this.querySelector('#rec-cards');
+    if (!sel || !cards) return;
+    let me = null;
+    try { me = (await api('GET', '/auth/me'))?.id ?? null; } catch { /* fine */ }
+    let players = [];
+    try { players = await api('GET', '/arcade/players') ?? []; } catch { /* fine */ }
+    if (!players.length) {
+      cards.innerHTML = '<div class="tsx-sub">NO RECORDS YET. THE FLOOR AWAITS.</div>';
+      sel.style.display = 'none';
+      return;
+    }
+    sel.innerHTML = players.map(p =>
+      `<option value="${esc(p.user_id)}" ${p.user_id === me ? 'selected' : ''}>${esc(p.name)} — ${p.total_plays} credit${p.total_plays === 1 ? '' : 's'}</option>`).join('');
+    const show = async () => {
+      cards.innerHTML = '<div class="tsx-sub">PULLING THE FILE…</div>';
+      try {
+        const rec = await api('GET', `/arcade/player-stats?user=${sel.value}`);
+        const games = rec?.games ?? {};
+        const order = CABINETS.map(c => c.id).filter(id => games[id]);
+        if (!order.length) {
+          cards.innerHTML = '<div class="tsx-sub">A CLEAN RECORD. SUSPICIOUSLY CLEAN.</div>';
+          return;
+        }
+        cards.innerHTML = order.map(id => {
+          const name = CABINETS.find(c => c.id === id)?.name ?? id.toUpperCase();
+          const rows = Object.entries(games[id])
+            .sort(([a], [b]) => statLabel(a).localeCompare(statLabel(b)))
+            .map(([k, v]) =>
+              `<div class="meta"><span>${esc(statLabel(k))}</span><span class="hs">${esc(statValue(k, v))}</span></div>`)
+            .join('');
+          return `<div class="tsx-cab" style="cursor:default"><h3>${esc(name)}</h3>${rows}</div>`;
+        }).join('');
+      } catch {
+        cards.innerHTML = '<div class="tsx-sub">THE FILING CABINET JAMMED. TRY AGAIN.</div>';
+      }
+    };
+    sel.addEventListener('change', show);
+    await show();
+  }
+
   async loadScores(game) {
     try {
       const [scores, stats] = await Promise.all([
@@ -383,6 +498,13 @@ class PageArcade extends HTMLElement {
     const note = this.querySelector('#boot-note');
     const coin = this.querySelector('#coin');
 
+    // Cartridge → page: the round's service-record counters on game over.
+    window.__arcadeStats = async json => {
+      try {
+        const stats = JSON.parse(json);
+        await api('POST', `/arcade/${cab.id}/stats-report`, { stats });
+      } catch { /* the record is decoration; the round still counts */ }
+    };
     // Cartridge → page: final score on game over.
     window.__arcadeScore = async score => {
       const n = Math.max(0, Math.floor(Number(score) || 0));

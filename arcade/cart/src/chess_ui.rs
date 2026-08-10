@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, AMBER, CYAN, DIM, GREEN, MAGENTA, WHITE};
 use crate::rng::Rng;
-use crate::shell::{net_send, sfx};
+use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -411,6 +411,7 @@ fn setup(
         match &spec {
             StartSpec::Fischer => {
                 let cells = fischer_cells(rng.next_u64());
+                stat("fischer_deals", 1);
                 (Board { cells, turn: Side::White, castle: [false; 4], ep: None, halfmove: 0 }, true)
             }
             StartSpec::Doc(doc) => match doc_to_board(doc) {
@@ -539,11 +540,30 @@ fn side_color(side: Side) -> Color {
 }
 
 /// Applies a move to the table: board, bookkeeping, feedback, end check.
-fn commit_move(table: &mut Table, m: Move) {
+/// `mine` marks moves made from THIS keyboard (hotseat counts both chairs —
+/// you did physically play them), feeding the service record.
+fn commit_move(table: &mut Table, m: Move, mine: bool) {
     let capture = table.board.cells[m.to].is_some()
         || (table.board.cells[m.from].map(|(_, p)| p) == Some(Piece::Pawn)
             && Some(m.to) == table.board.ep);
+    if mine {
+        stat("moves_played", 1);
+        if capture {
+            stat("captures_made", 1);
+        }
+        if m.promo.is_some() {
+            stat("pawns_promoted", 1);
+        }
+        if m.promo == Some(Piece::Knight) {
+            stat("knight_promotions", 1);
+        }
+    } else if capture {
+        stat("pieces_lost", 1);
+    }
     table.board.apply(m);
+    if mine && table.board.in_check(table.board.turn) {
+        stat("checks_given", 1);
+    }
     table.last_move = Some((m.from, m.to));
     table.hashes.push(table.board.position_hash());
     table.selected = None;
@@ -700,7 +720,7 @@ fn bot_move(
     }
     if search.idx >= search.moves.len() {
         if let Some(m) = search.best {
-            commit_move(&mut table, m);
+            commit_move(&mut table, m, false);
         }
         table.search = None;
     } else {
@@ -951,6 +971,10 @@ fn clicks(
                 // The credited account resigned (online / vs machine) or sat
                 // both chairs (hotseat): a token payout either way.
                 table.final_score = 100;
+                stat("resignations", 1);
+                if net.0.is_some() {
+                    stat("losses_online", 1);
+                }
                 table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             } else {
                 table.resign_arm = Some(Timer::from_seconds(2.0, TimerMode::Once));
@@ -1025,7 +1049,7 @@ fn clicks(
                     }
                 }
                 table.promo = None;
-                commit_move(&mut table, m);
+                commit_move(&mut table, m, true);
                 repaint(&mut commands, &table, &pieces, &highlights);
                 return;
             }
@@ -1055,7 +1079,7 @@ fn clicks(
                         net_send(&w);
                     }
                 }
-                commit_move(&mut table, candidates[0]);
+                commit_move(&mut table, candidates[0], true);
             }
             repaint(&mut commands, &table, &pieces, &highlights);
             return;
@@ -1089,6 +1113,7 @@ fn net_apply(
         if ev.left {
             table.result = "OPPONENT LEFT\nYOU WIN".into();
             table.final_score = 700;
+            stat("wins_online", 1);
             table.over_wait = Some(Timer::from_seconds(2.0, TimerMode::Once));
             let e = text(&mut commands, "OPPONENT LEFT - YOU WIN", 30.0, AMBER, Vec3::new(0.0, 0.0, 30.0));
             commands.entity(e).insert(GameTag);
@@ -1118,6 +1143,7 @@ fn net_apply(
             "rs" => {
                 table.result = "OPPONENT RESIGNS\nYOU WIN".into();
                 table.final_score = 700;
+                stat("wins_online", 1);
                 table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             }
             "mv" => {
@@ -1132,7 +1158,7 @@ fn net_apply(
                     None // an off-turn move from the peer is already a desync
                 };
                 match candidate {
-                    Some(m) => commit_move(&mut table, m),
+                    Some(m) => commit_move(&mut table, m, false),
                     None => {
                         // The peers disagree about the position. The sender
                         // has already committed; silently dropping the move
@@ -1164,6 +1190,9 @@ fn check_end(table: &mut Table) {
             let edge = table.board.material(winner).max(0) as u32;
             // Vs the machine, the purse is only for beating it.
             let human_won = if table.bot { winner != table.bot_side } else { true };
+            if table.bot {
+                stat(if human_won { "machine_beaten" } else { "beaten_by_machine" }, 1);
+            }
             table.final_score = if human_won { 1000 + edge * 20 } else { 150 };
             table.result = format!(
                 "CHECKMATE\n{} WINS",
@@ -1172,11 +1201,13 @@ fn check_end(table: &mut Table) {
             table.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
         }
         Status::Stalemate => {
+            stat("draws", 1);
             table.final_score = 500;
             table.result = "STALEMATE".into();
             table.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
         }
         Status::Draw(kind) => {
+            stat("draws", 1);
             table.final_score = 500;
             table.result = match kind {
                 DrawKind::FiftyMove => "DRAW\n50-MOVE RULE".into(),
@@ -1191,6 +1222,7 @@ fn check_end(table: &mut Table) {
     // purse is for rounds the credited account actually had to win.
     if table.hotseat && table.over_wait.is_some() {
         table.final_score = 100;
+        stat("hotseat_rounds", 1);
     }
 }
 
@@ -1211,6 +1243,7 @@ fn turn_clock_run(time: Res<Time>, net: Res<NetMode>, mut table: ResMut<Table>) 
             if slow == Side::White { "WHITE" } else { "BLACK" }
         );
         table.final_score = if seat_side(cfg.seat) == slow { 100 } else { 700 };
+        stat(if seat_side(cfg.seat) == slow { "losses_online" } else { "wins_online" }, 1);
         table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
         table.dirty = true;
     }
@@ -1241,6 +1274,9 @@ fn endgame(
                 .contains(if cfg.seat == 0 { "WHITE WINS" } else { "BLACK WINS" });
             if !i_won && table.final_score >= 1000 {
                 table.final_score = 100;
+                stat("losses_online", 1);
+            } else if i_won && table.final_score >= 1000 {
+                stat("wins_online", 1);
             }
         }
     }

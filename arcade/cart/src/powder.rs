@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, PLAYER_COLORS, AMBER, RED, WHITE};
 use crate::rng::Rng;
-use crate::shell::{net_send, sfx};
+use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -874,8 +874,11 @@ fn movement(
             continue;
         }
         let j = Arena::idx(target.x, target.y);
-        if arena.bombs[j].is_some() {
-            slide_bomb(&mut arena, &mut bomb_tfs, &occupied, j, f.want);
+        if arena.bombs[j].is_some()
+            && slide_bomb(&mut arena, &mut bomb_tfs, &occupied, j, f.want)
+            && f.human.is_some()
+        {
+            stat("kegs_kicked", 1);
         }
     }
     let dt = time.delta_secs();
@@ -907,8 +910,15 @@ fn movement(
                     f.alive = false;
                     sprite.color.set_alpha(0.15);
                     sfx("death");
+                    if f.human.is_some() {
+                        stat("deaths", 1);
+                        stat("wall_crushes", 1);
+                    }
                     crushed.push(f.seat);
                     break;
+                }
+                if f.human.is_some() {
+                    stat("steps_walked", 1);
                 }
                 let turn_ok = f.want != IVec2::ZERO && arena.open(f.tile.x + f.want.x, f.tile.y + f.want.y);
                 if turn_ok {
@@ -955,6 +965,9 @@ fn bombs_and_flames(
         f.wants_bomb = false;
         let i = Arena::idx(f.tile.x, f.tile.y);
         if f.live_bombs < f.max_bombs && arena.bombs[i].is_none() && arena.tiles[i] == Tile::Empty {
+            if f.human.is_some() {
+                stat("bombs_laid", 1);
+            }
             let p = world(f.tile.x, f.tile.y);
             let e = commands
                 .spawn((
@@ -970,6 +983,9 @@ fn bombs_and_flames(
         }
     }
 
+    // Which seats belong to hands on THIS machine (for the service record).
+    let human_seats: Vec<usize> =
+        fighters.iter().filter(|(f, _)| f.human.is_some()).map(|(f, _)| f.seat).collect();
     // Tick fuses; collect exploding cells. Chained kegs blame the player
     // whose keg STARTED the chain — the classic credit rule.
     let mut exploding: Vec<(usize, Option<usize>)> = Vec::new(); // cell, initiator
@@ -1033,6 +1049,9 @@ fn bombs_and_flames(
             let (c, r) = ((j as i32) % COLS, (j as i32) / COLS);
             if was_crate {
                 arena.tiles[j] = Tile::Empty;
+                if human_seats.contains(&owner) {
+                    stat("crates_smashed", 1);
+                }
                 // A third of crates hide an upgrade.
                 if rng.chance(0.34) {
                     let perk = match rng.range(7) {
@@ -1104,6 +1123,12 @@ fn bombs_and_flames(
             f.alive = false;
             sprite.color.set_alpha(0.15);
             sfx("death");
+            if f.human.is_some() {
+                stat("deaths", 1);
+                if owner == f.seat {
+                    stat("self_demolitions", 1);
+                }
+            }
             burned.push(f.seat);
             if owner != f.seat && owner != usize::MAX {
                 kill_credit.push((f.seat, owner));
@@ -1117,6 +1142,9 @@ fn bombs_and_flames(
         for (mut f, _) in &mut fighters {
             if f.seat == owner {
                 f.kills += 1;
+                if f.human.is_some() {
+                    stat("kills", 1);
+                }
             }
         }
     }
@@ -1138,6 +1166,9 @@ fn pickups(
         let i = Arena::idx(f.tile.x, f.tile.y);
         if let Some((perk, e)) = arena.perks[i].take() {
             commands.entity(e).despawn();
+            if f.human.is_some() {
+                stat("perks_grabbed", 1);
+            }
             match perk {
                 Perk::Range => f.range = (f.range + 1).min(7),
                 Perk::Bombs => f.max_bombs = (f.max_bombs + 1).min(6),
@@ -1283,6 +1314,11 @@ fn finish(
             if let Ok(msg) = serde_json::to_string(&end) {
                 net_send(&msg);
             }
+        }
+        match alive.first() {
+            Some(winner) if winner.human.is_some() => stat("cellar_wins", 1),
+            None => stat("settle_draws", 1),
+            _ => {}
         }
         let banner = match alive.first() {
             Some(w) => format!("SEAT {} TAKES THE CELLAR", w.seat + 1),
@@ -1477,6 +1513,7 @@ fn guest_input(
         // Instant local feedback; the keg itself appears when the snapshot
         // echoes back. Sound now, sight in ~100ms — feels responsive.
         sfx("place");
+        stat("bombs_laid", 1);
     }
     if want != *last || bomb {
         *last = want;
@@ -1546,6 +1583,10 @@ fn guest_apply(
                         .map(|(_, k)| *k)
                         .unwrap_or(0);
                     let alive = end.alive.iter().any(|&s| s as usize == my_seat);
+                    if alive && end.alive.len() == 1 {
+                        stat("cellar_wins", 1);
+                    }
+                    stat("kills", kills as u64);
                     // Same 2s winner banner the host shows, then the score
                     // screen — no more jump-cut past the ending.
                     arena.finished = true;
@@ -1607,6 +1648,9 @@ fn guest_apply(
             if was_alive && !f.alive {
                 sprite.color.set_alpha(0.15);
                 sfx("death");
+                if f.seat == my_seat {
+                    stat("deaths", 1);
+                }
             }
         }
     }

@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, AMBER, CYAN, GREEN, MAGENTA, RED, WHITE};
-use crate::shell::{net_send, sfx};
+use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
@@ -449,6 +449,8 @@ struct Game {
     over_timer: Timer,
     result: String,
     hover: [Option<u32>; 2], // walker ids under each player's cursor
+    /// Fall/floor deaths per player, for the service record only.
+    splats: [u32; 2],
     // Networking
     guest_ready: bool,
     net_flush: Timer,
@@ -699,6 +701,7 @@ fn setup(
         p2cursor: Vec2::new(460.0, 50.0),
         nuke_armed: false,
         over: false,
+        splats: [0; 2],
         over_timer: Timer::from_seconds(3.0, TimerMode::Once),
         result: String::new(),
         hover: [None; 2],
@@ -1012,6 +1015,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                 if grounded {
                     if dist > MAX_FALL && !chute {
                         w.job = Job::Splat { ticks: 20 };
+                        game.splats[w.owner as usize] += 1;
                         sfx("death");
                     } else {
                         w.job = Job::Walk;
@@ -1170,6 +1174,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
         if w.y >= GH - 1 {
             if !matches!(w.job, Job::Splat { .. }) {
                 sfx("death");
+                game.splats[w.owner as usize] += 1;
             }
             w.job = Job::Splat { ticks: 1 };
         }
@@ -1243,7 +1248,7 @@ fn candidate(game: &Game, player: usize, gx: i32, gy: i32) -> Option<usize> {
 /// Assigns `skill` near (gx, gy). Active jobs are REASSIGNABLE (build →
 /// dig, bash → supervise, …) the way the genre expects; only airborne,
 /// exiting, and downed walkers refuse.
-fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize) -> bool {
+fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize, mine: bool) -> bool {
     if game.skills[player][skill] == 0 {
         return false;
     }
@@ -1287,6 +1292,20 @@ fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize) ->
     if applied {
         game.skills[player][skill] -= 1;
         sfx("place");
+        if mine {
+            stat(
+                match skill {
+                    0 => "climbers_hired",
+                    1 => "chutes_issued",
+                    2 => "supervisors_promoted",
+                    3 => "bridges_ordered",
+                    4 => "bashers_unleashed",
+                    5 => "diggers_deployed",
+                    _ => "quits_ordered",
+                },
+                1,
+            );
+        }
     }
     applied
 }
@@ -1408,9 +1427,11 @@ fn input_p1(
             if guest {
                 if let Ok(msg) = serde_json::to_string(&WireNuke { t: "nk".into() }) {
                     net_send(&msg);
+                    stat("nukes_ordered", 1);
                 }
             } else {
                 nuke_own(&mut game, me.min(1) as u8);
+                stat("nukes_ordered", 1);
             }
         } else {
             game.nuke_armed = true;
@@ -1448,10 +1469,22 @@ fn input_p1(
     if is_guest(&net) {
         if let Ok(msg) = serde_json::to_string(&WireAssign { t: "as".into(), x: gx, y: gy, skill }) {
             net_send(&msg);
+            stat(
+                match skill {
+                    0 => "climbers_hired",
+                    1 => "chutes_issued",
+                    2 => "supervisors_promoted",
+                    3 => "bridges_ordered",
+                    4 => "bashers_unleashed",
+                    5 => "diggers_deployed",
+                    _ => "quits_ordered",
+                },
+                1,
+            );
         }
         return;
     }
-    try_assign(&mut game, me, gx, gy, skill);
+    try_assign(&mut game, me, gx, gy, skill, true);
 }
 
 fn input_p2(
@@ -1495,7 +1528,7 @@ fn input_p2(
     game.hover[1] = candidate(&game, 1, gx, gy).map(|i| game.walkers[i].id);
     if keys.just_pressed(KeyCode::Enter) {
         let skill = game.selected[1];
-        try_assign(&mut game, 1, gx, gy, skill);
+        try_assign(&mut game, 1, gx, gy, skill, true);
     }
 }
 
@@ -1596,7 +1629,7 @@ fn net_apply(
             Some("as") if host => {
                 if let Ok(a) = serde_json::from_str::<WireAssign>(&ev.data) {
                     if a.skill < 7 {
-                        try_assign(&mut game, ev.seat as usize, a.x, a.y, a.skill);
+                        try_assign(&mut game, ev.seat as usize, a.x, a.y, a.skill, false);
                     }
                 }
             }
@@ -2089,14 +2122,31 @@ fn endgame(
         Some(cfg) => cfg.seat as usize,
         None => 0,
     };
+    // Service record: local rounds credit every locally-controlled stream
+    // (one account, however many hands); online rounds credit your seat.
+    let owners: &[usize] = if net.0.is_some() {
+        &[me]
+    } else if game.players == 2 {
+        &[0, 1]
+    } else {
+        &[0]
+    };
+    for &o in owners {
+        let o = o.min(1);
+        stat("interns_saved", game.saved[o] as u64);
+        stat("interns_lost", game.dead[o] as u64);
+        stat("gravity_lessons", game.splats[o] as u64);
+    }
     let mine = game.saved[me.min(1)];
     let mut score = mine * 100;
     if game.players == 1 {
         if mine >= game.doc.need {
             score += 500 + (game.time_left.max(0) as u32 / 30) * 2;
+            stat("floor_wins", 1);
         }
     } else if winner_2p(&game) == Some(me.min(1)) {
         score += 300;
+        stat("floor_wins", 1);
     }
     final_score.0 = score;
     next.set(Phase::GameOver);
@@ -2107,6 +2157,7 @@ fn reset_round(game: &mut Game) {
     game.spawned = [0; 2];
     game.saved = [0; 2];
     game.dead = [0; 2];
+    game.splats = [0; 2];
     game.over = false;
     game.nuke_armed = false;
     game.hover = [None; 2];

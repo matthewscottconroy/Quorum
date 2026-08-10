@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, DIM, PLAYER_COLORS, WHITE};
 use crate::rng::Rng;
-use crate::shell::{net_send, sfx};
+use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 /// Relayed move. Bots have no seat online: the ACTING host (lowest still-
@@ -346,6 +346,7 @@ fn end_check_for(dish: &mut Dish, my_seat: u8, commands: &mut Commands, fx: &Hex
             let turn = dish.board.turn;
             if dish.board.moves_for(turn).is_empty() {
                 dish.skip_flash.push((turn, Timer::from_seconds(1.4, TimerMode::Once)));
+                stat("seats_skipped", 1);
                 dish.board.skip();
             } else {
                 break;
@@ -362,6 +363,7 @@ fn end_check_for(dish: &mut Dish, my_seat: u8, commands: &mut Commands, fx: &Hex
     let mut score = my_count * 10 + ((total - my_rank) as u32) * 25;
     if my_rank == 1 {
         score += 200;
+        stat("dish_wins", 1);
     }
     dish.final_score = score;
     dish.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
@@ -449,7 +451,10 @@ fn human_clicks(
             .into_iter()
             .any(|m| m.from == from && m.to == cell);
         if legal {
+            let was_jump = dish.board.coords[from].dist(dish.board.coords[cell]) == 2;
             let converted = dish.board.apply(HexMove { from, to: cell });
+            stat(if was_jump { "jumps" } else { "clones" }, 1);
+            stat("blobs_converted", converted.len() as u64);
             sfx(if converted.is_empty() { "place" } else { "capture" });
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
@@ -494,7 +499,13 @@ fn bot_turns(
     let mv = dish.board.bot_move_seeded(seat, rng.next_u64());
     match mv {
         Some(m) => {
+            let pre = dish.board.cells.clone();
             let converted = dish.board.apply(m);
+            let lost = converted
+                .iter()
+                .filter(|&&i| pre[i].map(|o| is_my_seat(&dish, &net, o)).unwrap_or(false))
+                .count();
+            stat("blobs_lost", lost as u64);
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
                 if let Ok(w) = serde_json::to_string(&WireHexMove {
@@ -548,15 +559,28 @@ fn afk_watch(time: Res<Time>, mut net: ResMut<NetMode>, mut dish: ResMut<Dish>) 
     }
 }
 
+/// Does this seat belong to THIS machine's account? Local rounds own every
+/// human chair (one signed-in account, however many hands); online you own
+/// exactly your seat.
+fn is_my_seat(dish: &Dish, net: &NetMode, seat: u8) -> bool {
+    match &net.0 {
+        Some(cfg) => seat == cfg.seat,
+        None => seat < dish.humans.max(1),
+    }
+}
+
 /// Announces every seat whose blob count just hit zero — the game's biggest
 /// event used to pass in silence.
-fn eliminations(mut commands: Commands, mut dish: ResMut<Dish>) {
+fn eliminations(mut commands: Commands, net: Res<NetMode>, mut dish: ResMut<Dish>) {
     for p in 0..dish.board.players {
         let alive = dish.board.count(p) > 0;
         let was = dish.alive_prev[p as usize];
         dish.alive_prev[p as usize] = alive;
         if was && !alive {
             sfx("death");
+            if is_my_seat(&dish, &net, p) {
+                stat("times_consumed", 1);
+            }
             let e = text(
                 &mut commands,
                 &format!("SEAT {} CONSUMED", p + 1),
@@ -625,7 +649,11 @@ fn net_apply(
             .into_iter()
             .any(|m| m.from == wire.from && m.to == wire.to);
         if legal {
+            let pre = dish.board.cells.clone();
+            let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
             let converted = dish.board.apply(HexMove { from: wire.from, to: wire.to });
+            let lost = converted.iter().filter(|&&i| pre[i] == Some(my_seat)).count();
+            stat("blobs_lost", lost as u64);
             sfx(if converted.is_empty() { "place" } else { "capture" });
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
