@@ -208,6 +208,25 @@ func main() {
 		}
 		return mfaPolVal
 	})
+	// Arcade switch (Settings → arcade_visible): cached 30s like the 2FA
+	// policy above, so the gate costs no DB hit per request. Unset = on.
+	var arcadeMu sync.Mutex
+	var arcadeVal string
+	var arcadeAt time.Time
+	arcadeGate := handler.ArcadeGate(func() bool {
+		arcadeMu.Lock()
+		defer arcadeMu.Unlock()
+		if time.Since(arcadeAt) < 30*time.Second {
+			return arcadeVal != "off"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if all, err := orgSettingsRepo.All(ctx); err == nil {
+			arcadeVal = all["arcade_visible"]
+			arcadeAt = time.Now()
+		}
+		return arcadeVal != "off"
+	})
 	continuityRepo := repo.NewContinuityRepo(pool)
 	continuityH := handler.NewContinuityHandler(continuityRepo, handler.PackConfigSources{
 		Settings: orgSettingsRepo, GL: glRepo, Funds: fundsRepo,
@@ -442,7 +461,7 @@ func main() {
 		// Networked arcade rooms. Browsers cannot set an Authorization header
 		// on a WebSocket, so the socket authenticates via its FIRST message
 		// (JWT, member+) — the route sits outside mw.Auth by necessity.
-		r.Get("/arcade/ws", arcadeHub.Serve)
+		r.With(arcadeGate).Get("/arcade/ws", arcadeHub.Serve)
 
 		r.Group(func(r chi.Router) {
 			r.Use(mw.Auth)
@@ -506,14 +525,18 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/payment-reports/{id}/dismiss", payReportsH.Dismiss)
 			r.With(mw.RequireRole("officer")).Get("/me/report-subscriptions", reportSubsH.List)
 			r.With(mw.RequireRole("officer")).Put("/me/report-subscriptions", reportSubsH.Set)
-			r.With(mw.RequireRole("member")).Get("/arcade/stats", arcadeH.Stats)
-			r.With(mw.RequireRole("member")).Get("/arcade/{game}/scores", arcadeH.TopScores)
-			r.With(mw.RequireRole("member")).Post("/arcade/{game}/credit", arcadeH.InsertCredit)
-			r.With(mw.RequireRole("member")).Post("/arcade/{game}/score", arcadeH.SubmitScore)
-			r.With(mw.RequireRole("member")).Get("/arcade/{game}/levels", arcadeH.ListLevels)
-			r.With(mw.RequireRole("member")).Post("/arcade/{game}/levels", arcadeH.SaveLevel)
-			r.With(mw.RequireRole("member")).Get("/arcade/levels/{id}", arcadeH.GetLevel)
-			r.With(mw.RequireRole("member")).Delete("/arcade/levels/{id}", arcadeH.DeleteLevel)
+			// All arcade routes sit behind the admin's on/off switch.
+			r.Group(func(r chi.Router) {
+				r.Use(arcadeGate)
+				r.With(mw.RequireRole("member")).Get("/arcade/stats", arcadeH.Stats)
+				r.With(mw.RequireRole("member")).Get("/arcade/{game}/scores", arcadeH.TopScores)
+				r.With(mw.RequireRole("member")).Post("/arcade/{game}/credit", arcadeH.InsertCredit)
+				r.With(mw.RequireRole("member")).Post("/arcade/{game}/score", arcadeH.SubmitScore)
+				r.With(mw.RequireRole("member")).Get("/arcade/{game}/levels", arcadeH.ListLevels)
+				r.With(mw.RequireRole("member")).Post("/arcade/{game}/levels", arcadeH.SaveLevel)
+				r.With(mw.RequireRole("member")).Get("/arcade/levels/{id}", arcadeH.GetLevel)
+				r.With(mw.RequireRole("member")).Delete("/arcade/levels/{id}", arcadeH.DeleteLevel)
+			})
 			r.With(mw.RequireRole("member")).Get("/office-terms", orgFeaturesH.ListOfficeTerms)
 			r.With(mw.RequireRole("admin")).Post("/office-terms", orgFeaturesH.AddOfficeTerm)
 			r.With(mw.RequireRole("admin")).Post("/office-terms/{id}/end", orgFeaturesH.EndOfficeTerm)

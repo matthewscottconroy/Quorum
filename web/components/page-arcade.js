@@ -1,6 +1,6 @@
 import { api, getToken } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc } from '../utils.js';
+import { esc, orgFlag } from '../utils.js';
 
 /**
  * The Top Secret arcade. Seven cabinets, all original builds compiled from
@@ -144,9 +144,20 @@ class PageArcade extends HTMLElement {
   connectedCallback() {
     this._wasmStarted = false;
     this._ws = null;
+    // Admin switch (Settings → arcade_visible). The API is gated server-side
+    // too; this handles anyone arriving via a bookmark once the nav is gone.
+    if (orgFlag('arcade_visible') === 'off') { this.renderDarkFloor(); return; }
     const g = gameFromHash();
     const cab = CABINETS.find(c => c.id === g);
     if (cab) this.renderCabinet(cab); else this.renderFloor();
+  }
+
+  renderDarkFloor() {
+    this.innerHTML = `
+      <div style="font-family:ui-monospace,'Cascadia Mono','Fira Mono',monospace;background:#0a0a12;border:1px solid #232338;border-radius:8px;padding:2.2rem;text-align:center;color:#8f8fa8">
+        <div style="font-size:1.2rem;letter-spacing:.35em;color:#5a5a72">LIGHTS OUT</div>
+        <p style="font-size:.85rem;margin-top:.8rem">The basement is locked. An administrator has switched the arcade off.</p>
+      </div>`;
   }
 
   disconnectedCallback() {

@@ -36,6 +36,22 @@ func NewArcadeHandler(r arcadeRepo) *ArcadeHandler {
 	return &ArcadeHandler{repo: r}
 }
 
+// ArcadeGate returns middleware that turns every arcade route away while an
+// admin has switched the arcade off (Settings → arcade_visible). visible()
+// runs on every request, so callers pass something cached, not a DB hit.
+// 404 (not 403) on purpose: an off switch means the room does not exist.
+func ArcadeGate(visible func() bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !visible() {
+				writeError(w, http.StatusNotFound, "the arcade is switched off", "not_found")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 var validArcadeGame = func() map[string]bool {
 	m := make(map[string]bool, len(repo.ArcadeGames))
 	for _, g := range repo.ArcadeGames {

@@ -359,6 +359,21 @@ export function vocab(label) {
   return (typeof v === 'string' && v.trim()) ? v.trim() : label;
 }
 
+// The member-visible org settings, stashed at boot alongside the vocabulary
+// (same GET /settings/org). Client-side hints only — anything that matters
+// is enforced server-side (e.g. arcade_visible gates the arcade API too).
+let ORG_FLAGS = {};
+
+/** Installs the member-visible org settings map. */
+export function setOrgFlags(map) {
+  ORG_FLAGS = (map && typeof map === 'object') ? map : {};
+}
+
+/** Returns one org setting's raw value (undefined when unset/not loaded). */
+export function orgFlag(key) {
+  return ORG_FLAGS[key];
+}
+
 /* ── Payment providers & currencies (shared across money forms) ───────────── */
 
 /** Payment/settlement methods. The value routes the GL cash account via the

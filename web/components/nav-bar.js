@@ -1,5 +1,5 @@
 import { getUser, clearAuth, api, navigate, hasRole } from '../app.js';
-import { esc, vocab } from '../utils.js';
+import { esc, vocab, orgFlag } from '../utils.js';
 import './notification-bell.js';
 
 // `minRole` is the lowest ladder role that may see each item.
@@ -88,6 +88,9 @@ class NavBar extends HTMLElement {
       </li>`;
 
     const groupsHTML = GROUPS.map(g => {
+      // Admins can switch the arcade off (Settings → arcade_visible); the
+      // server refuses its API too, this just removes the door.
+      if (g.key === 'topsecret' && orgFlag('arcade_visible') === 'off') return '';
       const visible = g.links.filter(l => hasRole(l.minRole));
       if (!visible.length) return '';
       // A group containing the current page never renders collapsed — the

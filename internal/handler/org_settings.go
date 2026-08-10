@@ -61,6 +61,10 @@ var orgSettingKeys = map[string]orgSetting{
 	// Auto-lapse: members with an invoice overdue by more than this many days
 	// are moved to inactive by the nightly job (0 = off). A renewal policy knob.
 	"lapse_after_days": {validate: intRange(0, 3650)},
+	// The Top Secret arcade switch. Unset/on = visible (the shipped default);
+	// off hides the sidebar section AND disables the arcade API + websocket.
+	// Member-visible so the client nav knows what to draw.
+	"arcade_visible": {validate: func(v string) bool { return v == "on" || v == "off" }},
 	// Legal hold: when 'on', the nightly job stops pruning the audit log
 	// regardless of the retention window, preserving everything for an
 	// investigation or litigation hold. Admin-only.

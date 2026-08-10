@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -153,6 +154,29 @@ func TestArcadeStats_AllCabinets(t *testing.T) {
 	h.Stats(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("status: got %d", rr.Code)
+	}
+}
+
+func TestArcadeGate_SwitchesTheFloorOff(t *testing.T) {
+	reached := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(200)
+	})
+	on := true
+	gate := ArcadeGate(func() bool { return on })(inner)
+
+	rr := httptest.NewRecorder()
+	gate.ServeHTTP(rr, httptest.NewRequest("GET", "/arcade/stats", nil))
+	if rr.Code != 200 || !reached {
+		t.Errorf("visible: got %d (reached=%v), want pass-through", rr.Code, reached)
+	}
+
+	on, reached = false, false
+	rr = httptest.NewRecorder()
+	gate.ServeHTTP(rr, httptest.NewRequest("GET", "/arcade/stats", nil))
+	if rr.Code != 404 || reached {
+		t.Errorf("switched off: got %d (reached=%v), want 404 without reaching the handler", rr.Code, reached)
 	}
 }
 

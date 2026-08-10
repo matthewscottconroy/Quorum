@@ -137,6 +137,9 @@ class PageSettings extends HTMLElement {
             <div class="form-group"><label for="og-monthly">Monthly financial summary email (optional)</label>
               <input id="og-monthly" placeholder="board@example.com"></div>
           </div>
+          <div class="form-group" style="max-width:280px"><label for="og-arcade">Top Secret arcade</label>
+            <select id="og-arcade"><option value="on">On — members see the arcade</option><option value="off">Off — hidden and disabled</option></select>
+            <div style="font-size:.72rem;color:var(--color-text-muted)">When off, the sidebar section disappears and the arcade API and game rooms refuse (server-enforced, takes effect within ~30s). Plays, scores and saved levels are kept.</div></div>
           <div class="form-group" style="max-width:240px"><label for="og-hold">Audit legal hold</label>
             <select id="og-hold"><option value="off">Off — prune per retention</option><option value="on">On — preserve everything</option></select>
             <div style="font-size:.72rem;color:var(--color-text-muted)">When on, the nightly job never prunes the audit log (litigation/investigation hold).</div></div>
@@ -783,7 +786,7 @@ customElements.define('page-settings', PageSettings);
       if (!this.querySelector('#og-save')) return; // non-admin: card absent
       const { api } = await import('../app.js');
       const { toast } = await import('./toast-notification.js');
-      const { esc } = await import('../utils.js');
+      const { esc, setOrgFlags } = await import('../utils.js');
       try {
         const st = await api('GET', '/settings/org');
         const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
@@ -793,11 +796,12 @@ customElements.define('page-settings', PageSettings);
         set('#og-paylink', st.payment_link_template); set('#og-vocab', st.vocab_overrides);
         set('#og-lapse', st.lapse_after_days); set('#og-monthly', st.monthly_report_email);
         if (this.querySelector('#og-hold')) this.querySelector('#og-hold').value = st.audit_legal_hold || 'off';
+        if (this.querySelector('#og-arcade')) this.querySelector('#og-arcade').value = st.arcade_visible || 'on';
         set('#og-contacts', st.continuity_contacts);
       } catch { /* defaults are fine */ }
       this.querySelector('#og-save')?.addEventListener('click', async () => {
         try {
-          await api('PUT', '/settings/org', {
+          const saved = await api('PUT', '/settings/org', {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
             require_2fa: this.querySelector('#og-2fa').value,
             how_to_pay: this.querySelector('#og-pay').value,
@@ -806,10 +810,16 @@ customElements.define('page-settings', PageSettings);
             lapse_after_days: String(this.querySelector('#og-lapse').value || '0'),
             monthly_report_email: this.querySelector('#og-monthly').value,
             audit_legal_hold: this.querySelector('#og-hold').value,
+            arcade_visible: this.querySelector('#og-arcade').value,
             infrastructure_facts: this.querySelector('#og-infra').value,
             continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
             continuity_contacts: this.querySelector('#og-contacts').value,
           });
+          // The PUT echoes the fresh settings map; feed it to the shell so
+          // flag-driven chrome (the Top Secret nav section) updates now, not
+          // at the next full page load.
+          setOrgFlags(saved);
+          document.dispatchEvent(new CustomEvent('route-changed', { detail: location.hash }));
           toast('Org settings saved', 'success');
         } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
       });

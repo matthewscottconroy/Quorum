@@ -9,7 +9,7 @@
  * every fetch with `credentials: 'same-origin'`.
  */
 
-import { setVocabOverrides, applyTheme } from './utils.js';
+import { setVocabOverrides, setOrgFlags, applyTheme } from './utils.js';
 
 // Apply the saved theme before first paint so there's no light-mode flash.
 applyTheme();
@@ -446,17 +446,20 @@ import './components/toast-notification.js';
 import './components/page-not-found.js';
 
 // ─── Boot ────────────────────────────────────────────────────────────────────
-// Loads org vocabulary overrides (Settings → vocab_overrides JSON) so pages
-// can render the org's own terms. Best-effort: failures keep English labels.
+// Loads the member-visible org settings: vocabulary overrides (so pages can
+// render the org's own terms) plus flags the shell reads, like the arcade
+// switch. Best-effort: failures keep English labels and default visibility.
 async function loadVocab() {
   if (!isAuthenticated()) return;
   try {
     const st = await api('GET', '/settings/org');
+    setOrgFlags(st);
     if (st?.vocab_overrides) {
-      setVocabOverrides(JSON.parse(st.vocab_overrides));
-      // Nav/pages rendered before this resolved; nudge a re-render so overrides show.
-      document.dispatchEvent(new CustomEvent('route-changed', { detail: location.hash }));
+      try { setVocabOverrides(JSON.parse(st.vocab_overrides)); } catch { /* bad JSON: keep defaults */ }
     }
+    // Nav/pages rendered before this resolved; nudge a re-render so overrides
+    // and visibility flags show.
+    document.dispatchEvent(new CustomEvent('route-changed', { detail: location.hash }));
   } catch { /* defaults are fine */ }
 }
 document.addEventListener('auth-changed', () => { loadVocab(); });
