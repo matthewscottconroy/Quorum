@@ -7,40 +7,63 @@
 use crate::chess::{file, rank, Board, Color, Move, Piece};
 
 const MATE: i32 = 30_000;
-/// Full-width search depth. Two plies plus quiescence keeps a move under
-/// ~50ms even in wasm, and covers every immediate tactic.
-const DEPTH: u32 = 2;
+/// Full-width search depth. Three plies plus quiescence sees the quiet move
+/// behind a fork or skewer — the class of tactic depth two walked into.
+/// Cabinets spread the root loop across frames (see `root_moves` /
+/// `score_root_move`), so the extra depth never freezes a frame.
+const DEPTH: u32 = 3;
 const QUIESCE_DEPTH: u32 = 4;
+
+/// The root move list, strongest-looking first. Score each entry with
+/// [`score_root_move`] — incrementally across frames if you like — and keep
+/// the max; that is exactly what [`best_move_with_history`] does in one call.
+pub fn root_moves(board: &Board) -> Vec<Move> {
+    let mut moves = board.legal_moves();
+    order(board, &mut moves);
+    moves
+}
+
+/// Exact score of one root move (full window: a fail-hard cutoff would
+/// collapse every refuted sibling onto the same bound, and jitter would then
+/// happily promote one). `seen` is the game's position-hash history: a move
+/// that recreates a twice-seen position scores as the draw it is, so a
+/// winning machine sidesteps repetition instead of shuffling into it — and a
+/// losing one correctly grabs the escape hatch.
+pub fn score_root_move(board: &Board, m: Move, seen: &[u64]) -> i32 {
+    let mut next = board.clone();
+    next.apply(m);
+    let hash = next.position_hash();
+    if seen.iter().filter(|&&h| h == hash).count() >= 2 {
+        return 0;
+    }
+    -negamax(&next, DEPTH - 1, -MATE * 2, MATE * 2, 1)
+}
 
 /// Picks a move for the side to move; `seed` adds a small deterministic
 /// jitter so the machine doesn't play the identical game every credit.
 pub fn best_move(board: &Board, seed: u64) -> Option<Move> {
-    let mut moves = board.legal_moves();
-    if moves.is_empty() {
-        return None;
-    }
-    order(board, &mut moves);
-    let mut best = moves[0];
-    let mut best_score = -MATE * 2;
-    for (i, &m) in moves.iter().enumerate() {
-        let mut next = board.clone();
-        next.apply(m);
-        // Full window per root move: a fail-hard cutoff would collapse every
-        // refuted sibling onto the same bound, and the jitter below would
-        // then happily promote one of them. Root branching is small; pay for
-        // exact scores.
-        let mut score = -negamax(&next, DEPTH - 1, -MATE * 2, MATE * 2, 1);
-        // Deterministic per-move jitter (±4 centipawns) for variety.
-        score += jitter(seed, i);
-        if score > best_score {
-            best_score = score;
-            best = m;
-        }
-    }
-    Some(best)
+    best_move_with_history(board, seed, &[])
 }
 
-fn jitter(seed: u64, i: usize) -> i32 {
+/// [`best_move`], with repetition awareness from the hash history.
+pub fn best_move_with_history(board: &Board, seed: u64, seen: &[u64]) -> Option<Move> {
+    let moves = root_moves(board);
+    let mut best: Option<Move> = None;
+    let mut best_score = -MATE * 2;
+    for (i, &m) in moves.iter().enumerate() {
+        // Deterministic per-move jitter (±4 centipawns) for variety.
+        let score = score_root_move(board, m, seen) + jitter(seed, i);
+        if best.is_none() || score > best_score {
+            best_score = score;
+            best = Some(m);
+        }
+    }
+    best
+}
+
+/// Deterministic ±4-centipawn noise per (seed, root index) — public so a
+/// cabinet running the root loop incrementally applies the same variety.
+pub fn jitter(seed: u64, i: usize) -> i32 {
     let mut x = seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 33;
     x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);

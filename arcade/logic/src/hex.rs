@@ -31,6 +31,10 @@ pub struct HexBoard {
     pub turn: u8,
     /// Players eliminated or otherwise out (no blobs). Once true, stays true.
     pub out: Vec<bool>,
+    /// Consecutive moves that neither converted nor grew anything (jump
+    /// shuffles and skips). A futility backstop: sealed-pocket endgames can
+    /// otherwise shuffle forever, since jumps never fill space.
+    pub quiet: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,12 +44,14 @@ pub struct HexMove {
 }
 
 impl HexBoard {
-    /// Board radius scales with the head count so a dozen players fit.
+    /// Board radius scales with the head count so a dozen players fit AND
+    /// nobody starts inside a neighbor's turn-one kill range: starting blobs
+    /// need pairwise hex distance ≥ 4 (land adjacent + jump reach = 3).
     pub fn radius_for(players: u8) -> i32 {
-        if players <= 6 {
-            4 // 61 cells
-        } else {
-            5 // 91 cells
+        match players {
+            0..=6 => 4, // 61 cells, rim 24: gaps of 4+
+            7 => 5,     // 91 cells, rim 30: gaps of 4+
+            _ => 6,     // 127 cells, rim 36
         }
     }
 
@@ -65,6 +71,7 @@ impl HexBoard {
             players,
             turn: 0,
             out: vec![false; players as usize],
+            quiet: 0,
         };
         // Starting blobs spaced around the rim, one per player.
         let rim: Vec<usize> = (0..board.coords.len())
@@ -78,9 +85,21 @@ impl HexBoard {
             pa.partial_cmp(&pb).unwrap()
         });
         let n = rim_sorted.len();
-        for p in 0..players {
-            let idx = rim_sorted[(p as usize * n) / players as usize];
-            board.cells[idx] = Some(p);
+        if players >= 10 {
+            // Ten seats and up pack the rim tighter than the safe spacing,
+            // so every player gets TWO blobs, interleaved evenly with each
+            // player's pair half a rim apart: no single landing can reach
+            // both, so nobody can be eliminated before they ever act.
+            let k2 = players as usize * 2;
+            for k in 0..k2 {
+                let idx = rim_sorted[(k * n) / k2];
+                board.cells[idx] = Some((k % players as usize) as u8);
+            }
+        } else {
+            for p in 0..players {
+                let idx = rim_sorted[(p as usize * n) / players as usize];
+                board.cells[idx] = Some(p);
+            }
         }
         board
     }
@@ -93,11 +112,21 @@ impl HexBoard {
         y.atan2(x)
     }
 
+    /// O(radius) arithmetic index — this is the board's hottest call (every
+    /// neighbor probe in apply/exposure/bot goes through it), so no linear
+    /// scan. Mirrors the generation order in `new`: q ascending, r ascending
+    /// within each column.
     pub fn index(&self, h: Hex) -> Option<usize> {
-        if h.dist(Hex { q: 0, r: 0 }) > self.radius {
+        let rr = self.radius;
+        if h.dist(Hex { q: 0, r: 0 }) > rr {
             return None;
         }
-        self.coords.iter().position(|&c| c == h)
+        let mut offset = 0usize;
+        for q in -rr..h.q {
+            offset += (2 * rr + 1 - q.abs()) as usize;
+        }
+        let r_min = (-rr).max(-h.q - rr);
+        Some(offset + (h.r - r_min) as usize)
     }
 
     pub fn count(&self, p: u8) -> usize {
@@ -141,12 +170,20 @@ impl HexBoard {
                 }
             }
         }
+        // A clone grows the swarm; a conversion changes ownership. A jump
+        // that does neither is a shuffle — count it toward futility.
+        if d == 2 && converted.is_empty() {
+            self.quiet += 1;
+        } else {
+            self.quiet = 0;
+        }
         self.advance_turn();
         converted
     }
 
     /// Skips the current player (used when they have no legal moves).
     pub fn skip(&mut self) {
+        self.quiet += 1;
         self.advance_turn();
     }
 
@@ -164,11 +201,19 @@ impl HexBoard {
         }
     }
 
+    /// After this many consecutive no-progress moves the game is called on
+    /// standings — the sealed-pocket stalemate backstop.
+    pub const FUTILITY_LIMIT: u32 = 40;
+
     /// The game ends when nobody can move (board full, or every surviving
-    /// player is blocked) or only one player remains.
+    /// player is blocked), only one player remains, or play has gone
+    /// FUTILITY_LIMIT moves without a conversion or a clone.
     pub fn over(&self) -> bool {
         let alive = (0..self.players).filter(|&p| !self.out[p as usize]).count();
         if alive <= 1 {
+            return true;
+        }
+        if self.quiet >= Self::FUTILITY_LIMIT {
             return true;
         }
         (0..self.players)
@@ -211,25 +256,47 @@ impl HexBoard {
         worst
     }
 
+    /// Heuristic value of one move for `p` — the bot's scoring key.
+    fn move_score(&self, p: u8, m: HexMove) -> i64 {
+        let gain: i64 = self.coords[m.to]
+            .neighbors()
+            .iter()
+            .filter_map(|&n| self.index(n))
+            .filter(|&i| matches!(self.cells[i], Some(o) if o != p))
+            .count() as i64;
+        let clone_bonus = if self.coords[m.from].dist(self.coords[m.to]) == 1 { 1 } else { 0 };
+        let mut sim = self.clone();
+        sim.apply(m);
+        let risk = sim.exposure(p) as i64;
+        let centrality = -self.coords[m.to].dist(Hex { q: 0, r: 0 }) as i64;
+        (gain * 4 + clone_bonus * 2 - risk * 3) * 100 + centrality
+    }
+
     /// The bot move: maximize immediate conversions, prefer cloning over
     /// jumping (clones grow the swarm), and avoid landings that hand the
     /// next player a fat counter-conversion. Ties break toward the center.
     pub fn bot_move(&self, p: u8) -> Option<HexMove> {
         let moves = self.moves_for(p);
-        moves.into_iter().max_by_key(|&m| {
-            let gain: i32 = self.coords[m.to]
-                .neighbors()
-                .iter()
-                .filter_map(|&n| self.index(n))
-                .filter(|&i| matches!(self.cells[i], Some(o) if o != p))
-                .count() as i32;
-            let clone_bonus = if self.coords[m.from].dist(self.coords[m.to]) == 1 { 1 } else { 0 };
-            let mut sim = self.clone();
-            sim.apply(m);
-            let risk = sim.exposure(p);
-            let centrality = -self.coords[m.to].dist(Hex { q: 0, r: 0 });
-            (gain * 4 + clone_bonus * 2 - risk * 3) * 100 + centrality
-        })
+        moves.into_iter().max_by_key(|&m| self.move_score(p, m))
+    }
+
+    /// [`bot_move`] with variety: samples among moves scoring within one
+    /// conversion (400) of the best, keyed by `seed`. Unlike a uniform roll
+    /// over ALL legal moves, this never volunteers a reckless landing just
+    /// to look unpredictable.
+    pub fn bot_move_seeded(&self, p: u8, seed: u64) -> Option<HexMove> {
+        let moves = self.moves_for(p);
+        if moves.is_empty() {
+            return None;
+        }
+        let scored: Vec<(HexMove, i64)> = moves.iter().map(|&m| (m, self.move_score(p, m))).collect();
+        let best = scored.iter().map(|&(_, s)| s).max().expect("non-empty");
+        let good: Vec<HexMove> =
+            scored.into_iter().filter(|&(_, s)| s >= best - 400).map(|(m, _)| m).collect();
+        let mut x = seed ^ 0x9E37_79B9_7F4A_7C15;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+        Some(good[(x % good.len() as u64) as usize])
     }
 }
 
@@ -240,16 +307,109 @@ mod tests {
     #[test]
     fn board_sizes_match_radius() {
         assert_eq!(HexBoard::new(2).cells.len(), 61); // radius 4
-        assert_eq!(HexBoard::new(12).cells.len(), 91); // radius 5
+        assert_eq!(HexBoard::new(7).cells.len(), 91); // radius 5
+        assert_eq!(HexBoard::new(12).cells.len(), 127); // radius 6
     }
 
     #[test]
-    fn every_player_gets_a_starting_blob() {
+    fn every_player_gets_a_starting_presence() {
         for n in 2..=12u8 {
             let b = HexBoard::new(n);
+            let expected = if n >= 10 { 2 } else { 1 };
             for p in 0..n {
-                assert_eq!(b.count(p), 1, "{n} players, player {p}");
+                assert_eq!(b.count(p), expected, "{n} players, player {p}");
             }
+        }
+    }
+
+    #[test]
+    fn no_turn_one_elimination_is_possible() {
+        // Either starts are spaced beyond kill range (land adjacent + jump
+        // reach = pairwise distance 3), or players hold a second blob a
+        // single landing cannot also reach.
+        for n in 2..=12u8 {
+            let b = HexBoard::new(n);
+            if n >= 10 {
+                // Two blobs per player, far apart: verify no empty landing
+                // touches both of any one player's blobs.
+                for p in 0..n {
+                    let blobs: Vec<usize> =
+                        (0..b.cells.len()).filter(|&i| b.cells[i] == Some(p)).collect();
+                    assert_eq!(blobs.len(), 2);
+                    assert!(
+                        b.coords[blobs[0]].dist(b.coords[blobs[1]]) > 2,
+                        "{n} players: player {p}'s blobs are one-landing adjacent"
+                    );
+                }
+            } else {
+                for i in 0..b.cells.len() {
+                    for j in 0..b.cells.len() {
+                        if i != j && b.cells[i].is_some() && b.cells[j].is_some() {
+                            assert!(
+                                b.coords[i].dist(b.coords[j]) >= 4,
+                                "{n} players: starts {i}/{j} within turn-one kill range"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn futility_counter_calls_sealed_endgames() {
+        let mut b = HexBoard::new(2);
+        // Jump shuffles with no conversions tick the counter up to the call.
+        for _ in 0..HexBoard::FUTILITY_LIMIT {
+            assert!(!b.over(), "called too early at quiet={}", b.quiet);
+            let p = b.turn;
+            let jump = b
+                .moves_for(p)
+                .into_iter()
+                .find(|m| {
+                    b.coords[m.from].dist(b.coords[m.to]) == 2
+                        && b.coords[m.to].neighbors().iter().all(|&h| {
+                            b.index(h).map(|i| b.cells[i].is_none() || b.cells[i] == Some(p)).unwrap_or(true)
+                        })
+                })
+                .expect("a quiet jump exists on an open board");
+            b.apply(jump);
+        }
+        assert!(b.over(), "futility limit must end the shuffle");
+        // A real clone resets the counter.
+        let mut c = HexBoard::new(2);
+        c.quiet = HexBoard::FUTILITY_LIMIT - 1;
+        let clone = c
+            .moves_for(c.turn)
+            .into_iter()
+            .find(|m| c.coords[m.from].dist(c.coords[m.to]) == 1)
+            .unwrap();
+        c.apply(clone);
+        assert_eq!(c.quiet, 0);
+    }
+
+    #[test]
+    fn arithmetic_index_matches_generation_order() {
+        for players in [2u8, 7, 12] {
+            let b = HexBoard::new(players);
+            for (i, &h) in b.coords.iter().enumerate() {
+                assert_eq!(b.index(h), Some(i), "radius {} coord {:?}", b.radius, h);
+            }
+            assert_eq!(b.index(Hex { q: b.radius + 1, r: 0 }), None);
+        }
+    }
+
+    #[test]
+    fn seeded_bot_varies_but_never_picks_junk() {
+        let b = HexBoard::new(2);
+        let best = b.bot_move(0).unwrap();
+        let best_score = b.move_score(0, best);
+        for seed in 0..24u64 {
+            let m = b.bot_move_seeded(0, seed).unwrap();
+            assert!(
+                b.move_score(0, m) >= best_score - 400,
+                "seed {seed} picked a move more than one conversion below best"
+            );
         }
     }
 

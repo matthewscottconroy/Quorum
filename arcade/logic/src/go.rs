@@ -32,6 +32,10 @@ pub struct GoBoard {
     pub last: Option<usize>,
     /// Simple ko: a board position (cells only) that the next move may not recreate.
     ko_forbidden: Option<[Option<Stone>; CELLS]>,
+    /// Positional superko: hashes of every board position seen so far. No
+    /// play may recreate ANY of them — the backstop for triple-ko and
+    /// sending-two-returning-one cycles that simple ko lets loop forever.
+    seen: Vec<u64>,
     /// Undo history: one snapshot per play/pass (hotseat courtesy undo).
     history: Vec<GoSnapshot>,
 }
@@ -45,6 +49,21 @@ struct GoSnapshot {
     passes_in_a_row: u32,
     last: Option<usize>,
     ko_forbidden: Option<[Option<Stone>; CELLS]>,
+    seen_len: usize,
+}
+
+fn hash_cells(cells: &[Option<Stone>; CELLS]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for cell in cells {
+        let code: u8 = match cell {
+            None => 0,
+            Some(Stone::Black) => 1,
+            Some(Stone::White) => 2,
+        };
+        h ^= code as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,20 +94,37 @@ impl Default for GoBoard {
 
 impl GoBoard {
     pub fn new() -> GoBoard {
+        let cells = [None; CELLS];
         GoBoard {
-            cells: [None; CELLS],
+            cells,
             turn: Stone::Black,
             captures_black: 0,
             captures_white: 0,
             passes_in_a_row: 0,
             last: None,
             ko_forbidden: None,
+            seen: vec![hash_cells(&cells)],
             history: Vec::new(),
         }
     }
 
     pub fn over(&self) -> bool {
         self.passes_in_a_row >= 2
+    }
+
+    /// Reopens a game closed by two passes — the escape hatch from the
+    /// dead-stone marking phase when someone disputes and wants to play on.
+    pub fn resume(&mut self) {
+        self.passes_in_a_row = 0;
+    }
+
+    /// The stones connected to `pos` (empty when the point is empty).
+    /// Public for the UI's mark-dead-groups phase.
+    pub fn group_at(&self, pos: usize) -> Vec<usize> {
+        if self.cells[pos].is_none() {
+            return Vec::new();
+        }
+        self.group(pos).0
     }
 
     /// The group containing `pos` and whether it has any liberty.
@@ -124,6 +160,7 @@ impl GoBoard {
             passes_in_a_row: self.passes_in_a_row,
             last: self.last,
             ko_forbidden: self.ko_forbidden,
+            seen_len: self.seen.len(),
         }
     }
 
@@ -138,6 +175,7 @@ impl GoBoard {
         self.passes_in_a_row = snap.passes_in_a_row;
         self.last = snap.last;
         self.ko_forbidden = snap.ko_forbidden;
+        self.seen.truncate(snap.seen_len);
         true
     }
 
@@ -194,7 +232,14 @@ impl GoBoard {
                 return Err(PlayError::Ko);
             }
         }
+        // Positional superko: may not recreate ANY earlier whole-board
+        // position (covers triple ko and longer cycles).
+        let next_hash = hash_cells(&next);
+        if self.seen.contains(&next_hash) {
+            return Err(PlayError::Ko);
+        }
         self.history.push(self.snapshot());
+        self.seen.push(next_hash);
         // Ko arises when exactly one stone is captured by a single new stone.
         self.ko_forbidden = if captured == 1 { Some(self.cells) } else { None };
         match me {
@@ -249,6 +294,19 @@ impl GoBoard {
             }
         }
         (black, white + KOMI_HALF_POINTS)
+    }
+
+    /// Area score after removing the stones marked dead — the settlement the
+    /// marking phase agrees on. `dead[pos]` marks a stone for removal.
+    pub fn score_with_dead(&self, dead: &[bool; CELLS]) -> (i32, i32) {
+        let mut cells = self.cells;
+        for (pos, is_dead) in dead.iter().enumerate() {
+            if *is_dead {
+                cells[pos] = None;
+            }
+        }
+        let probe = GoBoard { cells, ..self.clone() };
+        probe.area_score()
     }
 }
 

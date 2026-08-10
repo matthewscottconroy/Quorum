@@ -441,7 +441,23 @@ impl Board {
         for &c in &self.castle {
             mix(c as u8);
         }
-        mix(self.ep.map(|e| e as u8 + 1).unwrap_or(0));
+        // FIDE compares en-passant RIGHTS, not targets: a phantom ep square
+        // nobody can capture must not distinguish otherwise-equal positions,
+        // or genuine threefolds go undetected. Mix the ep byte only when a
+        // pawn of the side to move actually sits where it could take.
+        let ep_live = self.ep.is_some_and(|e| {
+            let dir: i32 = if self.turn == Color::White { -8 } else { 8 };
+            let f = file(e) as i32;
+            [-1i32, 1].iter().any(|df| {
+                let nf = f + df;
+                if !(0..8).contains(&nf) {
+                    return false;
+                }
+                let idx = e as i32 + dir + df;
+                (0..64).contains(&idx) && self.cells[idx as usize] == Some((self.turn, Piece::Pawn))
+            })
+        });
+        mix(if ep_live { self.ep.map(|e| e as u8 + 1).unwrap_or(0) } else { 0 });
         h
     }
 

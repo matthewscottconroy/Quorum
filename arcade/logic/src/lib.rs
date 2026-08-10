@@ -4,4 +4,5 @@
 pub mod chess;
 pub mod chess_bot;
 pub mod go;
+pub mod go_bot;
 pub mod hex;
