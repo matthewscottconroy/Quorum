@@ -71,9 +71,11 @@ sudo -u postgres psql -c "ALTER USER quorum PASSWORD '<generated>'"
 sudo useradd --system --home /opt/quorum quorum
 sudo git clone <your-remote> /opt/quorum && cd /opt/quorum
 # build on the box (dnf install golang) or copy a CI-built linux/amd64 binary in
-# optional: the Top Secret arcade is a wasm artifact built elsewhere and copied
-# into web/arcade/ BEFORE this build — see UPGRADING.md "The arcade cartridge";
-# skipping it just makes the arcade page say "cartridge not installed"
+# optional: the Top Secret arcade is a wasm artifact that lands in web/arcade/
+# BEFORE this build — either give the box a Rust toolchain (ops/upgrade.sh then
+# rebuilds it automatically) or build elsewhere and copy it in; both paths in
+# UPGRADING.md "The arcade cartridge". Skipping it just makes the arcade page
+# say "cartridge not installed"
 go build -o quorum ./cmd/quorum
 
 # 4. Configuration

@@ -86,63 +86,106 @@ the script took is your safety line).
 ## The arcade cartridge (the one non-Go build artifact)
 
 The Top Secret arcade is a WebAssembly "cartridge" built from Rust. It is
-**not in the git repository** (`web/arcade/` is gitignored) and the server
-never builds it — so it follows different rules than everything else:
+**not in the git repository** (`web/arcade/` is gitignored), so it follows
+different rules than everything else:
 
-- The binary **embeds whatever sits in `web/arcade/` at build time**. The
-  upgrade script's `go build` on the server re-embeds the copy already in
-  `/opt/quorum/web/arcade` on every upgrade. Because git ignores that
-  directory, fetches and fast-forwards never touch it: **install the
-  cartridge once and every future upgrade carries it forward
-  automatically.** You do NOT repeat the cartridge steps per upgrade.
+- The binary **embeds whatever sits in `web/arcade/` at build time**, and
+  because git ignores that directory, fetches and fast-forwards never
+  touch it — a cartridge in `/opt/quorum/web/arcade` is carried forward
+  by every upgrade automatically.
+- Once the server has a Rust toolchain (one-time setup below), the
+  upgrade script **rebuilds the cartridge by itself** whenever an upgrade
+  changes files under `arcade/`. There is no per-upgrade ritual.
 - No cartridge is fine: the app runs normally and the arcade page shows
   "CARTRIDGE NOT INSTALLED" on each cabinet.
-- You only redo the steps below when a release **changes the games
-  themselves** (the release notes / commit log will say so — look for
-  changes under `arcade/`).
 
-### Installing or refreshing the cartridge
+### Building on the server (the hands-off path)
 
-On any machine with Rust (your workstation, not the server):
+Give the server a Rust toolchain **once** and `ops/upgrade.sh` takes care
+of the rest forever: on every upgrade it checks whether the release
+touched `arcade/` (or whether no cartridge exists yet) and rebuilds the
+cartridge itself before building the binary. A cartridge build failure
+never blocks the app upgrade — the script keeps the previous cartridge
+and says so loudly.
 
-1. One-time toolchain setup:
-   ```
-   rustup target add wasm32-unknown-unknown
-   cargo install wasm-bindgen-cli --version 0.2.126
-   ```
-2. In your checkout of the repo, at the same commit you're deploying:
-   ```
-   make arcade
-   ```
-   You see `cargo build` compile for a while, then `wasm-bindgen`, then
-   (if you have binaryen installed) `wasm-opt`. It ends by listing
-   `web/arcade/` — three files: `arcade.js`, `arcade_bg.wasm`, and a
-   license file. The `.wasm` is ~10-14 MB; that's normal (it travels
-   gzipped at ~4 MB).
-3. Copy the directory to the server:
+**Check the machine first.** The Rust build needs ~2–3 GB of memory at
+its peak and a few GB of disk (toolchain ~1.5 GB, build directory 2–4 GB).
+
+```
+free -h        # "Mem: total" — if under 4 GB, add swap (next block)
+df -h /opt     # want several GB free
+```
+
+If memory is under ~4 GB, add a one-time swap file so the first build
+can't be killed mid-link:
+
+```
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap defaults 0 0' | sudo tee -a /etc/fstab
+```
+
+**One-time toolchain install**, as the `quorum` user (its home IS
+`/opt/quorum`, so the toolchain lands inside the deploy dir — the repo's
+`.gitignore` already covers `.cargo/` and `.rustup/`, keeping
+`git status` clean):
+
+```
+sudo -u quorum -H bash
+cd /opt/quorum
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+. .cargo/env
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.126
+exit
+```
+
+Expected: rustup prints `Rust is installed now`; the target add is
+seconds; `cargo install wasm-bindgen-cli` **compiles it from source and
+takes several minutes** on a small instance — that's normal. The
+`--version 0.2.126` pin matters: it must match the `wasm-bindgen` pin in
+`arcade/cart/Cargo.toml`, and the build fails with a clear version
+message if they drift. (Optional: `sudo dnf install binaryen` gets you
+`wasm-opt`, ~15-20% smaller downloads. Skipping it is fine.)
+
+From then on, upgrades just work. In `sudo ops/upgrade.sh` output you'll
+see one of:
+
+```
+==> building arcade cartridge (Rust → wasm; first build takes a while)
+```
+
+(the **first build is the slow one** — 15–30 minutes on a 2-vCPU box;
+later ones reuse the cached build directory and take a minute or two), or
+
+```
+==> arcade sources unchanged — keeping existing cartridge
+```
+
+which is the usual case and costs nothing. Verify after the first build:
+Top Secret → any cabinet boots after INSERT CREDIT instead of saying
+"CARTRIDGE NOT INSTALLED".
+
+### Alternative: build elsewhere, copy in
+
+If the server is too small to compile Rust, build on any machine that
+isn't (same one-time toolchain setup as above, minus the swap), then:
+
+1. In your checkout, at the commit you're deploying: `make arcade` —
+   ends by listing `web/arcade/` (`arcade.js`, `arcade_bg.wasm` ~10-14 MB;
+   it travels gzipped at ~4 MB).
+2. Copy it over and rebuild:
    ```
    scp -i ~/.ssh/YOUR-KEY.pem -r web/arcade rocky@YOUR-SERVER-IP:/tmp/arcade
    ssh -i ~/.ssh/YOUR-KEY.pem rocky@YOUR-SERVER-IP
-   sudo rm -rf /opt/quorum/web/arcade
-   sudo mv /tmp/arcade /opt/quorum/web/arcade
+   sudo rm -rf /opt/quorum/web/arcade && sudo mv /tmp/arcade /opt/quorum/web/arcade
    sudo chown -R quorum:quorum /opt/quorum/web/arcade
-   ```
-4. Rebuild and restart so the new cartridge is embedded — the normal
-   upgrade does this, or if you're already at the newest commit force a
-   rebuild by re-running the deploy path you use:
-   ```
    cd /opt/quorum && sudo ops/upgrade.sh
    ```
-   (If it prints `already at <sha> — nothing to do`, run
-   `sudo -u quorum go build -o quorum.next ./cmd/quorum && sudo mv quorum.next quorum && sudo restorecon quorum && sudo systemctl restart quorum`
-   — that's the script's build-and-swap, minus the git steps.)
-5. Verify in the browser: Top Secret → any cabinet → it boots after
-   INSERT CREDIT instead of saying "CARTRIDGE NOT INSTALLED".
 
-`ops/upgrade.sh` prints whether it found a cartridge at build time
-(`arcade cartridge found — it will be embedded` or a note that the arcade
-will report "cartridge not installed"), so a missing or forgotten
-cartridge is visible in the upgrade output, not a surprise later.
+Without a server toolchain, `ops/upgrade.sh` still tells you where you
+stand each run: `arcade cartridge found — it will be embedded`, or a note
+that cabinets will say "cartridge not installed".
 
 ### Turning the arcade off without touching any of this
 

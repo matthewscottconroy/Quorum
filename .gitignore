@@ -32,3 +32,8 @@ quorum-manual.pdf
 
 # Arcade cartridge build artifacts (optional: `make arcade`; needs Rust)
 /web/arcade/
+
+# Rust toolchain when installed IN the deploy checkout (the quorum user's
+# home is /opt/quorum, so rustup lands here — see UPGRADING.md)
+/.cargo/
+/.rustup/

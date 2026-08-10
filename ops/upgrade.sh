@@ -49,15 +49,31 @@ else
     as_owner git checkout --quiet --detach "$REF"
 fi
 
-echo "==> building"
-# The arcade cartridge (web/arcade/, gitignored) is embedded as-is if present;
-# it survives the fetch/merge above, so installing it once is enough. See
-# UPGRADING.md "The arcade cartridge".
-if [ -f web/arcade/arcade_bg.wasm ]; then
-    echo "    arcade cartridge found — it will be embedded"
+# Arcade cartridge (web/arcade/, gitignored): rebuilt HERE when the quorum
+# user has a Rust toolchain (one-time setup — UPGRADING.md "The arcade
+# cartridge") and this upgrade touches arcade/ sources or no cartridge
+# exists yet. Otherwise whatever sits in web/arcade/ is embedded as-is; it
+# survives the fetch/merge above, so a cartridge installed once persists.
+# A failed cartridge build never blocks the app upgrade.
+CARGO_BIN="$DIR/.cargo/bin"
+if [ -x "$CARGO_BIN/cargo" ]; then
+    if [ ! -f web/arcade/arcade_bg.wasm ] || ! as_owner git diff --quiet "$CUR" HEAD -- arcade/; then
+        echo "==> building arcade cartridge (Rust → wasm; first build takes a while)"
+        if as_owner env PATH="$CARGO_BIN:$PATH" HOME="$DIR" ./arcade/build.sh; then
+            echo "    cartridge rebuilt"
+        else
+            echo "!! arcade cartridge build FAILED — keeping the previous cartridge; app upgrade continues" >&2
+        fi
+    else
+        echo "==> arcade sources unchanged — keeping existing cartridge"
+    fi
+elif [ -f web/arcade/arcade_bg.wasm ]; then
+    echo "==> arcade cartridge found — it will be embedded"
 else
-    echo "    no arcade cartridge in web/arcade — cabinets will say 'cartridge not installed'"
+    echo "==> no arcade cartridge in web/arcade — cabinets will say 'cartridge not installed'"
 fi
+
+echo "==> building"
 as_owner go build -o quorum.next ./cmd/quorum
 
 [ -f quorum ] && cp -p quorum quorum.prev
