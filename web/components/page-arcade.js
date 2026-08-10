@@ -52,13 +52,17 @@ const CABINETS = [
     players: 'up to 12 — hotseat, bots, or online', controls: 'Mouse — click your blob, then a target cell. Step 1 splits, jump 2 leaps; landing converts neighbours.',
   },
   {
+    id: 'texas-holdem', name: "HOLD 'EM", tag: 'Tournament tables. Fictional chips, real grudges.',
+    players: 'you vs 1-5 machine sharks', controls: 'F fold · C check/call · R raise (pot) · A all-in · Esc pause. Blinds climb every 8 hands; last stack keeps the table.',
+  },
+  {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
     players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-7 jobs, T/R your flow, A/D or screen edge scrolls, click the minimap to jump, N-N your crew quits, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
-const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 } };
+const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 }, 'texas-holdem': { min: 2, max: 6, humans: 1 } };
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
@@ -203,6 +207,14 @@ const STAT_LABELS = {
   clones: 'BLOBS SPLIT', jumps: 'BLOBS LEAPT', blobs_converted: 'NEIGHBOURS CONVERTED',
   blobs_lost: 'BLOBS LOST TO THE CAUSE', times_consumed: 'TIMES CONSUMED ENTIRELY',
   dish_wins: 'DISHES TAKEN', seats_skipped: 'RIVALS BOXED IN',
+  // HOLD 'EM
+  hands_played: 'HANDS DEALT IN', hands_won: 'POTS DRAGGED',
+  chips_won: 'FICTIONAL CHIPS WON', folds: 'DISCRETION EXERCISED (FOLDS)',
+  raises: 'PRESSURE APPLIED (RAISES)', all_ins: 'CHIPS SHOVED (ALL-INS)',
+  bust_outs: 'TIMES FELTED', tables_swept: 'TABLES SWEPT',
+  royal_flushes: 'ROYAL FLUSHES (FRAME THIS)', straight_flushes: 'STRAIGHT FLUSHES',
+  quads_made: 'FOUR-OF-A-KINDS SHOWN', full_houses: 'FULL HOUSES SHOWN',
+  flushes_shown: 'FLUSHES SHOWN', straights_shown: 'STRAIGHTS SHOWN',
   // INTERNS
   interns_saved: 'INTERNS RESCUED', interns_lost: 'INTERNS LOST (REGRETTABLE)',
   gravity_lessons: 'GRAVITY LESSONS TAUGHT', quits_ordered: 'LOUD QUITS ARRANGED',
@@ -223,7 +235,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';

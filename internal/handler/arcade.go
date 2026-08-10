@@ -71,6 +71,11 @@ var arcadeStatNames = map[string][]string{
 		"nukes_ordered", "climbers_hired", "chutes_issued", "supervisors_promoted",
 		"bridges_ordered", "bashers_unleashed", "diggers_deployed", "floor_wins",
 	},
+	"texas-holdem": {
+		"hands_played", "hands_won", "chips_won", "folds", "raises", "all_ins",
+		"bust_outs", "tables_swept", "royal_flushes", "straight_flushes",
+		"quads_made", "full_houses", "flushes_shown", "straights_shown",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {

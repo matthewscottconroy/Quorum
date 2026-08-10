@@ -12,6 +12,7 @@ mod chess_ui;
 mod comet;
 mod go_ui;
 mod hex_ui;
+mod holdem;
 mod interns;
 mod penny;
 mod powder;
@@ -127,6 +128,9 @@ pub fn run() {
         }
         "interns" => {
             app.add_plugins((shell_for("INTERNS", interns::BLURB), interns::InternsPlugin));
+        }
+        "texas-holdem" => {
+            app.add_plugins((shell_for("HOLD 'EM", holdem::BLURB), holdem::HoldemPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));
