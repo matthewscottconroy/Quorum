@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,11 +24,41 @@ import (
 
 // arcadeNetGames are the cabinets that accept networked seats.
 var arcadeNetGames = map[string]struct{ minSeats, maxSeats int }{
-	"chess":      {2, 2},
-	"go":         {2, 2},
-	"powder-keg": {2, 12},
-	"hexfection": {2, 12},
-	"interns":    {2, 2},
+	"chess":        {2, 2},
+	"go":           {2, 2},
+	"powder-keg":   {2, 12},
+	"hexfection":   {2, 12},
+	"interns":      {2, 2},
+	"texas-holdem": {2, 6},
+}
+
+// holdemDealer is the ONE exception to "the server is only a relay": poker
+// needs private hole cards, and the relay broadcasts everything. So for
+// hold 'em rooms the server shuffles and deals — each seat's hole cards go
+// only down that seat's own (TLS) connection, and no player's client ever
+// holds another player's cards. The server still referees nothing: betting
+// stays client-side, and the board/reveal cadence is host-paced but public,
+// so rushing the dealer is visible to the whole table, not a covert peek.
+type holdemDealer struct {
+	deck  []int          // card codes 0..51: rank = 2 + c%13, suit = c/13
+	holes map[int][2]int // seat → hole cards, this hand
+	board int            // board cards revealed so far (0,3,4,5)
+	hand  int
+}
+
+func newHoldemHand() *holdemDealer {
+	deck := make([]int, 52)
+	for i := range deck {
+		deck[i] = i
+	}
+	// Fisher-Yates from crypto/rand: the shuffle is the whole ballgame.
+	for i := 51; i > 0; i-- {
+		var b [2]byte
+		crandRead(b[:])
+		j := int(uint16(b[0])<<8|uint16(b[1])) % (i + 1)
+		deck[i], deck[j] = deck[j], deck[i]
+	}
+	return &holdemDealer{deck: deck, holes: map[int][2]int{}}
 }
 
 const (
@@ -63,7 +94,20 @@ type arcadeRoom struct {
 	// a reconnecting player can reclaim THEIR seat (and only theirs) —
 	// otherwise one blip turns a human into a bot for the rest of the round.
 	vacated    map[int]string // seat → userID
+	dealer     *holdemDealer  // hold 'em rooms only; nil elsewhere
 	lastActive time.Time
+}
+
+// actingHostSeat is the lowest occupied seat — the seat every client also
+// computes as the acting host, so dealer ops survive a host disconnect.
+func (r *arcadeRoom) actingHostSeat() int {
+	best := -1
+	for s := range r.members {
+		if best == -1 || s < best {
+			best = s
+		}
+	}
+	return best
 }
 
 func (r *arcadeRoom) present() []int {
@@ -249,6 +293,9 @@ func (h *ArcadeHub) startRoom(room *arcadeRoom, seat int) string {
 	if limits.minSeats == 2 && limits.maxSeats == 2 && len(room.members) < 2 {
 		return "need_two_players" // chess/go cannot start short-handed
 	}
+	if room.game == "texas-holdem" && len(room.members) < 2 {
+		return "need_two_players" // no bots at the poker table: humans only
+	}
 	room.started = true
 	room.lastActive = time.Now()
 	for s, m := range room.members {
@@ -269,6 +316,71 @@ func (h *ArcadeHub) relay(room *arcadeRoom, seat int, data json.RawMessage) stri
 	}
 	room.lastActive = time.Now()
 	room.broadcast(map[string]any{"op": "msg", "seat": seat, "data": data}, seat)
+	return ""
+}
+
+// holdemOp handles the dealer verbs for a hold 'em room: "deal" starts a
+// hand (private hole cards to each seat, public roster to all), "street"
+// reveals the next board cards, "reveal" shows every dealt hand once the
+// river is out. Only the acting host may pace the dealer, and only in a
+// started hold 'em room.
+func (h *ArcadeHub) holdemOp(room *arcadeRoom, seat int, op string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if room.game != "texas-holdem" || !room.started {
+		return "not_a_poker_room"
+	}
+	if seat != room.actingHostSeat() {
+		return "dealer_is_host_paced"
+	}
+	room.lastActive = time.Now()
+	switch op {
+	case "deal":
+		d := newHoldemHand()
+		if room.dealer != nil {
+			d.hand = room.dealer.hand
+		}
+		d.hand++
+		room.dealer = d
+		seats := room.present()
+		for _, s := range seats {
+			c1, c2 := d.deck[0], d.deck[1]
+			d.deck = d.deck[2:]
+			d.holes[s] = [2]int{c1, c2}
+			room.members[s].peer.deliver(map[string]any{
+				"op": "cards", "hand": d.hand, "hole": []int{c1, c2},
+			})
+		}
+		room.broadcast(map[string]any{"op": "dealt", "hand": d.hand, "seats": seats}, -1)
+	case "street":
+		d := room.dealer
+		if d == nil || d.board >= 5 {
+			return "no_street_to_deal"
+		}
+		n := 1
+		if d.board == 0 {
+			n = 3
+		}
+		cards := make([]int, n)
+		copy(cards, d.deck[:n])
+		d.deck = d.deck[n:]
+		d.board += n
+		room.broadcast(map[string]any{"op": "board", "hand": d.hand, "cards": cards}, -1)
+	case "reveal":
+		d := room.dealer
+		if d == nil || d.board < 5 {
+			// No peeking before the river: an early reveal would hand the
+			// pacer everyone's cards mid-hand.
+			return "river_first"
+		}
+		holes := map[string][]int{}
+		for s, hc := range d.holes {
+			holes[strconv.Itoa(s)] = []int{hc[0], hc[1]}
+		}
+		room.broadcast(map[string]any{"op": "holes", "hand": d.hand, "holes": holes}, -1)
+	default:
+		return "unknown_op"
+	}
 	return ""
 }
 
@@ -464,6 +576,14 @@ func (h *ArcadeHub) Serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if reason := h.relay(room, seat, msg.Data); reason != "" {
+				peer.deliver(map[string]any{"op": "error", "reason": reason})
+			}
+		case "deal", "street", "reveal":
+			if room == nil {
+				fail("not_in_room")
+				return
+			}
+			if reason := h.holdemOp(room, seat, msg.Op); reason != "" {
 				peer.deliver(map[string]any{"op": "error", "reason": reason})
 			}
 		case "leave":

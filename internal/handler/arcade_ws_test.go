@@ -198,6 +198,88 @@ func TestArcadeRoom_DroppedPlayerReclaimsOwnSeatMidGame(t *testing.T) {
 	}
 }
 
+func TestHoldemDealer_PrivateHolesPublicBoard(t *testing.T) {
+	h := testHub()
+	host, g1, g2 := &fakePeer{}, &fakePeer{}, &fakePeer{}
+	room, _ := h.createRoom("texas-holdem", 3, "u-host", host)
+	h.joinRoom(room.code, "u-1", g1)
+	h.joinRoom(room.code, "u-2", g2)
+	if reason := h.startRoom(room, 0); reason != "" {
+		t.Fatalf("start: %s", reason)
+	}
+	// Only the acting host paces the dealer.
+	if reason := h.holdemOp(room, 1, "deal"); reason == "" {
+		t.Fatal("guest must not be able to deal")
+	}
+	if reason := h.holdemOp(room, 0, "deal"); reason != "" {
+		t.Fatalf("deal: %s", reason)
+	}
+	// Each member privately received exactly their own two cards.
+	seen := map[int]bool{}
+	for _, p := range []*fakePeer{host, g1, g2} {
+		var cards []any
+		var dealt int
+		for _, m := range p.msgs {
+			switch m["op"] {
+			case "cards":
+				cards = m["hole"].([]any)
+			case "dealt":
+				dealt++
+			}
+		}
+		if len(cards) != 2 {
+			t.Fatalf("every seat gets two hole cards, got %v", cards)
+		}
+		if dealt != 1 {
+			t.Errorf("every seat hears the public deal notice once, got %d", dealt)
+		}
+		for _, c := range cards {
+			card := int(c.(float64))
+			if card < 0 || card > 51 || seen[card] {
+				t.Errorf("card %d out of range or dealt twice", card)
+			}
+			seen[card] = true
+		}
+	}
+	// Streets: 3, 1, 1, then the deck is closed.
+	for i, want := range []int{3, 1, 1} {
+		if reason := h.holdemOp(room, 0, "street"); reason != "" {
+			t.Fatalf("street %d: %s", i, reason)
+		}
+		last := host.last()
+		if last["op"] != "board" || len(last["cards"].([]any)) != want {
+			t.Fatalf("street %d: want %d cards, got %v", i, want, last)
+		}
+	}
+	if reason := h.holdemOp(room, 0, "street"); reason == "" {
+		t.Error("a sixth board card must be refused")
+	}
+	// Reveal shows every dealt hand to everyone — but only after the river.
+	if reason := h.holdemOp(room, 0, "reveal"); reason != "" {
+		t.Fatalf("reveal after river: %s", reason)
+	}
+	holes := g1.last()["holes"].(map[string]any)
+	if len(holes) != 3 {
+		t.Errorf("reveal covers all three dealt seats, got %v", holes)
+	}
+}
+
+func TestHoldemDealer_NoEarlyReveal(t *testing.T) {
+	h := testHub()
+	host, g1 := &fakePeer{}, &fakePeer{}
+	room, _ := h.createRoom("texas-holdem", 2, "u-host", host)
+	h.joinRoom(room.code, "u-1", g1)
+	h.startRoom(room, 0)
+	h.holdemOp(room, 0, "deal")
+	if reason := h.holdemOp(room, 0, "reveal"); reason != "river_first" {
+		t.Errorf("pre-river reveal must be refused, got %q", reason)
+	}
+	h.holdemOp(room, 0, "street") // flop
+	if reason := h.holdemOp(room, 0, "reveal"); reason != "river_first" {
+		t.Errorf("pre-river reveal must be refused on the flop too, got %q", reason)
+	}
+}
+
 func TestArcadeRoom_SweepClosesIdleRooms(t *testing.T) {
 	h := testHub()
 	host := &fakePeer{}
