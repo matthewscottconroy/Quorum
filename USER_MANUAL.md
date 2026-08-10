@@ -917,8 +917,18 @@ your organization's server.
   looking.
 - Every cabinet has sound (mute your device if the basement should stay
   secret) and **Esc** pauses any local single-machine round.
+- **Playing the machine.** Chess and Go both carry a built-in opponent —
+  coin up in VS MACHINE mode and the cabinet plays the other side. Both are
+  deliberately beatable sparring partners, but neither hangs pieces (or
+  stones) to one-move tricks.
+- **Finishing a Go game.** Two passes open a marking phase instead of
+  scoring blind: click groups you both agree are dead (they go ghostly),
+  Enter accepts, M plays on if someone disagrees. R twice resigns — in
+  chess too, even when it isn't your turn.
 - **Playing online.** Chess, Go, Powder Keg, Hexfection, and Interns also
-  play over the network against other members of your organization. On the cabinet,
+  play over the network against other members of your organization. If your
+  connection blips mid-game, rejoin with the same room code — your seat is
+  held for you (a bot covers it while you're gone). On the cabinet,
   choose **HOST ROOM** (picking the seat count for the big cabinets) and read
   out the 4-letter room code; the others open the same cabinet, type the code,
   and **JOIN**. The host presses **START** — empty seats are filled by
