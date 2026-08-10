@@ -950,6 +950,14 @@ your organization's server.
   scoped to your server: nothing leaves your organization.
 - Leaving a cabinet resets it (the page reloads; you stay signed in). Arcade
   rules: you walk away, the machine forgets you.
+- **Service records.** The bottom of the arcade floor keeps a personnel
+  file on every player, and it is deliberately public within your
+  organization — pick any member and read their whole record: rocks
+  smashed, kegs planted, auditors bitten, interns rescued (and lost,
+  regrettably), times eaten by their own hyperdrive, takebacks begged,
+  tables flipped. Hotseat rounds credit the signed-in account (you did
+  physically make both sides' moves); online rounds credit your seat.
+  Like the leaderboards, the numbers are friendly, not forensic.
 - **If a cabinet says "CARTRIDGE NOT INSTALLED":** the arcade's WebAssembly
   build is an optional artifact your operator adds with `make arcade` before
   building the server (it needs a Rust toolchain; see the README and

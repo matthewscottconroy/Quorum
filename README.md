@@ -323,6 +323,9 @@ A basement arcade behind the **Top Secret** sidebar section: eight original cabi
 | Method | Path | Min role | Description |
 |--------|------|----------|-------------|
 | `GET` | `/arcade/stats` | member | Per-cabinet totals: plays, house high score + holder, your plays/best |
+| `GET` | `/arcade/players` | member | Everyone with an arcade footprint (the service-record roster) |
+| `GET` | `/arcade/player-stats?user=` | member | Any member's full service record, grouped by cabinet (default: your own) |
+| `POST` | `/arcade/:game/stats-report` | member | End-of-round counter report from the cartridge (allowlisted names, capped deltas) |
 | `GET` | `/arcade/:game/scores` | member | Leaderboard — each player's best score |
 | `POST` | `/arcade/:game/credit` | member | Insert a credit (records a play; returns your lifetime count) |
 | `POST` | `/arcade/:game/score` | member | Record a final score (refused without a prior credited play; clamped) |
@@ -347,7 +350,7 @@ Deployments that build **on the server** (`ops/upgrade.sh`) have two options. Gi
 
 Admins can switch the whole floor off from **Settings → Organization settings → Top Secret arcade** (`arcade_visible`): the sidebar section disappears for everyone and the arcade API + websocket answer 404 (checked server-side, cached ~30s). Nothing is deleted — plays, scores, and community levels survive the outage.
 
-The game-rules layer (`arcade/logic`) is dependency-free and unit-tested — chess legal-move generation is perft-verified, go covers captures/ko/suicide/area scoring, hexfection covers clone/jump/conversion. Scores are self-reported by the wasm client and lightly validated (bounds + a credited play required); treat leaderboards as friendly, not forensic.
+The game-rules layer (`arcade/logic`) is dependency-free and unit-tested — chess legal-move generation is perft-verified, go covers captures/ko/suicide/area scoring, hexfection covers clone/jump/conversion. Scores are self-reported by the wasm client and lightly validated (bounds + a credited play required); treat leaderboards as friendly, not forensic. The same goes for **service records** — every cabinet counts its player's deeds (bullets fired, kegs planted, auditors bitten, hyperdrive self-inflictions, takebacks begged, gravity lessons taught…) and reports them at game over into lifetime per-member counters, browsable by everyone on the arcade floor. Counter names are allowlisted per cabinet and deltas capped server-side.
 
 ### Discussions
 
