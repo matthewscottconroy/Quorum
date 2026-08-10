@@ -47,7 +47,14 @@ class PageSetup2FA extends HTMLElement {
   step2(setup) {
     this.innerHTML = `
       <div class="card" style="max-width:480px;margin:3rem auto;padding:1.5rem">
-        <h1 style="font-size:1.2rem;margin:0 0 .6rem">Add the key to your authenticator</h1>
+        <h1 style="font-size:1.2rem;margin:0 0 .6rem">Scan with your authenticator</h1>
+        ${setup.qr_png_base64 ? `
+        <div style="text-align:center;margin-bottom:.8rem">
+          <img src="data:image/png;base64,${setup.qr_png_base64}" alt="QR code — scan with your authenticator app"
+               width="200" height="200" style="border-radius:8px;background:#fff;padding:6px">
+        </div>
+        <p style="font-size:.82rem;color:var(--color-text-muted);text-align:center;margin-bottom:.8rem">
+          Point your authenticator app's camera at the code, or enter the key manually:</p>` : ''}
         <div style="font-family:monospace;font-size:1rem;letter-spacing:.06em;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;text-align:center;word-break:break-all;margin-bottom:.8rem">${esc(setup.secret)}</div>
         <p style="font-size:.78rem;color:var(--color-text-muted);word-break:break-all;margin-bottom:1rem">
           Or paste the setup URI: <span style="font-family:monospace">${esc(setup.provisioning_uri)}</span></p>

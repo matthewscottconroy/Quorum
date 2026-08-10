@@ -593,9 +593,13 @@ class PageSettings extends HTMLElement {
       maxWidth: '440px',
       body: `
         <div class="modal-body">
-          <ol style="font-size:.88rem;padding-left:1.1rem;margin:0 0 1rem">
-            <li style="margin-bottom:.5rem">In your authenticator app, add an account and enter this key:</li>
-          </ol>
+          ${setup.qr_png_base64 ? `
+          <div style="text-align:center;margin-bottom:.6rem">
+            <img src="data:image/png;base64,${setup.qr_png_base64}" alt="QR code — scan with your authenticator app"
+                 width="190" height="190" style="border-radius:8px;background:#fff;padding:6px">
+          </div>
+          <p style="font-size:.85rem;text-align:center;margin-bottom:.8rem">Scan the code with your authenticator app — or add the key manually:</p>` : `
+          <p style="font-size:.88rem;margin:0 0 .6rem">In your authenticator app, add an account and enter this key:</p>`}
           <div style="font-family:monospace;font-size:1rem;letter-spacing:.06em;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;padding:.6rem;text-align:center;word-break:break-all;margin-bottom:1rem">${esc(setup.secret)}</div>
           <p style="font-size:.82rem;color:var(--color-text-muted);margin-bottom:1rem;word-break:break-all">Or use the setup URI:<br><span style="font-family:monospace">${esc(setup.provisioning_uri)}</span></p>
           <div class="form-group"><label for="f-2fa-code">Enter the 6-digit code to confirm</label>

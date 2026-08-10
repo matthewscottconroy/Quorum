@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"quorum/internal/auth"
 )
@@ -62,10 +64,18 @@ func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store secret", "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	uri := auth.TOTPProvisioningURI(secret, user.Email, "Quorum")
+	resp := map[string]any{
 		"secret":           secret,
-		"provisioning_uri": auth.TOTPProvisioningURI(secret, user.Email, "Quorum"),
-	})
+		"provisioning_uri": uri,
+	}
+	// A scannable QR of the provisioning URI, inlined so the page needs no
+	// separate (auth-headered) image request. Best-effort: if encoding ever
+	// fails, manual entry still works.
+	if png, err := qrcode.Encode(uri, qrcode.Medium, 240); err == nil {
+		resp["qr_png_base64"] = base64.StdEncoding.EncodeToString(png)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // Enable2FA confirms TOTP enrollment: the caller submits a current code proving

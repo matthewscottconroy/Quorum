@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -175,6 +176,11 @@ func TestSetupAndEnable2FA(t *testing.T) {
 	}
 	if setupResp["secret"] == "" || !strings.HasPrefix(setupResp["provisioning_uri"], "otpauth://") {
 		t.Fatalf("bad setup response: %v", setupResp)
+	}
+	// The inline QR: valid base64 that decodes to a real PNG.
+	qr, err := base64.StdEncoding.DecodeString(setupResp["qr_png_base64"])
+	if err != nil || len(qr) < 8 || string(qr[1:4]) != "PNG" {
+		t.Fatalf("qr_png_base64 must decode to a PNG (err=%v, len=%d)", err, len(qr))
 	}
 
 	// Enable with a valid code returns recovery codes and flips enabled.
