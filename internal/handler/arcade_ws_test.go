@@ -162,6 +162,42 @@ func TestArcadeRoom_MidGameLeaveNotifiesEveryone(t *testing.T) {
 	}
 }
 
+func TestArcadeRoom_DroppedPlayerReclaimsOwnSeatMidGame(t *testing.T) {
+	h := testHub()
+	host, g1 := &fakePeer{}, &fakePeer{}
+	room, _ := h.createRoom("powder-keg", 4, "u-host", host)
+	_, s1, _ := h.joinRoom(room.code, "u-guest", g1)
+	if reason := h.startRoom(room, 0); reason != "" {
+		t.Fatalf("start: %s", reason)
+	}
+	h.dropMember(room, s1)
+	if _, still := room.members[s1]; still {
+		t.Fatal("dropped member should be out of the roster")
+	}
+
+	// A stranger cannot take the vacated seat.
+	stranger := &fakePeer{}
+	if _, _, reason := h.joinRoom(room.code, "u-somebody-else", stranger); reason != "already_started" {
+		t.Errorf("stranger join: got %q, want already_started", reason)
+	}
+
+	// The same member reclaims exactly their old seat and lands in-game.
+	back := &fakePeer{}
+	rejoined, seat, reason := h.joinRoom(room.code, "u-guest", back)
+	if reason != "" || rejoined == nil || seat != s1 {
+		t.Fatalf("reclaim: seat=%d reason=%q", seat, reason)
+	}
+	last := back.last()
+	if last["op"] != "started" || last["rejoined"] != true {
+		t.Errorf("rejoiner should be booted straight into the running game, got %v", last)
+	}
+	// Seat is spent: a second reclaim attempt (stale tab) is refused.
+	again := &fakePeer{}
+	if _, _, reason := h.joinRoom(room.code, "u-guest", again); reason != "already_started" {
+		t.Errorf("double reclaim: got %q, want already_started", reason)
+	}
+}
+
 func TestArcadeRoom_SweepClosesIdleRooms(t *testing.T) {
 	h := testHub()
 	host := &fakePeer{}

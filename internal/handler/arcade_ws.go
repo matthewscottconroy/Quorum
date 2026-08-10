@@ -54,11 +54,15 @@ type roomMember struct {
 }
 
 type arcadeRoom struct {
-	code       string
-	game       string
-	seats      int // total seats incl. any bot-filled ones
-	started    bool
-	members    map[int]*roomMember // seat → member
+	code    string
+	game    string
+	seats   int // total seats incl. any bot-filled ones
+	started bool
+	members map[int]*roomMember // seat → member
+	// vacated remembers which user held each seat that dropped mid-game, so
+	// a reconnecting player can reclaim THEIR seat (and only theirs) —
+	// otherwise one blip turns a human into a bot for the rest of the round.
+	vacated    map[int]string // seat → userID
 	lastActive time.Time
 }
 
@@ -177,6 +181,7 @@ func (h *ArcadeHub) createRoom(game string, seats int, userID string, peer arcad
 		game:       game,
 		seats:      seats,
 		members:    map[int]*roomMember{0: {userID: userID, peer: peer}},
+		vacated:    map[int]string{},
 		lastActive: time.Now(),
 	}
 	h.rooms[code] = room
@@ -192,6 +197,23 @@ func (h *ArcadeHub) joinRoom(code, userID string, peer arcadePeer) (*arcadeRoom,
 		return nil, 0, "no_such_room"
 	}
 	if room.started {
+		// A started room admits exactly one kind of joiner: the same member
+		// reclaiming the seat they dropped from. They land straight back in
+		// the running game; the host's cartridge un-botifies the seat on
+		// their first input.
+		for s, uid := range room.vacated {
+			if uid != userID {
+				continue
+			}
+			delete(room.vacated, s)
+			room.members[s] = &roomMember{userID: userID, peer: peer}
+			room.lastActive = time.Now()
+			peer.deliver(map[string]any{
+				"op": "started", "seat": s, "seats": room.seats,
+				"present": room.present(), "rejoined": true,
+			})
+			return room, s, ""
+		}
 		return nil, 0, "already_started"
 	}
 	seat := -1
@@ -254,10 +276,14 @@ func (h *ArcadeHub) relay(room *arcadeRoom, seat int, data json.RawMessage) stri
 func (h *ArcadeHub) dropMember(room *arcadeRoom, seat int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := room.members[seat]; !ok {
+	member, ok := room.members[seat]
+	if !ok {
 		return
 	}
 	delete(room.members, seat)
+	if room.started {
+		room.vacated[seat] = member.userID // reclaimable by the same member
+	}
 	room.lastActive = time.Now()
 	if len(room.members) == 0 {
 		delete(h.rooms, room.code)
