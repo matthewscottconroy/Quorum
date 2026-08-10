@@ -901,6 +901,19 @@ your organization's server.
   supervise, build, bash, dig, quit-loudly — to route enough of them to the
   exit before the clock runs out; solo, two players at one machine, or two
   players online).
+- **Chess variety.** The LEVEL picker on the chess cabinet offers the
+  standard game, **Fischer Random** (a fresh scrambled back rank every
+  credit; castling is off, and the cabinet says so), and any position the
+  community has shelved. The **POSITION EDITOR** builds those: place
+  pieces with 1-6 and C, set who moves with T, test against the machine
+  with G — it plays whichever side you don't — and save with S. Mate-in-
+  two puzzle, eight queens against a lone king, whatever the break room
+  deserves.
+- **Cellars and dishes.** Powder Keg's editor paints walls and crates
+  around the twelve fixed spawn rings; Hexfection's punches holes in the
+  dish (custom dishes play locally — online rooms always deal the
+  standard board). Same S-to-save, G-to-test, X-to-return rhythm as the
+  INTERNS editor; everything lands on the same community shelf.
 - **Building INTERNS levels.** Pick any level (or the blank canvas) and the
   **LEVEL EDITOR** button opens it as a template — free, no credit. Paint
   and erase with the mouse (Shift-click draws straight lines, F mirrors
