@@ -144,6 +144,16 @@ impl Table {
 #[derive(Component)]
 struct CardSprite;
 
+/// Shared handles for drawing suit pips: the ASCII-only default font has no
+/// card symbols, so hearts, diamonds, spades, and clubs are BUILT — circles,
+/// rotated squares, and stems, like a real print shop would.
+#[derive(Resource)]
+struct CardFx {
+    circle: Handle<Mesh>,
+    small_circle: Handle<Mesh>,
+    suit_mats: Vec<Handle<ColorMaterial>>,
+}
+
 #[derive(Component)]
 struct SeatText(usize);
 
@@ -184,7 +194,18 @@ fn seat_pos(i: usize) -> Vec2 {
 
 const BOT_NAMES: [&str; 5] = ["MARGE", "SLIM", "DOC", "TILLY", "BRICK"];
 
-fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) {
+fn setup(
+    mut commands: Commands,
+    config: Res<CabinetConfig>,
+    net: Res<NetMode>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    commands.insert_resource(CardFx {
+        circle: meshes.add(Circle::new(4.0)),
+        small_circle: meshes.add(Circle::new(3.6)),
+        suit_mats: (0..4).map(|i| materials.add(suit_color(i))).collect(),
+    });
     let is_net = net.0.is_some();
     let (my_seat, present, players) = match &net.0 {
         Some(cfg) => {
@@ -281,16 +302,14 @@ fn suit_color(suit: u8) -> Color {
     }
 }
 
-fn card_label(c: Card) -> String {
-    let r = match c.rank {
+fn rank_label(c: Card) -> String {
+    match c.rank {
         14 => "A".into(),
         13 => "K".into(),
         12 => "Q".into(),
         11 => "J".into(),
         n => n.to_string(),
-    };
-    let s = ["S", "H", "D", "C"][c.suit as usize % 4];
-    format!("{r}{s}")
+    }
 }
 
 /// Shuffle with the cabinet's own PRNG.
@@ -845,6 +864,7 @@ fn table_run(
 fn paint(
     mut commands: Commands,
     mut table: ResMut<Table>,
+    fx: Res<CardFx>,
     cards: Query<Entity, With<CardSprite>>,
 ) {
     if !table.dirty {
@@ -854,10 +874,11 @@ fn paint(
     for e in &cards {
         commands.entity(e).despawn();
     }
-    let spawn_card = |commands: &mut Commands, pos: Vec2, card: Option<Card>| {
-        let (bg, label, color) = match card {
-            Some(c) => (Color::srgb(0.92, 0.9, 0.86), card_label(c), suit_color(c.suit)),
-            None => (Color::srgb(0.16, 0.2, 0.42), String::new(), WHITE),
+    let spawn_card = |commands: &mut Commands, fx: &CardFx, pos: Vec2, card: Option<Card>| {
+        let bg = if card.is_some() {
+            Color::srgb(0.92, 0.9, 0.86)
+        } else {
+            Color::srgb(0.16, 0.2, 0.42)
         };
         commands
             .spawn((
@@ -867,19 +888,20 @@ fn paint(
                 GameTag,
             ))
             .with_children(|kid| {
-                if !label.is_empty() {
-                    kid.spawn((
-                        Text2d::new(label),
-                        TextFont { font_size: 17.0, ..default() },
-                        TextColor(color),
-                        Transform::from_xyz(0.0, 0.0, 0.1),
-                    ));
-                }
+                let Some(c) = card else { return };
+                let color = suit_color(c.suit);
+                kid.spawn((
+                    Text2d::new(rank_label(c)),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(color),
+                    Transform::from_xyz(0.0, 15.0, 0.1),
+                ));
+                spawn_pip(kid, fx, c.suit, Vec2::new(0.0, -8.0));
             });
     };
     // Board.
     for (k, c) in table.board.iter().enumerate() {
-        spawn_card(&mut commands, Vec2::new(-96.0 + k as f32 * 48.0, 0.0), Some(*c));
+        spawn_card(&mut commands, &fx, Vec2::new(-96.0 + k as f32 * 48.0, 0.0), Some(*c));
     }
     // Hole cards: yours up, theirs down until shown.
     for i in 0..table.seats.len() {
@@ -891,7 +913,68 @@ fn paint(
         let y = if i == 0 { p.y + 52.0 } else { p.y - 52.0 };
         for (k, c) in s.hole.iter().enumerate() {
             let face = if i == table.my_seat || s.shown { Some(*c) } else { None };
-            spawn_card(&mut commands, Vec2::new(p.x - 22.0 + k as f32 * 44.0, y), face);
+            spawn_card(&mut commands, &fx, Vec2::new(p.x - 22.0 + k as f32 * 44.0, y), face);
+        }
+    }
+}
+
+/// Draws one suit symbol from primitives, centered at `at` (child space).
+/// Spades and clubs get stems; hearts and spades share the two-lobes-plus-
+/// point construction, one of them upside down.
+fn spawn_pip(kid: &mut ChildSpawnerCommands, fx: &CardFx, suit: u8, at: Vec2) {
+    let mat = fx.suit_mats[suit as usize % 4].clone();
+    let lobe = |kid: &mut ChildSpawnerCommands, x: f32, y: f32, small: bool| {
+        kid.spawn((
+            Mesh2d(if small { fx.small_circle.clone() } else { fx.circle.clone() }),
+            MeshMaterial2d(mat.clone()),
+            Transform::from_xyz(at.x + x, at.y + y, 0.1),
+        ));
+    };
+    let square = |kid: &mut ChildSpawnerCommands, x: f32, y: f32, size: f32| {
+        kid.spawn((
+            Sprite {
+                color: suit_color(suit),
+                custom_size: Some(Vec2::splat(size)),
+                ..default()
+            },
+            Transform::from_xyz(at.x + x, at.y + y, 0.1)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+        ));
+    };
+    let stem = |kid: &mut ChildSpawnerCommands| {
+        kid.spawn((
+            Sprite {
+                color: suit_color(suit),
+                custom_size: Some(Vec2::new(2.6, 5.5)),
+                ..default()
+            },
+            Transform::from_xyz(at.x, at.y - 6.5, 0.1),
+        ));
+    };
+    match suit % 4 {
+        0 => {
+            // Spade: point up, lobes below, stem.
+            square(kid, 0.0, 2.5, 8.0);
+            lobe(kid, -3.4, -1.2, false);
+            lobe(kid, 3.4, -1.2, false);
+            stem(kid);
+        }
+        1 => {
+            // Heart: lobes up, point down.
+            lobe(kid, -3.4, 2.0, false);
+            lobe(kid, 3.4, 2.0, false);
+            square(kid, 0.0, -1.5, 8.0);
+        }
+        2 => {
+            // Diamond: one rotated square.
+            square(kid, 0.0, 0.0, 9.5);
+        }
+        _ => {
+            // Club: three lobes and a stem.
+            lobe(kid, 0.0, 3.6, true);
+            lobe(kid, -3.8, -1.4, true);
+            lobe(kid, 3.8, -1.4, true);
+            stem(kid);
         }
     }
 }
