@@ -3,25 +3,43 @@
 //! chips (play tokens, never money), our own opponents. Blinds climb, the
 //! short stacks bust, the last stack standing keeps the table.
 //!
-//! Local only by design: hole cards are secrets, and the arcade's room
-//! relay broadcasts to every seat — an honest online table would need a
-//! dealer the relay deliberately isn't.
+//! Online rooms (2-6 humans, no bots) are dealt by the SERVER: each seat's
+//! hole cards travel only down that seat's own connection, so no player's
+//! client ever holds another player's cards. The acting host paces the
+//! dealer (deal / street / reveal — all public verbs); betting actions are
+//! relayed and validated by every client in lockstep.
 
 use arcade_logic::poker::{
     best_hand, deck, hand_name, Card, HandRank, FLUSH, FULL_HOUSE, QUADS, STRAIGHT, STRAIGHT_FLUSH,
 };
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::retro::{text, AMBER, CYAN, DIM, MAGENTA, RED, WHITE};
+use crate::retro::{text, AMBER, DIM, WHITE};
 use crate::rng::Rng;
-use crate::shell::{sfx, stat};
-use crate::{CabinetConfig, FinalScore, GameTag, Phase};
+use crate::shell::{net_op, net_send, sfx, stat};
+use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "TOURNAMENT TABLES. FICTIONAL CHIPS. REAL GRUDGES.",
     "F FOLDS / C CHECKS OR CALLS / R RAISES / A SHOVES",
     "BLINDS CLIMB. LAST STACK KEEPS THE TABLE.",
 ];
+
+/// Relayed betting action: "f" fold, "c" check/call, "r" pot raise,
+/// "x" all-in — plus the acting host's "afk" fold for a stalled seat.
+#[derive(Serialize, Deserialize)]
+struct WireAct {
+    t: String, // "act" | "afk"
+    #[serde(default)]
+    a: String,
+    #[serde(default)]
+    seat: usize,
+}
+
+fn decode_card(c: i64) -> Card {
+    Card { rank: 2 + (c % 13) as u8, suit: ((c / 13) % 4) as u8 }
+}
 
 const START_CHIPS: u32 = 1000;
 const START_BB: u32 = 20;
@@ -72,9 +90,26 @@ struct Table {
     over_wait: Timer,
     result: String,
     dirty: bool,
+    // ---- online (server-dealt) state ----
+    net: bool,
+    my_seat: usize,
+    present: Vec<bool>,
+    /// One dealer verb in flight at a time (deal/street/reveal).
+    dealer_req: bool,
+    /// Waiting on the server dealer (cards or board) before play resumes.
+    dealer_wait: bool,
+    /// The acting host's per-turn stall clock; lapse = relayed fold.
+    afk: Timer,
+    afk_turn: Option<usize>,
+    /// Online: the showdown holes have arrived from the dealer.
+    revealed: bool,
 }
 
 impl Table {
+    /// Online: the lowest present seat paces the dealer. Local: seat 0.
+    fn acting_host(&self) -> usize {
+        self.present.iter().position(|&p| p).unwrap_or(0)
+    }
     fn pot(&self) -> u32 {
         self.seats.iter().map(|s| s.committed_hand).sum()
     }
@@ -127,7 +162,7 @@ impl Plugin for HoldemPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
             Update,
-            (table_run, paint, texts)
+            (net_apply, table_run, paint, texts)
                 .chain()
                 .run_if(in_state(Phase::Playing))
                 .run_if(crate::unpaused),
@@ -149,8 +184,22 @@ fn seat_pos(i: usize) -> Vec2 {
 
 const BOT_NAMES: [&str; 5] = ["MARGE", "SLIM", "DOC", "TILLY", "BRICK"];
 
-fn setup(mut commands: Commands, config: Res<CabinetConfig>) {
-    let players = (config.players.clamp(2, 6)) as usize;
+fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) {
+    let is_net = net.0.is_some();
+    let (my_seat, present, players) = match &net.0 {
+        Some(cfg) => {
+            let n = cfg.seats.clamp(2, 6) as usize;
+            let mut present = vec![false; n];
+            for (i, &p) in cfg.present.iter().enumerate().take(n) {
+                present[i] = p;
+            }
+            (cfg.seat as usize, present, n)
+        }
+        None => {
+            let n = (config.players.clamp(2, 6)) as usize;
+            (0, vec![true; n], n)
+        }
+    };
     let seats = vec![
         Seat {
             chips: START_CHIPS,
@@ -164,6 +213,11 @@ fn setup(mut commands: Commands, config: Res<CabinetConfig>) {
         };
         players
     ];
+    let mut seats = seats;
+    // Online: unoccupied seats never existed; they are out from hand one.
+    for (i, seat) in seats.iter_mut().enumerate() {
+        seat.out = is_net && !present[i];
+    }
     commands.insert_resource(Table {
         seats,
         deck: Vec::new(),
@@ -184,6 +238,14 @@ fn setup(mut commands: Commands, config: Res<CabinetConfig>) {
         over_wait: Timer::from_seconds(3.0, TimerMode::Once),
         result: String::new(),
         dirty: true,
+        net: is_net,
+        my_seat,
+        present,
+        dealer_req: false,
+        dealer_wait: false,
+        afk: Timer::from_seconds(35.0, TimerMode::Once),
+        afk_turn: None,
+        revealed: false,
     });
 
     // Static furniture: seat panels, pot, ticker, controls, felt line.
@@ -245,7 +307,9 @@ fn start_hand(table: &mut Table, rng: &mut Rng) {
     table.hand_no += 1;
     stat("hands_played", 1);
     table.bb = (START_BB << ((table.hand_no - 1) / BLINDS_UP_EVERY).min(4)).min(MAX_BB);
-    table.deck = shuffled_deck(rng);
+    if !table.net {
+        table.deck = shuffled_deck(rng);
+    }
     table.board.clear();
     table.showdown_lines.clear();
     for s in table.seats.iter_mut() {
@@ -254,11 +318,20 @@ fn start_hand(table: &mut Table, rng: &mut Rng) {
         s.committed_hand = 0;
         s.acted = false;
         s.shown = false;
-        if !s.out {
+        if !s.out && !table.net {
             s.hole = [table.deck.pop().expect("deck"), table.deck.pop().expect("deck")];
+        } else if !s.out {
+            // Online: placeholders until the dealer's private "cards" and
+            // the showdown "holes" fill them in.
+            s.hole = [Card { rank: 2, suit: 0 }; 2];
         }
     }
-    // The button walks; blinds post; action starts left of the big blind.
+    begin_betting(table);
+}
+
+/// Blinds, button walk, first action — shared by local and online hands.
+fn begin_betting(table: &mut Table) {
+    table.revealed = false;
     table.dealer = table.next_from(table.dealer, false);
     let sb = table.next_from(table.dealer, false);
     let bb_seat = table.next_from(sb, false);
@@ -275,9 +348,42 @@ fn start_hand(table: &mut Table, rng: &mut Rng) {
     sfx("coin");
 }
 
+/// Online hand start, triggered by the server's public "dealt" notice. The
+/// dealer's hand number keeps every client in lockstep; seats the server
+/// did NOT deal (disconnected) sit out.
+fn start_hand_net(table: &mut Table, hand: u32, dealt_seats: &[usize]) {
+    table.hand_no = hand;
+    stat("hands_played", 1);
+    table.bb = (START_BB << (hand.saturating_sub(1) / BLINDS_UP_EVERY).min(4)).min(MAX_BB);
+    table.board.clear();
+    table.showdown_lines.clear();
+    for (i, s) in table.seats.iter_mut().enumerate() {
+        s.folded = s.out || !dealt_seats.contains(&i);
+        s.committed_street = 0;
+        s.committed_hand = 0;
+        s.acted = false;
+        s.shown = false;
+        s.hole = [Card { rank: 2, suit: 0 }; 2]; // "cards" fills in our own
+    }
+    table.dealer_req = false;
+    table.dealer_wait = false;
+    begin_betting(table);
+}
+
+/// Fresh betting street: commitments roll into the pot, everyone may act.
+fn reset_street(table: &mut Table) {
+    for s in table.seats.iter_mut() {
+        s.committed_street = 0;
+        s.acted = false;
+    }
+    table.bet = 0;
+    table.min_raise = table.bb;
+    table.raises_this_street = 0;
+}
+
 /// One betting action. `raise_to` of None = call/check, Some(0) = fold.
 fn act(table: &mut Table, seat: usize, action: BetAction) {
-    let name = seat_name(seat);
+    let name = seat_name_for(table, seat);
     match action {
         BetAction::Fold => {
             table.seats[seat].folded = true;
@@ -337,9 +443,11 @@ enum BetAction {
     Raise(u32),
 }
 
-fn seat_name(i: usize) -> String {
-    if i == 0 {
+fn seat_name_for(table: &Table, i: usize) -> String {
+    if i == table.my_seat {
         "YOU".into()
+    } else if table.net {
+        format!("SEAT {}", i + 1)
     } else {
         BOT_NAMES[(i - 1) % BOT_NAMES.len()].into()
     }
@@ -465,13 +573,13 @@ fn showdown(table: &mut Table) {
         let won = awarded_total[i] > 0;
         table.showdown_lines.push(format!(
             "{}: {}{}",
-            seat_name(i),
+            seat_name_for(table, i),
             hand_name(r.cat, r.tie[0]),
             if won { format!(" - WINS {}", awarded_total[i]) } else { String::new() }
         ));
-        if i == 0 && won {
+        if i == table.my_seat && won {
             stat("hands_won", 1);
-            stat("chips_won", awarded_total[0] as u64);
+            stat("chips_won", awarded_total[table.my_seat] as u64);
             match r.cat {
                 STRAIGHT_FLUSH if r.tie[0] == 14 => stat("royal_flushes", 1),
                 STRAIGHT_FLUSH => stat("straight_flushes", 1),
@@ -504,7 +612,7 @@ fn table_run(
 ) {
     if table.over {
         if table.over_wait.tick(time.delta()).finished() {
-            final_score.0 = table.seats[0].chips;
+            final_score.0 = table.seats[table.my_seat].chips;
             next.set(Phase::GameOver);
         }
         return;
@@ -519,30 +627,48 @@ fn table_run(
             for i in 0..table.seats.len() {
                 if table.seats[i].chips == 0 && !table.seats[i].out {
                     table.seats[i].out = true;
-                    if i == 0 {
+                    if i == table.my_seat {
                         stat("bust_outs", 1);
                     }
                 }
             }
+            let me = table.my_seat;
             let alive: Vec<usize> =
                 (0..table.seats.len()).filter(|&i| !table.seats[i].out).collect();
-            if table.seats[0].out {
+            if table.seats[me].out && !table.net {
                 table.over = true;
                 table.result = "BUSTED OUT".into();
                 table.msg = "BUSTED. THE HOUSE THANKS YOU.".into();
                 table.dirty = true;
                 return;
             }
-            if alive.len() == 1 || table.hand_no >= MAX_HANDS {
+            // Online, a busted player spectates until the table resolves —
+            // walking away mid-tournament is what the ticker is for.
+            if alive.len() <= 1 || table.hand_no >= MAX_HANDS {
                 table.over = true;
-                if alive.len() == 1 {
+                if alive.len() == 1 && alive[0] == me {
                     stat("tables_swept", 1);
                     table.msg = "THE TABLE IS YOURS.".into();
+                } else if table.seats[me].out {
+                    table.msg = "BUSTED. THE HOUSE THANKS YOU.".into();
                 } else {
                     table.msg = "CLOSING TIME. CHIPS COUNT.".into();
                 }
                 table.dirty = true;
                 return;
+            }
+            if table.net {
+                // The server deals; the acting host asks exactly once.
+                if table.acting_host() == me && !table.dealer_req {
+                    net_op("deal");
+                    table.dealer_req = true;
+                }
+                table.dealer_wait = true;
+                if table.msg.is_empty() {
+                    table.msg = "THE HOUSE IS DEALING...".into();
+                }
+                table.wait = Timer::from_seconds(0.4, TimerMode::Once);
+                return; // net_apply's "dealt" moves the table on
             }
             start_hand(&mut table, &mut rng);
             table.wait = Timer::from_seconds(0.7, TimerMode::Once);
@@ -554,7 +680,7 @@ fn table_run(
                 let w = in_hand[0];
                 let pot = table.pot();
                 table.seats[w].chips += pot;
-                if w == 0 {
+                if w == table.my_seat {
                     stat("hands_won", 1);
                     stat("chips_won", pot as u64);
                 }
@@ -562,7 +688,7 @@ fn table_run(
                     s.committed_hand = 0;
                     s.committed_street = 0;
                 }
-                table.msg = format!("{} TAKES {} UNCONTESTED", seat_name(w), pot);
+                table.msg = format!("{} TAKES {} UNCONTESTED", seat_name_for(&table, w), pot);
                 table.stage = Stage::NewHand;
                 table.wait = Timer::from_seconds(2.0, TimerMode::Once);
                 table.dirty = true;
@@ -592,41 +718,79 @@ fn table_run(
                 table.turn = table.next_from(i, true);
                 return;
             }
-            if i == 0 {
-                // The human acts on keys.
+            // Online stall clock: the acting host folds ANY seat that
+            // sleeps on its turn (its own included) and tells the room.
+            if table.net {
+                if table.afk_turn != Some(i) {
+                    table.afk_turn = Some(i);
+                    table.afk.reset();
+                } else if table.acting_host() == table.my_seat
+                    && table.afk.tick(time.delta()).finished()
+                {
+                    if let Ok(w) =
+                        serde_json::to_string(&WireAct { t: "afk".into(), a: String::new(), seat: i })
+                    {
+                        net_send(&w);
+                    }
+                    act(&mut table, i, BetAction::Fold);
+                    table.turn = table.next_from(i, true);
+                    return;
+                }
+            }
+            if i == table.my_seat && !table.seats[i].out {
+                // Your keys, your move (any seat number online).
                 let action = if keys.just_pressed(KeyCode::KeyF) {
                     stat("folds", 1);
-                    Some(BetAction::Fold)
+                    Some(("f", BetAction::Fold))
                 } else if keys.just_pressed(KeyCode::KeyC) {
-                    Some(BetAction::CheckCall)
+                    Some(("c", BetAction::CheckCall))
                 } else if keys.just_pressed(KeyCode::KeyR) {
                     stat("raises", 1);
-                    Some(BetAction::Raise(table.pot().max(table.bb)))
+                    Some(("r", BetAction::Raise(table.pot().max(table.bb))))
                 } else if keys.just_pressed(KeyCode::KeyA) {
                     stat("all_ins", 1);
-                    let chips = table.seats[0].chips;
-                    Some(BetAction::Raise(chips))
+                    let chips = table.seats[i].chips;
+                    Some(("x", BetAction::Raise(chips)))
                 } else {
                     None
                 };
-                if let Some(a) = action {
-                    act(&mut table, 0, a);
-                    table.turn = table.next_from(0, true);
+                if let Some((code, a)) = action {
+                    if table.net {
+                        if let Ok(w) = serde_json::to_string(&WireAct {
+                            t: "act".into(),
+                            a: code.into(),
+                            seat: i,
+                        }) {
+                            net_send(&w);
+                        }
+                    }
+                    act(&mut table, i, a);
+                    table.turn = table.next_from(i, true);
                 }
-            } else if table.bot_clock.tick(time.delta()).just_finished() {
+            } else if !table.net && table.bot_clock.tick(time.delta()).just_finished() {
                 let a = bot_decide(&table, i, &mut rng);
                 act(&mut table, i, a);
                 table.turn = table.next_from(i, true);
             }
+            // Online: someone else's turn resolves via the relay.
         }
         Stage::AdvanceStreet => {
-            for s in table.seats.iter_mut() {
-                s.committed_street = 0;
-                s.acted = false;
+            if table.net {
+                if table.board.len() >= 5 {
+                    table.stage = Stage::Showdown;
+                    table.wait = Timer::from_seconds(0.4, TimerMode::Once);
+                    return;
+                }
+                // The server holds the deck; ask once, then wait for "board".
+                if table.acting_host() == table.my_seat && !table.dealer_req {
+                    net_op("street");
+                    table.dealer_req = true;
+                }
+                table.dealer_wait = true;
+                table.wait = Timer::from_seconds(0.3, TimerMode::Once);
+                return;
             }
-            table.bet = 0;
-            table.min_raise = table.bb;
-            table.raises_this_street = 0;
+            reset_street(&mut table);
             match table.board.len() {
                 0 => {
                     for _ in 0..3 {
@@ -654,7 +818,18 @@ fn table_run(
             table.wait = Timer::from_seconds(0.8, TimerMode::Once);
         }
         Stage::Showdown => {
+            if table.net && !table.revealed {
+                // The server knows the cards; the acting host asks once.
+                if table.acting_host() == table.my_seat && !table.dealer_req {
+                    net_op("reveal");
+                    table.dealer_req = true;
+                }
+                table.msg = "CALLING FOR THE CARDS...".into();
+                table.wait = Timer::from_seconds(0.3, TimerMode::Once);
+                return;
+            }
             showdown(&mut table);
+            table.dealer_req = false;
             table.stage = Stage::HandOver;
             table.wait = Timer::from_seconds(3.4, TimerMode::Once);
         }
@@ -715,7 +890,7 @@ fn paint(
         let p = seat_pos(i);
         let y = if i == 0 { p.y + 52.0 } else { p.y - 52.0 };
         for (k, c) in s.hole.iter().enumerate() {
-            let face = if i == 0 || s.shown { Some(*c) } else { None };
+            let face = if i == table.my_seat || s.shown { Some(*c) } else { None };
             spawn_card(&mut commands, Vec2::new(p.x - 22.0 + k as f32 * 44.0, y), face);
         }
     }
@@ -733,7 +908,7 @@ fn texts(
     for (st, mut t) in &mut seat_texts {
         let i = st.0;
         let s = &table.seats[i];
-        let name = seat_name(i);
+        let name = seat_name_for(&table, i);
         let line = if s.out {
             format!("{name}\nBUSTED")
         } else {
@@ -771,10 +946,13 @@ fn texts(
         }
     }
     if let Ok(mut t) = hint.single_mut() {
-        let s = if table.board.len() >= 3 && !table.seats[0].folded && !table.seats[0].out {
+        let s = if table.board.len() >= 3
+            && !table.seats[table.my_seat].folded
+            && !table.seats[table.my_seat].out
+        {
             let mut cards = table.board.clone();
-            cards.push(table.seats[0].hole[0]);
-            cards.push(table.seats[0].hole[1]);
+            cards.push(table.seats[table.my_seat].hole[0]);
+            cards.push(table.seats[table.my_seat].hole[1]);
             let r = best_hand(&cards);
             format!("YOU HOLD: {}", hand_name(r.cat, r.tie[0]))
         } else {
@@ -782,6 +960,133 @@ fn texts(
         };
         if t.0 != s {
             t.0 = s;
+        }
+    }
+}
+
+/// Online events: the dealer's private cards and public board/reveal, other
+/// seats' relayed betting actions, AFK folds, and departures. Every client
+/// applies the same public sequence, so the tables never diverge.
+fn net_apply(mut events: EventReader<NetIn>, net: Res<NetMode>, mut table: ResMut<Table>) {
+    if net.0.is_none() {
+        events.clear();
+        return;
+    }
+    for ev in events.read() {
+        if ev.left {
+            let s = ev.seat as usize;
+            if s < table.seats.len() {
+                if s < table.present.len() {
+                    table.present[s] = false;
+                }
+                if !table.seats[s].folded && !table.seats[s].out {
+                    act(&mut table, s, BetAction::Fold);
+                    if table.stage == Stage::Betting && table.turn == s {
+                        table.turn = table.next_from(s, true);
+                    }
+                }
+                table.seats[s].out = true; // gone for good; stack retires
+                let name = seat_name_for(&table, s);
+                table.msg = format!("{name} LEFT THE TABLE");
+                table.dirty = true;
+            }
+            continue;
+        }
+        // Seat 255 marks messages from the house dealer.
+        if ev.seat == 255 {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&ev.data) else { continue };
+            match v.get("op").and_then(|o| o.as_str()) {
+                Some("cards") => {
+                    if let Some(arr) = v.get("hole").and_then(|h| h.as_array()) {
+                        if arr.len() == 2 {
+                            let me = table.my_seat;
+                            table.seats[me].hole = [
+                                decode_card(arr[0].as_i64().unwrap_or(0)),
+                                decode_card(arr[1].as_i64().unwrap_or(0)),
+                            ];
+                            table.dirty = true;
+                        }
+                    }
+                }
+                Some("dealt") => {
+                    let hand = v.get("hand").and_then(|h| h.as_u64()).unwrap_or(0) as u32;
+                    let seats: Vec<usize> = v
+                        .get("seats")
+                        .and_then(|a| a.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+                        .unwrap_or_default();
+                    start_hand_net(&mut table, hand, &seats);
+                }
+                Some("board") => {
+                    if let Some(cards) = v.get("cards").and_then(|c| c.as_array()) {
+                        for c in cards {
+                            table.board.push(decode_card(c.as_i64().unwrap_or(0)));
+                        }
+                        reset_street(&mut table);
+                        table.stage = Stage::Betting;
+                        table.turn = table.next_from(table.dealer, true);
+                        table.dealer_req = false;
+                        table.dealer_wait = false;
+                        table.msg = match table.board.len() {
+                            3 => "THE FLOP".into(),
+                            4 => "THE TURN".into(),
+                            _ => "THE RIVER".into(),
+                        };
+                        table.wait = Timer::from_seconds(0.6, TimerMode::Once);
+                        table.dirty = true;
+                        sfx("drop");
+                    }
+                }
+                Some("holes") => {
+                    if let Some(map) = v.get("holes").and_then(|h| h.as_object()) {
+                        for (k, arr) in map {
+                            if let (Ok(seat), Some(a)) = (k.parse::<usize>(), arr.as_array()) {
+                                if seat < table.seats.len() && a.len() == 2 {
+                                    table.seats[seat].hole = [
+                                        decode_card(a[0].as_i64().unwrap_or(0)),
+                                        decode_card(a[1].as_i64().unwrap_or(0)),
+                                    ];
+                                }
+                            }
+                        }
+                        table.revealed = true;
+                        table.dealer_req = false;
+                        table.dealer_wait = false;
+                        table.dirty = true;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        // Other players' betting actions, applied in lockstep.
+        if ev.seat as usize == table.my_seat {
+            continue;
+        }
+        let Ok(w) = serde_json::from_str::<WireAct>(&ev.data) else { continue };
+        match w.t.as_str() {
+            "act" if table.stage == Stage::Betting && table.turn == ev.seat as usize => {
+                let action = match w.a.as_str() {
+                    "f" => BetAction::Fold,
+                    "c" => BetAction::CheckCall,
+                    "r" => BetAction::Raise(table.pot().max(table.bb)),
+                    _ => {
+                        let chips = table.seats[ev.seat as usize].chips;
+                        BetAction::Raise(chips)
+                    }
+                };
+                act(&mut table, ev.seat as usize, action);
+                table.turn = table.next_from(ev.seat as usize, true);
+            }
+            "afk"
+                if table.stage == Stage::Betting
+                    && table.turn == w.seat
+                    && ev.seat as usize == table.acting_host() =>
+            {
+                act(&mut table, w.seat, BetAction::Fold);
+                table.turn = table.next_from(w.seat, true);
+            }
+            _ => {}
         }
     }
 }

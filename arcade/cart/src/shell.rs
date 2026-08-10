@@ -156,6 +156,24 @@ pub fn sfx(name: &str) {
     }
 }
 
+/// Asks the page to send a raw room op ("deal" / "street" / "reveal") — the
+/// hold 'em dealer verbs, paced by the acting host's cartridge.
+pub fn net_op(op: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        if let Ok(f) = js_sys::Reflect::get(&js_sys::global(), &"__arcadeNetOp".into()) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&wasm_bindgen::JsValue::NULL, &op.into());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = op;
+    }
+}
+
 /// Sends a game payload to the room (host relays state; players relay moves).
 pub fn net_send(payload: &str) {
     #[cfg(target_arch = "wasm32")]

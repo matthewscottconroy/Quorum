@@ -53,7 +53,7 @@ const CABINETS = [
   },
   {
     id: 'texas-holdem', name: "HOLD 'EM", tag: 'Tournament tables. Fictional chips, real grudges.',
-    players: 'you vs 1-5 machine sharks', controls: 'F fold · C check/call · R raise (pot) · A all-in · Esc pause. Blinds climb every 8 hands; last stack keeps the table.',
+    players: 'you vs 1-5 machine sharks · 2-6 online', controls: 'F fold · C check/call · R raise (pot) · A all-in · Esc pause (local). Blinds climb every 8 hands; last stack keeps the table. Online: the SERVER deals, so nobody\u2019s browser ever sees your hole cards.',
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
@@ -66,7 +66,7 @@ const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min:
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 } };
 // Level-capable cabinets: house options, the editor's blank-canvas label,
 // and the toast shown when the editor opens.
 const LEVELS = {
@@ -797,6 +797,10 @@ class PageArcade extends HTMLElement {
             window.__arcadeNetSend = s => {
               try { ws.send(JSON.stringify({ op: 'msg', data: JSON.parse(s) })); } catch { /* closed */ }
             };
+            // Dealer verbs (hold 'em): the cartridge paces the server dealer.
+            window.__arcadeNetOp = op => {
+              try { ws.send(JSON.stringify({ op })); } catch { /* closed */ }
+            };
             this._mod.arcade_start_net(JSON.stringify({
               seat: m.seat, seats: m.seats, present: m.present ?? [],
             }));
@@ -807,6 +811,15 @@ class PageArcade extends HTMLElement {
           }
           case 'msg':
             this._mod.arcade_net_event(JSON.stringify({ seat: m.seat, data: m.data }));
+            break;
+          // Dealer messages (hold 'em): seat 255 marks "from the house".
+          case 'cards':
+          case 'dealt':
+          case 'board':
+          case 'holes':
+            // Pass the object itself: the shell stringifies `data` for the
+            // cartridge, so pre-stringifying would double-encode it.
+            this._mod.arcade_net_event(JSON.stringify({ seat: 255, data: m }));
             break;
           case 'peer_left':
             if (started) {
