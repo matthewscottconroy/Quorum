@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 
-use crate::retro::{text, AMBER, CYAN, GREEN, MAGENTA, RED, WHITE};
+use crate::retro::{popup, text, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::rng::Rng;
 use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
@@ -68,6 +68,7 @@ struct Maze {
     chain: u32, // auditors caught during one write-off
     respawn_pause: Timer,
     paused_for_death: bool,
+    next_extra_life: u32,
 }
 
 impl Maze {
@@ -89,6 +90,13 @@ struct Runner {
     want: IVec2,
     progress: f32,
     speed: f32,
+    arrived: bool, // crossed a tile center this frame (decision point)
+}
+
+impl Runner {
+    fn at(tile: IVec2, speed: f32) -> Self {
+        Runner { tile, dir: IVec2::ZERO, want: IVec2::ZERO, progress: 0.0, speed, arrived: false }
+    }
 }
 
 #[derive(Component)]
@@ -97,7 +105,15 @@ struct Player;
 #[derive(Component)]
 struct Auditor {
     idx: usize,
-    dead: bool, // heading home after being caught
+    dead: bool,   // heading home after being caught
+    home: IVec2,  // the office tile this auditor revives at
+    edible: bool, // armed by the CURRENT write-off; revived auditors are not
+}
+
+/// Attract-mode set dressing: a dim coin grid and a patrolling auditor.
+#[derive(Component)]
+struct AttractBit {
+    vel: Vec2,
 }
 
 #[derive(Component)]
@@ -107,18 +123,21 @@ pub struct PennyPlugin;
 
 impl Plugin for PennyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (steer, advance, auditor_brains, munch, draw_hud)
-                .chain()
-                .run_if(in_state(Phase::Playing))
-                .run_if(crate::unpaused),
-        );
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(OnEnter(Phase::Attract), attract_in)
+            .add_systems(OnExit(Phase::Attract), attract_out)
+            .add_systems(Update, attract_drift.run_if(in_state(Phase::Attract)))
+            .add_systems(
+                Update,
+                (steer, advance, auditor_brains, munch, draw_hud)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
     }
 }
 
-fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
-    let _ = &mut rng;
+fn setup(mut commands: Commands) {
     let mut walls = vec![false; (W * H) as usize];
     let mut coins: Vec<Option<Entity>> = vec![None; (W * H) as usize];
     let mut bars = vec![false; (W * H) as usize];
@@ -143,36 +162,12 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
                         GameTag,
                     ));
                 }
-                '.' => {
+                '.' | 'o' => {
                     coins_left += 1;
-                    let e = commands
-                        .spawn((
-                            Sprite {
-                                color: AMBER,
-                                custom_size: Some(Vec2::splat(5.0)),
-                                ..default()
-                            },
-                            Transform::from_xyz(pos.x, pos.y, 2.0),
-                            GameTag,
-                        ))
-                        .id();
-                    coins[idx] = Some(e);
-                }
-                'o' => {
-                    coins_left += 1;
-                    bars[idx] = true;
-                    let e = commands
-                        .spawn((
-                            Sprite {
-                                color: AMBER,
-                                custom_size: Some(Vec2::new(14.0, 9.0)),
-                                ..default()
-                            },
-                            Transform::from_xyz(pos.x, pos.y, 2.0),
-                            GameTag,
-                        ))
-                        .id();
-                    coins[idx] = Some(e);
+                    if ch == 'o' {
+                        bars[idx] = true;
+                    }
+                    coins[idx] = spawn_pickup(&mut commands, ch, pos);
                 }
                 'P' => player_start = IVec2::new(x as i32, y as i32),
                 'H' => offices.push(IVec2::new(x as i32, y as i32)),
@@ -194,13 +189,14 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         chain: 0,
         respawn_pause: Timer::from_seconds(1.2, TimerMode::Once),
         paused_for_death: false,
+        next_extra_life: 10_000,
     });
 
     // Our hero: a small green square with a money grin (a lighter inlay).
     commands
         .spawn((
             Player,
-            Runner { tile: player_start, dir: IVec2::ZERO, want: IVec2::ZERO, progress: 0.0, speed: SPEED },
+            Runner::at(player_start, SPEED),
             Sprite { color: GREEN, custom_size: Some(Vec2::splat(CELL - 7.0)), ..default() },
             Transform::from_translation(tile_pos(player_start.x, player_start.y).extend(5.0)),
             GameTag,
@@ -218,8 +214,8 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         let home = offices.get(i % offices.len().max(1)).copied().unwrap_or(IVec2::new(10, 10));
         commands
             .spawn((
-                Auditor { idx: i, dead: false },
-                Runner { tile: home, dir: IVec2::ZERO, want: IVec2::ZERO, progress: 0.0, speed: SPEED * 0.92 },
+                Auditor { idx: i, dead: false, home, edible: false },
+                Runner::at(home, SPEED * 0.92),
                 Sprite { color: colors[i], custom_size: Some(Vec2::splat(CELL - 6.0)), ..default() },
                 Transform::from_translation(tile_pos(home.x, home.y).extend(6.0)),
                 GameTag,
@@ -254,13 +250,27 @@ fn steer(keys: Res<ButtonInput<KeyCode>>, mut players: Query<&mut Runner, With<P
 }
 
 /// Moves every runner along the grid: advance toward the next tile, turn at
-/// centers when the wanted direction is open, stop at walls.
-fn advance(time: Res<Time>, maze: Res<Maze>, mut runners: Query<(&mut Runner, &mut Transform)>) {
+/// centers when the wanted direction is open, stop at walls. The player may
+/// reverse instantly mid-segment (a core defensive move in this genre);
+/// auditors keep the never-reverse rule and only flip via their brains.
+fn advance(
+    time: Res<Time>,
+    maze: Res<Maze>,
+    mut runners: Query<(&mut Runner, &mut Transform, Option<&Player>)>,
+) {
     if maze.paused_for_death {
         return;
     }
     let dt = time.delta_secs();
-    for (mut r, mut tf) in &mut runners {
+    for (mut r, mut tf, player) in &mut runners {
+        if player.is_some() && r.dir != IVec2::ZERO && r.want == -r.dir && r.progress > 0.0 {
+            // Instant about-face: re-express the same position walking back.
+            let d = r.dir;
+            r.tile += d;
+            r.tile.x = (r.tile.x + W) % W;
+            r.dir = -d;
+            r.progress = 1.0 - r.progress;
+        }
         let step = r.speed * dt / CELL; // progress in tiles
         let mut remaining = step;
         while remaining > 0.0 {
@@ -281,6 +291,7 @@ fn advance(time: Res<Time>, maze: Res<Maze>, mut runners: Query<(&mut Runner, &m
                 r.tile += d;
                 r.tile.x = (r.tile.x + W) % W; // tunnel wrap
                 r.progress = 0.0;
+                r.arrived = true; // decision point for the brains this frame
                 // Turn or continue or stop.
                 let turn_open = r.want != IVec2::ZERO && !maze.wall(r.tile.x + r.want.x, r.tile.y + r.want.y);
                 let ahead_open = !maze.wall(r.tile.x + r.dir.x, r.tile.y + r.dir.y);
@@ -314,12 +325,15 @@ fn auditor_brains(
     }
     let Ok(p) = players.single() else { return };
     for (mut r, a) in &mut auditors {
-        // Decide only when stopped or exactly at a tile center.
-        if r.dir != IVec2::ZERO && r.progress > f32::EPSILON {
+        // Decide when stopped or when `advance` just crossed a tile center
+        // this frame (movement rolls leftover progress past exact centers,
+        // so a raw progress==0 test would almost never fire mid-run).
+        if r.dir != IVec2::ZERO && !r.arrived {
             continue;
         }
+        r.arrived = false;
         let target: IVec2 = if a.dead {
-            IVec2::new(10, 10) // the office block
+            a.home // walk back to your own office
         } else if maze.frightened {
             // Run to the corner farthest from the player.
             let corners = [IVec2::new(1, 1), IVec2::new(W - 2, 1), IVec2::new(1, H - 2), IVec2::new(W - 2, H - 2)];
@@ -411,6 +425,7 @@ fn munch(
                 ar.want = IVec2::ZERO;
                 ar.progress = 0.0;
                 aud.dead = false;
+                aud.edible = false;
                 let p = tile_pos(spot.x, spot.y);
                 atf.translation.x = p.x;
                 atf.translation.y = p.y;
@@ -424,6 +439,14 @@ fn munch(
     if maze.frightened && maze.fright.tick(time.delta()).finished() {
         maze.frightened = false;
         maze.chain = 0;
+    }
+
+    // Extra accountant every 10k — same honest threshold as Comet Buster.
+    if maze.score >= maze.next_extra_life {
+        maze.lives += 1;
+        maze.next_extra_life += 10_000;
+        sfx("extra");
+        popup(&mut commands, "EXTRA LIFE", 20.0, GREEN, Vec2::new(0.0, 270.0));
     }
 
     // Coin pickup at the current tile.
@@ -441,21 +464,26 @@ fn munch(
             maze.fright.reset();
             reverse_auditors = true;
             sfx("power");
+            popup(&mut commands, "+50", 16.0, AMBER, ptf.translation.truncate());
         } else {
             maze.score += 10;
             sfx("coin");
         }
         if maze.coins_left == 0 {
-            // Board cleared — next shift, a touch faster.
+            // Board cleared — next shift, a touch faster. Reuse the death
+            // freeze: a 1.2s beat, then EVERYONE resets to their spawn spot
+            // (no more shift-two spawn camping by a lucky auditor).
             maze.score += 500;
             maze.level += 1;
             final_score.0 = maze.score; // provisional, in case they bail
             respawn_board(&mut commands, &mut maze);
             pr.speed = SPEED * (1.0 + 0.08 * (maze.level - 1) as f32).min(1.25);
-            pr.tile = IVec2::new(10, 12);
-            pr.dir = IVec2::ZERO;
-            pr.want = IVec2::ZERO;
-            pr.progress = 0.0;
+            maze.paused_for_death = true;
+            maze.respawn_pause.reset();
+            sfx("clear");
+            popup(&mut commands, &format!("SHIFT {}", maze.level), 30.0, AMBER, Vec2::new(0.0, 40.0));
+            popup(&mut commands, "+500", 20.0, WHITE, Vec2::new(0.0, 8.0));
+            return;
         }
     }
 
@@ -464,27 +492,36 @@ fn munch(
     let blink_on = (time.elapsed_secs() * 6.0) as i32 % 2 == 0;
     let ppos = ptf.translation.truncate();
     for (mut ar, mut aud, mut sprite, atf) in &mut auditors {
-        if reverse_auditors && !aud.dead && ar.dir != IVec2::ZERO {
-            // Mode change: every auditor snaps around. The classic tell.
-            ar.want = -ar.dir;
-            ar.dir = -ar.dir;
+        if reverse_auditors && !aud.dead {
+            // Mode change: every live auditor is fair game and snaps around
+            // (the classic tell) if it was moving.
+            aud.edible = true;
+            if ar.dir != IVec2::ZERO {
+                ar.want = -ar.dir;
+                ar.dir = -ar.dir;
+            }
         }
         if aud.dead {
-            // Reached the office? Back to work.
-            if ar.tile.y == 10 && (6..=15).contains(&ar.tile.x) {
+            // Reached their own office? Back to work — and NOT edible: a
+            // revived auditor takes no part in the write-off that caught it.
+            if ar.tile == aud.home {
                 aud.dead = false;
+                aud.edible = false;
                 sprite.color.set_alpha(1.0);
             }
             continue;
         }
+        let edible_now = maze.frightened && aud.edible;
         if atf.translation.truncate().distance(ppos) < CELL * 0.55 {
-            if maze.frightened {
+            if edible_now {
                 maze.chain += 1;
-                maze.score += 100 * (1 << maze.chain.min(4)); // 200 400 800 1600
+                let pay = 100 * (1 << maze.chain.min(4)); // 200 400 800 1600
+                maze.score += pay;
                 aud.dead = true;
                 ar.speed = SPEED * 1.4;
                 sprite.color.set_alpha(0.35);
                 sfx("eat");
+                popup(&mut commands, &format!("+{pay}"), 18.0, WHITE, atf.translation.truncate());
             } else {
                 maze.lives -= 1;
                 sfx("death");
@@ -497,8 +534,11 @@ fn munch(
                 maze.respawn_pause.reset();
                 return;
             }
-        } else if !maze.frightened {
-            ar.speed = SPEED * (0.92 + 0.06 * (maze.level - 1) as f32).min(1.30);
+        } else if !edible_now {
+            // Cap the pursuit just under the player's own cap: late shifts
+            // stay tense through fright windows, not through unwinnable
+            // straight-line chases.
+            ar.speed = SPEED * (0.92 + 0.06 * (maze.level - 1) as f32).min(1.22);
             sprite.color.set_alpha(1.0);
         } else {
             ar.speed = SPEED * 0.6; // frightened auditors shuffle
@@ -506,6 +546,17 @@ fn munch(
             sprite.color.set_alpha(if fright_ending && blink_on { 1.0 } else { 0.6 });
         }
     }
+}
+
+/// Spawns one coin ('.') or gold bar ('o') sprite — shared by first-board
+/// setup and the next-shift respawn.
+fn spawn_pickup(commands: &mut Commands, ch: char, pos: Vec2) -> Option<Entity> {
+    let sprite = match ch {
+        '.' => Sprite { color: AMBER, custom_size: Some(Vec2::splat(5.0)), ..default() },
+        'o' => Sprite { color: AMBER, custom_size: Some(Vec2::new(14.0, 9.0)), ..default() },
+        _ => return None,
+    };
+    Some(commands.spawn((sprite, Transform::from_xyz(pos.x, pos.y, 2.0), GameTag)).id())
 }
 
 /// Respawns coins and bars for the next level.
@@ -518,35 +569,59 @@ fn respawn_board(commands: &mut Commands, maze: &mut Maze) {
                 continue;
             }
             let pos = tile_pos(x as i32, y as i32);
-            match ch {
-                '.' => {
-                    let e = commands
-                        .spawn((
-                            Sprite { color: AMBER, custom_size: Some(Vec2::splat(5.0)), ..default() },
-                            Transform::from_xyz(pos.x, pos.y, 2.0),
-                            GameTag,
-                        ))
-                        .id();
-                    maze.coins[idx] = Some(e);
-                }
-                'o' => {
-                    let e = commands
-                        .spawn((
-                            Sprite { color: AMBER, custom_size: Some(Vec2::new(14.0, 9.0)), ..default() },
-                            Transform::from_xyz(pos.x, pos.y, 2.0),
-                            GameTag,
-                        ))
-                        .id();
-                    maze.coins[idx] = Some(e);
-                }
-                _ => continue,
-            }
+            let Some(e) = spawn_pickup(commands, ch, pos) else { continue };
+            maze.coins[idx] = Some(e);
             left += 1;
         }
     }
     maze.coins_left = left;
     maze.frightened = false;
     maze.chain = 0;
+}
+
+// ---- attract-mode set dressing ----
+// A dim coin trail and two patrolling auditor squares, so the title card
+// matches its siblings (Comet drifts rocks, Brickfall rains bricks).
+
+fn attract_in(mut commands: Commands, mut rng: ResMut<Rng>) {
+    for i in 0..14 {
+        let x = -290.0 + i as f32 * 45.0;
+        commands.spawn((
+            AttractBit { vel: Vec2::ZERO },
+            Sprite { color: DIM, custom_size: Some(Vec2::splat(5.0)), ..default() },
+            Transform::from_xyz(x, -180.0, 1.0),
+        ));
+    }
+    for (i, color) in [RED, CYAN].iter().enumerate() {
+        let dir = if i == 0 { 1.0 } else { -1.0 };
+        commands.spawn((
+            AttractBit { vel: Vec2::new(dir * rng.between(50.0, 75.0), 0.0) },
+            Sprite {
+                color: color.with_alpha(0.55),
+                custom_size: Some(Vec2::splat(CELL - 6.0)),
+                ..default()
+            },
+            Transform::from_xyz(dir * -300.0, -180.0, 2.0),
+        ));
+    }
+}
+
+fn attract_out(mut commands: Commands, bits: Query<Entity, With<AttractBit>>) {
+    for e in &bits {
+        commands.entity(e).despawn();
+    }
+}
+
+fn attract_drift(time: Res<Time>, mut bits: Query<(&AttractBit, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (bit, mut tf) in &mut bits {
+        tf.translation += (bit.vel * dt).extend(0.0);
+        if tf.translation.x > 340.0 {
+            tf.translation.x = -340.0;
+        } else if tf.translation.x < -340.0 {
+            tf.translation.x = 340.0;
+        }
+    }
 }
 
 fn draw_hud(maze: Res<Maze>, mut hud: Query<&mut Text2d, With<Hud>>) {

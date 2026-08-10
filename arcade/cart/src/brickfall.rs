@@ -4,14 +4,14 @@
 
 use bevy::prelude::*;
 
-use crate::retro::{text, AMBER, DIM, GREEN, WHITE};
+use crate::retro::{popup, text, AMBER, DIM, GREEN, WHITE};
 use crate::rng::Rng;
 use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
 
 pub const BLURB: &[&str] = &[
     "FOUR-SQUARE BRICKS FALL. FULL ROWS PAY.",
-    "ARROWS MOVE  /  UP/X ROTATE  /  SPACE DROPS",
+    "ARROWS MOVE / UP-X ROTATE / SPACE DROPS / C HOLDS",
     "THE ONLY WAY OUT IS UP",
 ];
 
@@ -90,12 +90,16 @@ struct Well {
     fall: Timer,
     das: Timer,
     soft: Timer,
+    arr: Timer, // horizontal auto-repeat — its own clock, never shared with soft drop
+    hold: Option<usize>,
+    hold_used: bool, // one swap per piece
 }
 
 #[derive(Resource)]
 struct CellEnts {
     well: Vec<Entity>,   // ROWS*COLS sprites
     preview: Vec<Entity>, // 16 sprites for the next-piece box
+    hold_box: Vec<Entity>, // 16 sprites for the hold box
     hud: Entity,          // one text entity, rewritten each change
 }
 
@@ -228,6 +232,9 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         fall: Timer::from_seconds(fall_secs(0), TimerMode::Repeating),
         das: Timer::from_seconds(0.16, TimerMode::Once),
         soft: Timer::from_seconds(0.045, TimerMode::Repeating),
+        arr: Timer::from_seconds(0.045, TimerMode::Repeating),
+        hold: None,
+        hold_used: false,
     });
 
     // Well frame.
@@ -285,11 +292,35 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
             preview.push(e);
         }
     }
+    let mut hold_box = Vec::with_capacity(16);
+    for y in 0..4 {
+        for x in 0..4 {
+            let e = commands
+                .spawn((
+                    Sprite {
+                        color: DIM,
+                        custom_size: Some(Vec2::splat(CELL * 0.6)),
+                        ..default()
+                    },
+                    Transform::from_xyz(
+                        190.0 + x as f32 * CELL * 0.7,
+                        -160.0 - y as f32 * CELL * 0.7,
+                        2.0,
+                    ),
+                    Visibility::Hidden,
+                    GameTag,
+                ))
+                .id();
+            hold_box.push(e);
+        }
+    }
     let hud = text(&mut commands, "", 24.0, WHITE, Vec3::new(230.0, 240.0, 2.0));
     commands.entity(hud).insert(GameTag);
     let nx = text(&mut commands, "NEXT", 20.0, AMBER, Vec3::new(230.0, 20.0, 2.0));
     commands.entity(nx).insert(GameTag);
-    commands.insert_resource(CellEnts { well: well_cells, preview, hud });
+    let hl = text(&mut commands, "HOLD", 20.0, AMBER, Vec3::new(230.0, -120.0, 2.0));
+    commands.entity(hl).insert(GameTag);
+    commands.insert_resource(CellEnts { well: well_cells, preview, hold_box, hud });
 }
 
 fn cell_pos(col: i32, row: i32, z: f32) -> Vec3 {
@@ -312,14 +343,16 @@ fn lock_piece(
     rng: &mut Rng,
     score_out: &mut Option<u32>,
     cleared_rows: &mut Vec<usize>,
+    leveled: &mut bool,
 ) {
+    // Lock-out scan BEFORE any grid write, so a game-over never leaves a
+    // half-written piece behind.
+    if PIECES[w.kind][w.rot].iter().any(|&(_, dy)| w.y + dy < 0) {
+        *score_out = Some(w.score);
+        return;
+    }
     for &(dx, dy) in &PIECES[w.kind][w.rot] {
         let (cx, cy) = (w.x + dx, w.y + dy);
-        if cy < 0 {
-            // Locked above the well: game over.
-            *score_out = Some(w.score);
-            return;
-        }
         w.grid[cy as usize][cx as usize] = true;
     }
     // Clear full rows.
@@ -336,20 +369,24 @@ fn lock_piece(
     }
     if cleared > 0 {
         sfx("clear");
+        let before = level(w.lines);
         let base = [0u32, 40, 100, 300, 1200][cleared.min(4)];
-        w.score += base * (level(w.lines) + 1);
+        w.score += base * (before + 1);
         w.lines += cleared as u32;
         w.fall.set_duration(std::time::Duration::from_secs_f32(fall_secs(w.lines)));
+        *leveled = level(w.lines) > before;
     } else {
         sfx("place");
     }
-    // Next piece.
+    // Next piece. Game over only if the SPAWN position itself is blocked —
+    // the player always gets the spawn frame to shift or rotate free.
     w.kind = w.next;
     w.next = bag_next(rng, &mut w.bag);
     w.rot = 0;
     w.x = 3;
     w.y = -1;
-    if collides(w, w.kind, w.rot, w.x, w.y + 1) {
+    w.hold_used = false;
+    if collides(w, w.kind, w.rot, w.x, w.y) {
         *score_out = Some(w.score);
     }
 }
@@ -365,20 +402,23 @@ fn steer(
 ) {
     let mut over = None;
     let mut cleared_rows = Vec::new();
+    let mut leveled = false;
 
-    // Horizontal with delayed auto-shift.
+    // Horizontal with delayed auto-shift, on its own repeat clock so a held
+    // soft drop can't double-tick it into erratic diagonals.
     let dir = i32::from(keys.pressed(KeyCode::ArrowRight)) - i32::from(keys.pressed(KeyCode::ArrowLeft));
     let tapped = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::ArrowLeft);
     if tapped {
         w.das.reset();
+        w.arr.reset();
         if !collides(&w, w.kind, w.rot, w.x + dir, w.y) {
             w.x += dir;
         }
     } else if dir != 0 {
         w.das.tick(time.delta());
         if w.das.finished() {
-            w.soft.tick(time.delta());
-            for _ in 0..w.soft.times_finished_this_tick() {
+            w.arr.tick(time.delta());
+            for _ in 0..w.arr.times_finished_this_tick() {
                 if !collides(&w, w.kind, w.rot, w.x + dir, w.y) {
                     w.x += dir;
                 }
@@ -395,12 +435,33 @@ fn steer(
             if !collides(&w, w.kind, nrot, w.x + kick, w.y) {
                 w.rot = nrot;
                 w.x += kick;
+                sfx("rotate");
                 break;
             }
         }
     }
 
-    // Soft drop.
+    // Hold/swap: one stash per piece, C to trade.
+    if keys.just_pressed(KeyCode::KeyC) && !w.hold_used {
+        w.hold_used = true;
+        let stashed = w.hold;
+        w.hold = Some(w.kind);
+        w.kind = match stashed {
+            Some(k) => k,
+            None => {
+                let n = w.next;
+                w.next = bag_next(&mut rng, &mut w.bag);
+                n
+            }
+        };
+        w.rot = 0;
+        w.x = 3;
+        w.y = -1;
+        sfx("rotate");
+    }
+
+    // Soft drop pays +1 per cell — descending fast should never be a
+    // strictly worse play than waiting.
     if keys.pressed(KeyCode::ArrowDown) && !collides(&w, w.kind, w.rot, w.x, w.y + 1) {
         w.soft.tick(time.delta());
         for _ in 0..w.soft.times_finished_this_tick() {
@@ -408,22 +469,39 @@ fn steer(
                 break;
             }
             w.y += 1;
+            w.score += 1;
         }
     }
 
-    // Hard drop.
+    // Hard drop pays +2 per cell.
     if keys.just_pressed(KeyCode::Space) {
         sfx("drop");
         while !collides(&w, w.kind, w.rot, w.x, w.y + 1) {
             w.y += 1;
+            w.score += 2;
         }
-        lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows);
+        lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows, &mut leveled);
     }
 
     spawn_flashes(&mut commands, &cleared_rows);
+    announce_level(&mut commands, &w, leveled);
     if let Some(score) = over {
         final_score.0 = score;
         next.set(Phase::GameOver);
+    }
+}
+
+/// Level-up fanfare: a banner over the well and a page-side chirp.
+fn announce_level(commands: &mut Commands, w: &Well, leveled: bool) {
+    if leveled {
+        sfx("levelup");
+        popup(
+            commands,
+            &format!("LEVEL {}", level(w.lines)),
+            30.0,
+            AMBER,
+            Vec2::new(X0 + CELL * COLS as f32 / 2.0, 40.0),
+        );
     }
 }
 
@@ -438,14 +516,16 @@ fn gravity(
     w.fall.tick(time.delta());
     let mut over = None;
     let mut cleared_rows = Vec::new();
+    let mut leveled = false;
     for _ in 0..w.fall.times_finished_this_tick() {
         if collides(&w, w.kind, w.rot, w.x, w.y + 1) {
-            lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows);
+            lock_piece(&mut w, &mut rng, &mut over, &mut cleared_rows, &mut leveled);
             break;
         }
         w.y += 1;
     }
     spawn_flashes(&mut commands, &cleared_rows);
+    announce_level(&mut commands, &w, leveled);
     if let Some(score) = over {
         final_score.0 = score;
         next.set(Phase::GameOver);
@@ -455,6 +535,7 @@ fn gravity(
 fn paint(
     w: Res<Well>,
     ents: Res<CellEnts>,
+    mut gizmos: Gizmos,
     mut vis: Query<&mut Visibility>,
     mut texts: Query<&mut Text2d>,
 ) {
@@ -463,6 +544,30 @@ fn paint(
         let (cx, cy) = (w.x + dx, w.y + dy);
         if (0..COLS).contains(&cx) && (0..ROWS).contains(&cy) {
             active[cy as usize][cx as usize] = true;
+        }
+    }
+    // Ghost piece: dim outlines where the piece would rest on a hard drop.
+    let mut gy = w.y;
+    while !collides(&w, w.kind, w.rot, w.x, gy + 1) {
+        gy += 1;
+    }
+    if gy > w.y {
+        for &(dx, dy) in &PIECES[w.kind][w.rot] {
+            let (cx, cy) = (w.x + dx, gy + dy);
+            if (0..COLS).contains(&cx) && (0..ROWS).contains(&cy) {
+                let c = cell_pos(cx, cy, 3.0).truncate();
+                let h = (CELL - 6.0) / 2.0;
+                gizmos.linestrip_2d(
+                    [
+                        c + Vec2::new(-h, -h),
+                        c + Vec2::new(h, -h),
+                        c + Vec2::new(h, h),
+                        c + Vec2::new(-h, h),
+                        c + Vec2::new(-h, -h),
+                    ],
+                    DIM,
+                );
+            }
         }
     }
     for row in 0..ROWS as usize {
@@ -484,6 +589,17 @@ fn paint(
                     Visibility::Inherited
                 } else {
                     Visibility::Hidden
+                };
+            }
+        }
+    }
+    let hold_mins = w.hold.map(|k| PIECES[k][0]);
+    for y in 0..4 {
+        for x in 0..4 {
+            if let Ok(mut v) = vis.get_mut(ents.hold_box[y * 4 + x]) {
+                *v = match hold_mins {
+                    Some(m) if m.contains(&(x as i32, y as i32)) => Visibility::Inherited,
+                    _ => Visibility::Hidden,
                 };
             }
         }

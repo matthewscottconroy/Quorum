@@ -49,6 +49,40 @@ pub fn text(
         .id()
 }
 
+/// A transient rising label — score popups, wave banners, "+1000"s. Spawned
+/// via [`popup`]; the shared `popup_update` system (registered once in
+/// lib.rs) floats it upward and despawns it at TTL. No fade: square-wave
+/// aesthetics, it just blinks out.
+#[derive(Component)]
+pub struct Popup {
+    ttl: Timer,
+    rise: f32,
+}
+
+/// Spawns a popup at a world position. Carries GameTag so the shell sweeps
+/// leftovers between rounds.
+pub fn popup(commands: &mut Commands, s: &str, size: f32, color: Color, pos: Vec2) {
+    let e = text(commands, s, size, color, pos.extend(9.0));
+    commands.entity(e).insert((
+        Popup { ttl: Timer::from_seconds(0.9, TimerMode::Once), rise: 26.0 },
+        crate::GameTag,
+    ));
+}
+
+/// Ticks every popup. Registered once, phase-independent.
+pub fn popup_update(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut popups: Query<(Entity, &mut Popup, &mut Transform)>,
+) {
+    for (e, mut p, mut tf) in &mut popups {
+        tf.translation.y += p.rise * time.delta_secs();
+        if p.ttl.tick(time.delta()).finished() {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
 /// Current cursor position in world coordinates, if over the canvas.
 pub fn cursor_world(
     window: &Window,

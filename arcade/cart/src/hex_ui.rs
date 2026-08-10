@@ -10,14 +10,31 @@ use crate::rng::Rng;
 use crate::shell::{net_send, sfx};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
-/// Relayed move. Bots have no seat online: the host computes their moves and
-/// relays them; receivers accept host-sent moves for any bot seat.
+/// Relayed move. Bots have no seat online: the ACTING host (lowest still-
+/// present seat, so a host disconnect never strands the dish) computes their
+/// moves and relays them; receivers accept acting-host moves for any bot
+/// seat. "afk" flags a stalled human seat over to the bots.
 #[derive(Serialize, Deserialize)]
 struct WireHexMove {
-    t: String, // "mv"
+    t: String, // "mv" | "afk"
+    #[serde(default)]
     from: usize,
+    #[serde(default)]
     to: usize,
+    #[serde(default)]
+    seat: u8,
 }
+
+/// The seat that drives bot turns online: the lowest seat still holding a
+/// live human. Every client computes this identically from `present`, so
+/// exactly one machine acts even after the original host leaves.
+fn acting_host(cfg: &crate::NetCfg) -> u8 {
+    cfg.present.iter().position(|&p| p).map(|i| i as u8).unwrap_or(0)
+}
+
+/// Online per-turn allowance for HUMAN seats before the bots take the seat
+/// over — an AFK breaker, not a blitz clock.
+const AFK_SECS: f32 = 35.0;
 
 pub const BLURB: &[&str] = &[
     "SPREAD. CONVERT. OUTGROW THEM ALL.",
@@ -53,8 +70,14 @@ struct Dish {
     bot_pause: Timer,
     over_wait: Option<Timer>,
     final_score: u32,
-    skip_flash: Option<(u8, Timer)>,
+    /// Every seat skipped in the current turn-resolution, not just the last.
+    skip_flash: Vec<(u8, Timer)>,
     last_turn: Option<u8>,
+    /// AFK watch: whose turn the clock is timing, and the clock.
+    afk_turn: Option<u8>,
+    afk: Timer,
+    /// Who still had blobs after the previous move — elimination detector.
+    alive_prev: Vec<bool>,
 }
 
 #[derive(Component)]
@@ -72,7 +95,10 @@ impl Plugin for HexPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
             Update,
-            (net_apply, human_clicks, bot_turns, turn_splash, splash_fade, pulse_fade, paint, hud, endgame)
+            (
+                (net_apply, human_clicks, bot_turns, afk_watch, eliminations),
+                (turn_splash, splash_fade, pulse_fade, paint, hud, endgame),
+            )
                 .chain()
                 .run_if(in_state(Phase::Playing))
                 .run_if(crate::unpaused),
@@ -131,6 +157,7 @@ fn setup(
         ));
     }
 
+    let alive_prev = (0..players).map(|p| board.count(p) > 0).collect();
     commands.insert_resource(Dish {
         board,
         humans,
@@ -139,8 +166,11 @@ fn setup(
         bot_pause: Timer::from_seconds(0.45, TimerMode::Repeating),
         over_wait: None,
         final_score: 0,
-        skip_flash: None,
+        skip_flash: Vec::new(),
         last_turn: None,
+        afk_turn: None,
+        afk: Timer::from_seconds(AFK_SECS, TimerMode::Once),
+        alive_prev,
     });
     let hud = text(&mut commands, "", 22.0, WHITE, Vec3::new(255.0, 150.0, 3.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -154,10 +184,12 @@ fn setup(
     commands.entity(help).insert(GameTag);
 }
 
-/// Is this seat controlled by THIS machine's mouse?
+/// Is this seat controlled by THIS machine's mouse? Online, an AFK-flagged
+/// seat (present = false) has been handed to the bots — its human is a
+/// spectator from then on, which keeps every client's view consistent.
 fn is_local_human(dish: &Dish, net: &NetMode, seat: u8) -> bool {
     match &net.0 {
-        Some(cfg) => seat == cfg.seat,
+        Some(cfg) => seat == cfg.seat && cfg.present.get(seat as usize).copied().unwrap_or(false),
         None => seat < dish.humans,
     }
 }
@@ -171,14 +203,16 @@ fn is_any_human(dish: &Dish, net: &NetMode, seat: u8) -> bool {
 }
 
 /// `my_seat` is whose perspective the credited score uses: seat 0 locally
-/// (the machine's own player), your network seat online.
-fn end_check_for(dish: &mut Dish, my_seat: u8) {
+/// (the machine's own player), your network seat online. On game end it
+/// throws the winner a proper celebration — splash, tone, pulsing blobs.
+fn end_check_for(dish: &mut Dish, my_seat: u8, commands: &mut Commands, fx: &HexFx) {
     if !dish.board.over() {
-        // Skip seats with no moves (with a visible note).
+        // Skip seats with no moves (with a visible note; several can be
+        // stuck in one resolution, and every one deserves its line).
         for _ in 0..dish.board.players {
             let turn = dish.board.turn;
             if dish.board.moves_for(turn).is_empty() {
-                dish.skip_flash = Some((turn, Timer::from_seconds(1.0, TimerMode::Once)));
+                dish.skip_flash.push((turn, Timer::from_seconds(1.4, TimerMode::Once)));
                 dish.board.skip();
             } else {
                 break;
@@ -198,6 +232,22 @@ fn end_check_for(dish: &mut Dish, my_seat: u8) {
     }
     dish.final_score = score;
     dish.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
+    // The dish has a winner: say so like an arcade machine means it.
+    if let Some(&(winner, _)) = standings.first() {
+        sfx("win");
+        let e = text(
+            commands,
+            &format!("SEAT {} TAKES THE DISH", winner + 1),
+            40.0,
+            PLAYER_COLORS[winner as usize % 12],
+            Vec3::new(BOARD_X, 0.0, 20.0),
+        );
+        commands.entity(e).insert((Splash(Timer::from_seconds(2.8, TimerMode::Once)), GameTag));
+        let winner_cells: Vec<usize> = (0..dish.board.cells.len())
+            .filter(|&i| dish.board.cells[i] == Some(winner))
+            .collect();
+        spawn_pulses(commands, dish, fx, &winner_cells);
+    }
 }
 
 /// Spawns a swell-and-fade ring on every converted cell.
@@ -270,13 +320,15 @@ fn human_clicks(
             sfx(if converted.is_empty() { "place" } else { "capture" });
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
-                if let Ok(w) = serde_json::to_string(&WireHexMove { t: "mv".into(), from, to: cell }) {
+                if let Ok(w) =
+                    serde_json::to_string(&WireHexMove { t: "mv".into(), from, to: cell, seat: 0 })
+                {
                     net_send(&w);
                 }
             }
             dish.selected = None;
             let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
-            end_check_for(&mut dish, my_seat);
+            end_check_for(&mut dish, my_seat, &mut commands, &fx);
         }
     }
 }
@@ -293,32 +345,31 @@ fn bot_turns(
     if dish.over_wait.is_some() || is_any_human(&dish, &net, seat) {
         return;
     }
-    // Online, exactly one machine may drive the bots: the host.
+    // Online, exactly one machine drives the bots: the ACTING host (lowest
+    // still-present seat) — a host disconnect hands the duty down instead of
+    // deadlocking the dish on the next bot turn.
     if let Some(cfg) = &net.0 {
-        if !cfg.is_host() {
+        if cfg.seat != acting_host(cfg) {
             return;
         }
     }
     if !dish.bot_pause.tick(time.delta()).just_finished() {
         return;
     }
-    // Mostly greedy, occasionally second-guess itself so bots differ.
-    let mv = if rng.chance(0.15) {
-        let moves = dish.board.moves_for(seat);
-        if moves.is_empty() {
-            None
-        } else {
-            Some(moves[rng.range(moves.len() as u32) as usize])
-        }
-    } else {
-        dish.board.bot_move(seat)
-    };
+    // Seeded variety: samples among near-best moves, so bots differ from
+    // game to game without ever volunteering a reckless landing.
+    let mv = dish.board.bot_move_seeded(seat, rng.next_u64());
     match mv {
         Some(m) => {
             let converted = dish.board.apply(m);
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             if net.0.is_some() {
-                if let Ok(w) = serde_json::to_string(&WireHexMove { t: "mv".into(), from: m.from, to: m.to }) {
+                if let Ok(w) = serde_json::to_string(&WireHexMove {
+                    t: "mv".into(),
+                    from: m.from,
+                    to: m.to,
+                    seat: 0,
+                }) {
                     net_send(&w);
                 }
             }
@@ -326,7 +377,63 @@ fn bot_turns(
         None => dish.board.skip(),
     }
     let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
-    end_check_for(&mut dish, my_seat);
+    end_check_for(&mut dish, my_seat, &mut commands, &fx);
+}
+
+/// Online AFK breaker: when a HUMAN seat stalls past the allowance, the
+/// acting host flags it over to the bots (relayed as "afk" so every client
+/// flips `present` together). The flagged player keeps watching; the bots
+/// play the seat out.
+fn afk_watch(time: Res<Time>, mut net: ResMut<NetMode>, mut dish: ResMut<Dish>) {
+    let Some(cfg) = net.0.as_mut() else { return };
+    if dish.over_wait.is_some() {
+        return;
+    }
+    let turn = dish.board.turn;
+    if dish.afk_turn != Some(turn) {
+        dish.afk_turn = Some(turn);
+        dish.afk.reset();
+        return;
+    }
+    if !cfg.present.get(turn as usize).copied().unwrap_or(false) {
+        return; // bot seat: the bot pause handles pace, not the AFK clock
+    }
+    dish.afk.tick(time.delta());
+    if !dish.afk.finished() {
+        return;
+    }
+    if cfg.seat == acting_host(cfg) {
+        if let Ok(w) =
+            serde_json::to_string(&WireHexMove { t: "afk".into(), from: 0, to: 0, seat: turn })
+        {
+            net_send(&w);
+        }
+        if let Some(p) = cfg.present.get_mut(turn as usize) {
+            *p = false;
+        }
+        dish.skip_flash.push((turn, Timer::from_seconds(1.6, TimerMode::Once)));
+    }
+}
+
+/// Announces every seat whose blob count just hit zero — the game's biggest
+/// event used to pass in silence.
+fn eliminations(mut commands: Commands, mut dish: ResMut<Dish>) {
+    for p in 0..dish.board.players {
+        let alive = dish.board.count(p) > 0;
+        let was = dish.alive_prev[p as usize];
+        dish.alive_prev[p as usize] = alive;
+        if was && !alive {
+            sfx("death");
+            let e = text(
+                &mut commands,
+                &format!("SEAT {} CONSUMED", p + 1),
+                34.0,
+                PLAYER_COLORS[p as usize % 12],
+                Vec3::new(BOARD_X, -40.0, 20.0),
+            );
+            commands.entity(e).insert((Splash(Timer::from_seconds(1.6, TimerMode::Once)), GameTag));
+        }
+    }
 }
 
 /// Applies relayed moves. A move is accepted when it is legal for the seat
@@ -348,23 +455,35 @@ fn net_apply(
         let Some(cfg) = net.0.as_mut() else { break };
         if ev.left {
             if let Some(p) = cfg.present.get_mut(ev.seat as usize) {
-                *p = false; // host's bot_turns picks the seat up next turn
+                *p = false; // the acting host's bot_turns picks the seat up
             }
-            dish.skip_flash = Some((ev.seat, Timer::from_seconds(1.4, TimerMode::Once)));
+            dish.skip_flash.push((ev.seat, Timer::from_seconds(1.4, TimerMode::Once)));
             continue;
         }
         if ev.seat == cfg.seat || dish.over_wait.is_some() {
             continue;
         }
-        let turn = dish.board.turn;
-        let sender_owns_turn = ev.seat == turn;
-        let host_drives_bot = ev.seat == 0
-            && !cfg.present.get(turn as usize).copied().unwrap_or(false);
-        if !sender_owns_turn && !host_drives_bot {
+        let Ok(wire) = serde_json::from_str::<WireHexMove>(&ev.data) else { continue };
+        // AFK flag from the acting host: the seat goes to the bots on every
+        // client at once (only if it is still that seat's turn — a move that
+        // squeaked in first wins the race).
+        if wire.t == "afk" {
+            if ev.seat == acting_host(cfg) && dish.board.turn == wire.seat {
+                if let Some(p) = cfg.present.get_mut(wire.seat as usize) {
+                    *p = false;
+                }
+                dish.skip_flash.push((wire.seat, Timer::from_seconds(1.6, TimerMode::Once)));
+            }
             continue;
         }
-        let Ok(wire) = serde_json::from_str::<WireHexMove>(&ev.data) else { continue };
         if wire.t != "mv" {
+            continue;
+        }
+        let turn = dish.board.turn;
+        let sender_owns_turn = ev.seat == turn;
+        let host_drives_bot = ev.seat == acting_host(cfg)
+            && !cfg.present.get(turn as usize).copied().unwrap_or(false);
+        if !sender_owns_turn && !host_drives_bot {
             continue;
         }
         let legal = dish
@@ -377,7 +496,7 @@ fn net_apply(
             sfx(if converted.is_empty() { "place" } else { "capture" });
             spawn_pulses(&mut commands, &dish, &fx, &converted);
             let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
-            end_check_for(&mut dish, my_seat);
+            end_check_for(&mut dish, my_seat, &mut commands, &fx);
         }
     }
 }
@@ -480,16 +599,20 @@ fn splash_fade(
 
 fn hud(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut hud: Query<&mut Text2d, With<Hud>>) {
     let Ok(mut t) = hud.single_mut() else { return };
-    if let Some((seat, timer)) = dish.skip_flash.as_mut() {
-        let s = format!("SEAT {} IS STUCK - SKIPPED", *seat + 1);
-        if timer.tick(time.delta()).finished() {
-            dish.skip_flash = None;
-        } else {
-            if t.0 != s {
-                t.0 = s;
-            }
-            return;
+    // Skip notes accumulate (several seats can be skipped back-to-back) and
+    // display together until each timer runs out.
+    for (_, timer) in dish.skip_flash.iter_mut() {
+        timer.tick(time.delta());
+    }
+    dish.skip_flash.retain(|(_, timer)| !timer.finished());
+    if !dish.skip_flash.is_empty() {
+        let seats: Vec<String> =
+            dish.skip_flash.iter().map(|(s, _)| format!("{}", s + 1)).collect();
+        let s = format!("SEAT{} {} SKIPPED", if seats.len() > 1 { "S" } else { "" }, seats.join(", "));
+        if t.0 != s {
+            t.0 = s;
         }
+        return;
     }
     let s = if dish.over_wait.is_some() {
         let standings = dish.board.standings();
@@ -514,7 +637,25 @@ fn hud(time: Res<Time>, net: Res<NetMode>, mut dish: ResMut<Dish>, mut hud: Quer
             .take(4)
             .map(|(p, n)| format!("S{} {}", p + 1, n))
             .collect();
-        format!("SEAT {} ({who})\nTO MOVE\n\nTOP: {}", seat + 1, counts.join(" / "))
+        // Your own standing, always — twelve seats can't all fit the top list.
+        let my_seat = net.0.as_ref().map(|c| c.seat).unwrap_or(0);
+        let standings = dish.board.standings();
+        let my_rank =
+            standings.iter().position(|&(p, _)| p == my_seat).unwrap_or(standings.len() - 1) + 1;
+        let mine = format!(
+            "\nYOU: {}/{} - {} BLOBS",
+            my_rank,
+            dish.board.players,
+            dish.board.count(my_seat)
+        );
+        // AFK countdown, surfaced once it gets close.
+        let afk = match &net.0 {
+            Some(_) if is_any_human(&dish, &net, seat) && dish.afk.remaining_secs() < 15.0 => {
+                format!("\nAFK CALL IN 0:{:02}", dish.afk.remaining_secs() as u32)
+            }
+            _ => String::new(),
+        };
+        format!("SEAT {} ({who})\nTO MOVE\n\nTOP: {}{mine}{afk}", seat + 1, counts.join(" / "))
     };
     if t.0 != s {
         t.0 = s;

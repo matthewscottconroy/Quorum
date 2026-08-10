@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use crate::retro::{text, AMBER, GREEN, SCREEN_H, SCREEN_W, WHITE};
+use crate::retro::{popup, text, AMBER, GREEN, SCREEN_H, SCREEN_W, WHITE};
 use crate::rng::Rng;
 use crate::shell::sfx;
 use crate::{FinalScore, GameTag, Phase};
@@ -34,6 +34,7 @@ struct Game {
     hyper_cooldown: Timer,
     next_extra_life: u32,
     saucer_clock: Timer,
+    thrust_tick: Timer,
 }
 
 #[derive(Component)]
@@ -192,6 +193,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         hyper_cooldown: Timer::from_seconds(1.0, TimerMode::Once),
         next_extra_life: 10_000,
         saucer_clock: Timer::from_seconds(16.0, TimerMode::Once),
+        thrust_tick: Timer::from_seconds(0.14, TimerMode::Repeating),
     });
     commands.spawn((
         Ship { vel: Vec2::ZERO, angle: std::f32::consts::FRAC_PI_2, invuln: Timer::from_seconds(2.0, TimerMode::Once) },
@@ -209,11 +211,13 @@ fn control(
     mut commands: Commands,
     mut rng: ResMut<Rng>,
     mut game: ResMut<Game>,
-    mut ships: Query<(&mut Ship, &mut Transform)>,
+    mut final_score: ResMut<FinalScore>,
+    mut next: ResMut<NextState<Phase>>,
+    mut ships: Query<(Entity, &mut Ship, &mut Transform)>,
     bullets: Query<(), With<Bullet>>,
 ) {
     game.hyper_cooldown.tick(time.delta());
-    let Ok((mut ship, mut tf)) = ships.single_mut() else { return };
+    let Ok((ship_e, mut ship, mut tf)) = ships.single_mut() else { return };
     let dt = time.delta_secs();
     ship.invuln.tick(time.delta());
 
@@ -224,6 +228,9 @@ fn control(
     if keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::ArrowDown) {
         let dir = Vec2::new(ship.angle.cos(), ship.angle.sin());
         ship.vel = (ship.vel + dir * THRUST * dt).clamp_length_max(MAX_SPEED);
+        if game.thrust_tick.tick(time.delta()).just_finished() {
+            sfx("thrust");
+        }
     }
 
     if keys.just_pressed(KeyCode::Space) && bullets.iter().count() < MAX_BULLETS {
@@ -247,9 +254,16 @@ fn control(
         tf.translation.y = rng.between(-290.0, 290.0);
         ship.vel = Vec2::ZERO;
         if rng.chance(0.125) {
-            // The drive misfires — treated exactly like a rock hit.
-            ship.invuln.reset();
-            explode_ship(&mut commands, &mut rng, tf.translation.truncate(), &mut game);
+            // The drive misfires — treated exactly like a rock hit: the ship
+            // is gone (despawned, not left as a ghost) and a last life ends
+            // the game here, since collide's check never sees this death.
+            let at = tf.translation.truncate();
+            commands.entity(ship_e).despawn();
+            explode_ship(&mut commands, &mut rng, at, &mut game);
+            if game.lives <= 0 {
+                final_score.0 = game.score;
+                next.set(Phase::GameOver);
+            }
         }
     }
 }
@@ -272,7 +286,7 @@ fn physics(
     time: Res<Time>,
     mut commands: Commands,
     mut ships: Query<(&Ship, &mut Transform), (Without<Rock>, Without<Bullet>, Without<Shard>)>,
-    mut rocks: Query<(&mut Rock, &mut Transform), (Without<Bullet>, Without<Shard>)>,
+    mut rocks: Query<(&Rock, &mut Transform), (Without<Bullet>, Without<Shard>)>,
     mut bullets: Query<(Entity, &mut Bullet, &mut Transform), (Without<Rock>, Without<Shard>)>,
     mut shards: Query<(Entity, &mut Shard, &mut Transform), Without<Rock>>,
 ) {
@@ -281,11 +295,9 @@ fn physics(
         tf.translation += (ship.vel * dt).extend(0.0);
         wrap(&mut tf.translation);
     }
-    for (mut rock, mut tf) in &mut rocks {
-        let vel = rock.vel;
-        tf.translation += (vel * dt).extend(0.0);
+    for (rock, mut tf) in &mut rocks {
+        tf.translation += (rock.vel * dt).extend(0.0);
         tf.rotate_z(rock.spin * dt);
-        rock.spin *= 1.0; // keep borrowck simple, spin is constant
         wrap(&mut tf.translation);
     }
     for (e, mut b, mut tf) in &mut bullets {
@@ -338,6 +350,7 @@ fn collide(
     // Bullets vs rocks.
     let mut dead_rocks: Vec<Entity> = Vec::new();
     let mut dead_bullets: Vec<Entity> = Vec::new();
+    let mut dead_enemy_bullets: Vec<Entity> = Vec::new();
     for (re, rock, rtf) in &rocks {
         let rp = rtf.translation.truncate();
         let rr = rock_radius(rock.size);
@@ -361,6 +374,23 @@ fn collide(
                 }
             }
         }
+        // Saucer fire splits rocks too (no score) — the saucer reshapes the
+        // field instead of being a pure turret.
+        for (ee, _, etf) in &enemy_bullets {
+            if dead_enemy_bullets.contains(&ee) || dead_rocks.contains(&re) {
+                continue;
+            }
+            if etf.translation.truncate().distance(rp) < rr {
+                dead_rocks.push(re);
+                dead_enemy_bullets.push(ee);
+                sfx("boom");
+                if rock.size > 0 {
+                    for _ in 0..2 {
+                        spawn_rock(&mut commands, &mut rng, rp, rock.size - 1, game.level, Some(rock.vel));
+                    }
+                }
+            }
+        }
     }
     // Bullets vs the saucer.
     for (se, saucer, stf) in &saucers {
@@ -373,7 +403,9 @@ fn collide(
                 dead_bullets.push(be);
                 commands.entity(se).despawn();
                 sfx("boom");
-                game.score += if saucer.small { 1000 } else { 200 };
+                let pay = if saucer.small { 1000 } else { 200 };
+                game.score += pay;
+                popup(&mut commands, &format!("+{pay}"), 20.0, MAGENTA, sp);
             }
         }
     }
@@ -382,6 +414,7 @@ fn collide(
         game.lives += 1;
         game.next_extra_life += 10_000;
         sfx("extra");
+        popup(&mut commands, "EXTRA SHIP", 20.0, GREEN, Vec2::new(-220.0, 250.0));
     }
     // Ship vs rocks and hostile fire.
     if let Ok((se, ship, stf)) = ships.single() {
@@ -399,8 +432,21 @@ fn collide(
             }
             if !hit {
                 for (ee, _, etf) in &enemy_bullets {
+                    if dead_enemy_bullets.contains(&ee) {
+                        continue;
+                    }
                     if etf.translation.truncate().distance(sp) < 10.0 {
                         commands.entity(ee).despawn();
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            // Ramming the saucer is not free.
+            if !hit {
+                for (_, saucer, stf2) in &saucers {
+                    let body = if saucer.small { 14.0 } else { 24.0 };
+                    if stf2.translation.truncate().distance(sp) < body + 10.0 {
                         hit = true;
                         break;
                     }
@@ -419,6 +465,9 @@ fn collide(
     for e in dead_bullets {
         commands.entity(e).despawn();
     }
+    for e in dead_enemy_bullets {
+        commands.entity(e).despawn();
+    }
     for e in dead_rocks {
         commands.entity(e).despawn();
     }
@@ -429,13 +478,16 @@ fn waves(
     mut commands: Commands,
     mut rng: ResMut<Rng>,
     mut game: ResMut<Game>,
-    rocks: Query<(), With<Rock>>,
+    rocks: Query<&Transform, With<Rock>>,
     ships: Query<&Transform, With<Ship>>,
 ) {
-    // Respawn the ship once its grace period passes and the center is clear.
+    // Respawn the ship once its grace period passes AND the center is clear —
+    // the timer keeps ticking, so the ship appears the moment a parked rock
+    // drifts off the pad instead of materializing inside it.
     if game.waiting_spawn && game.lives > 0 {
         game.respawn.tick(time.delta());
-        if game.respawn.finished() {
+        let center_clear = rocks.iter().all(|t| t.translation.truncate().length() > 90.0);
+        if game.respawn.finished() && center_clear {
             game.waiting_spawn = false;
             commands.spawn((
                 Ship {
@@ -457,10 +509,13 @@ fn waves(
         game.clear.tick(time.delta());
         if game.clear.finished() {
             game.waiting_wave = false;
-            game.score += 300 + 100 * game.level; // wave-clear bonus
+            let bonus = 300 + 100 * game.level;
+            game.score += bonus; // wave-clear bonus
             game.level += 1;
             let avoid = ships.single().map(|t| t.translation.truncate()).unwrap_or(Vec2::ZERO);
             let level = game.level;
+            popup(&mut commands, &format!("WAVE {level}"), 30.0, AMBER, Vec2::new(0.0, 60.0));
+            popup(&mut commands, &format!("+{bonus}"), 20.0, WHITE, Vec2::new(0.0, 24.0));
             spawn_wave(&mut commands, &mut rng, level, avoid);
         }
     }
@@ -575,8 +630,13 @@ fn saucer_run(
     if saucers.is_empty() {
         game.saucer_clock.tick(time.delta());
         if game.saucer_clock.finished() {
+            // Anti-lurk: the hunt tightens as the score grows — saucers come
+            // sooner and shoot faster, so parking on one small rock turns
+            // from a farm into a firing squad.
+            let heat = (game.score / 2_000) as f32; // one step per 2k points
+            let base = (16.0 - heat * 0.9).max(6.0);
             game.saucer_clock =
-                Timer::from_seconds(rng.between(14.0, 24.0), TimerMode::Once);
+                Timer::from_seconds(rng.between(base * 0.85, base * 1.4), TimerMode::Once);
             let small = game.score >= 10_000 || rng.chance(0.25);
             let from_left = rng.chance(0.5);
             let y = rng.between(-220.0, 220.0);
@@ -584,7 +644,7 @@ fn saucer_run(
                 Saucer {
                     vel: Vec2::new(if from_left { 90.0 } else { -90.0 }, 0.0),
                     small,
-                    fire: Timer::from_seconds(1.15, TimerMode::Repeating),
+                    fire: Timer::from_seconds((1.15 - heat * 0.02).max(0.7), TimerMode::Repeating),
                     wobble: Timer::from_seconds(1.6, TimerMode::Repeating),
                 },
                 Transform::from_xyz(if from_left { -380.0 } else { 380.0 }, y, 3.5),
@@ -613,8 +673,10 @@ fn saucer_run(
                 // Aimed, with a little scatter that shrinks nothing: personal.
                 match ships.single() {
                     Ok(stf) => {
+                        // Aim scatter narrows with score: the hunter learns.
+                        let scatter = (0.18 - game.score as f32 / 150_000.0).max(0.05);
                         let to = (stf.translation.truncate() - origin).normalize_or_zero();
-                        let a = to.y.atan2(to.x) + rng.between(-0.18, 0.18);
+                        let a = to.y.atan2(to.x) + rng.between(-scatter, scatter);
                         Vec2::new(a.cos(), a.sin())
                     }
                     Err(_) => {

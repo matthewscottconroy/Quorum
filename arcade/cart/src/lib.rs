@@ -103,6 +103,7 @@ pub fn run() {
     .init_resource::<Paused>()
     .add_event::<NetIn>()
     .insert_resource(rng::Rng::seeded())
+    .add_systems(Update, retro::popup_update.run_if(unpaused))
     .init_state::<Phase>();
 
     match game.as_str() {

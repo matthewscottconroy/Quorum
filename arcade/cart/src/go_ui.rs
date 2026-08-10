@@ -1,19 +1,22 @@
-//! GO cabinet: 9×9 hotseat. Click an intersection to place a stone, P to
-//! pass; two passes end the game and area scoring settles it. Rules live in
-//! arcade-logic.
+//! GO cabinet: 9×9 hotseat, versus the machine, or online. Click an
+//! intersection to place a stone, P to pass; two passes open a dead-stone
+//! marking phase, then area scoring settles it. R-R resigns. Rules and the
+//! machine opponent live in arcade-logic.
 
-use arcade_logic::go::{GoBoard, PlayError, Stone, SIZE};
+use arcade_logic::go::{GoBoard, PlayError, Stone, CELLS, SIZE};
+use arcade_logic::go_bot;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::retro::{text, AMBER, DIM, GREEN, MAGENTA, WHITE};
+use crate::retro::{popup, text, AMBER, DIM, GREEN, MAGENTA, RED, WHITE};
+use crate::rng::Rng;
 use crate::shell::{net_send, sfx};
-use crate::{FinalScore, GameTag, NetIn, NetMode, Phase};
+use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 /// Relayed play: seat 0 is Black, seat 1 is White.
 #[derive(Serialize, Deserialize)]
 struct WirePlay {
-    t: String, // "mv" | "pass"
+    t: String, // "mv" | "pass" | "rs" | "dead" | "ok" | "resume"
     #[serde(default)]
     pos: usize,
 }
@@ -27,10 +30,10 @@ fn seat_stone(seat: u8) -> Stone {
 }
 
 pub const BLURB: &[&str] = &[
-    "SURROUND TERRITORY. 9x9. TWO PLAYERS.",
+    "SURROUND TERRITORY. 9x9. SOLO OR TWO PLAYERS.",
     "CLICK TO PLACE / P TO PASS / U UNDOES (HOTSEAT)",
-    "TWO PASSES END IT. AREA SCORING, KOMI 5.5",
-    "CAPTURE DEAD STONES BEFORE YOU PASS",
+    "TWO PASSES: MARK DEAD GROUPS, THEN AREA SCORING",
+    "KOMI 5.5. R TWICE RESIGNS.",
 ];
 
 const CELL: f32 = 58.0;
@@ -48,6 +51,18 @@ struct Table {
     final_score: u32,
     result: String,
     dirty: bool, // repaint requested by the network path
+    /// The machine plays White in local single-player rounds.
+    bot: bool,
+    bot_think: Timer,
+    /// Two humans, one keyboard: flat token payout (see `settle`).
+    hotseat: bool,
+    /// Dead-stone marking phase after two passes.
+    marking: bool,
+    dead: [bool; CELLS],
+    confirm_me: bool,
+    confirm_them: bool,
+    /// First R press arms resignation; second confirms.
+    resign_arm: Option<Timer>,
 }
 
 #[derive(Component)]
@@ -63,7 +78,7 @@ impl Plugin for GoPlugin {
         app.add_systems(OnEnter(Phase::Playing), setup)
             .add_systems(
                 Update,
-                (net_apply, input, grid, hud, endgame)
+                (net_apply, bot_play, input, grid, hud, endgame)
                     .chain()
                     .run_if(in_state(Phase::Playing))
                     .run_if(crate::unpaused),
@@ -71,7 +86,7 @@ impl Plugin for GoPlugin {
     }
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) {
     commands.insert_resource(Table {
         board: GoBoard::new(),
         flash: None,
@@ -79,12 +94,20 @@ fn setup(mut commands: Commands) {
         final_score: 0,
         result: String::new(),
         dirty: false,
+        bot: net.0.is_none() && config.humans == 1,
+        bot_think: Timer::from_seconds(0.7, TimerMode::Once),
+        hotseat: net.0.is_none() && config.humans >= 2,
+        marking: false,
+        dead: [false; CELLS],
+        confirm_me: false,
+        confirm_them: false,
+        resign_arm: None,
     });
     let hud = text(&mut commands, "", 22.0, WHITE, Vec3::new(250.0, 120.0, 2.0));
     commands.entity(hud).insert((Hud, GameTag));
     let help = text(
         &mut commands,
-        "BLACK: GREEN\nWHITE: MAGENTA\n\nP = PASS\nU = UNDO (HOTSEAT)",
+        "BLACK: GREEN\nWHITE: MAGENTA\n\nP = PASS\nU = UNDO (HOTSEAT)\nR+R RESIGN",
         18.0,
         DIM,
         Vec3::new(250.0, -140.0, 2.0),
@@ -122,9 +145,13 @@ fn repaint(commands: &mut Commands, table: &Table, stones: &Query<Entity, With<S
     for pos in 0..SIZE * SIZE {
         if let Some(s) = table.board.cells[pos] {
             let p = point(pos % SIZE, pos / SIZE);
-            // Square stones: honest 8-bit Go.
+            // Square stones: honest 8-bit Go. Marked-dead stones go ghostly.
+            let mut color = stone_color(s);
+            if table.marking && table.dead[pos] {
+                color = color.with_alpha(0.3);
+            }
             commands.spawn((
-                Sprite { color: stone_color(s), custom_size: Some(Vec2::splat(CELL * 0.62)), ..default() },
+                Sprite { color, custom_size: Some(Vec2::splat(CELL * 0.62)), ..default() },
                 Transform::from_xyz(p.x, p.y, 3.0),
                 StoneSprite,
                 GameTag,
@@ -133,10 +160,56 @@ fn repaint(commands: &mut Commands, table: &Table, stones: &Query<Entity, With<S
     }
 }
 
+/// Two passes: the game pauses for dead-stone marking instead of scoring
+/// blind — a premature pass no longer silently forfeits live territory.
+fn enter_marking(table: &mut Table) {
+    table.marking = true;
+    table.dead = [false; CELLS];
+    table.confirm_me = false;
+    table.confirm_them = false;
+    table.dirty = true;
+    sfx("tick");
+}
+
+fn send_wire(t: &str, pos: usize) {
+    if let Ok(w) = serde_json::to_string(&WirePlay { t: t.into(), pos }) {
+        net_send(&w);
+    }
+}
+
+fn stone_name(s: Stone) -> &'static str {
+    match s {
+        Stone::Black => "BLACK",
+        Stone::White => "WHITE",
+    }
+}
+
+/// Board coordinates under the cursor, if the click lands near an
+/// intersection.
+fn clicked_point(
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform)>,
+) -> Option<usize> {
+    let window = windows.single().ok()?;
+    let (camera, cam_tf) = cameras.single().ok()?;
+    let world = crate::retro::cursor_world(window, camera, cam_tf)?;
+    let gx = ((world.x - ORIGIN.x) / CELL).round();
+    let gy = ((world.y - ORIGIN.y) / CELL).round();
+    if !(0.0..SIZE as f32).contains(&gx) || !(0.0..SIZE as f32).contains(&gy) {
+        return None;
+    }
+    let snapped = point(gx as usize, gy as usize);
+    if (world - snapped).length() > CELL * 0.42 {
+        return None;
+    }
+    Some(gy as usize * SIZE + gx as usize)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn input(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     mut commands: Commands,
@@ -151,28 +224,108 @@ fn input(
     if table.over_wait.is_some() {
         return;
     }
-    // Networked game: you may only act on your own turn.
+
+    // Resign: R arms, a second R inside two seconds confirms. Legal at any
+    // time in every mode — nobody gets held hostage by a stalled opponent.
+    if let Some(t) = table.resign_arm.as_mut() {
+        if t.tick(time.delta()).finished() {
+            table.resign_arm = None;
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        if table.resign_arm.take().is_some() {
+            if net.0.is_some() {
+                send_wire("rs", 0);
+            }
+            let quitter = match &net.0 {
+                Some(cfg) => seat_stone(cfg.seat),
+                None if table.bot => Stone::Black, // the human seat
+                None => table.board.turn,
+            };
+            table.result = format!("{} RESIGNS\n{} WINS", stone_name(quitter), stone_name(quitter.other()));
+            table.final_score = 100;
+            table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+            return;
+        }
+        table.resign_arm = Some(Timer::from_seconds(2.0, TimerMode::Once));
+    }
+
+    // Dead-stone marking phase: both players act, no turn gate.
+    if table.marking {
+        if keys.just_pressed(KeyCode::Enter) {
+            if net.0.is_none() {
+                settle(&mut table, &net);
+            } else if !table.confirm_me {
+                table.confirm_me = true;
+                send_wire("ok", 0);
+                sfx("tick");
+                if table.confirm_them {
+                    settle(&mut table, &net);
+                }
+            }
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyM) {
+            table.board.resume();
+            table.marking = false;
+            table.dirty = true;
+            sfx("tick");
+            if net.0.is_some() {
+                send_wire("resume", 0);
+            }
+            return;
+        }
+        if buttons.just_pressed(MouseButton::Left) {
+            if let Some(pos) = clicked_point(&windows, &cameras) {
+                let group = table.board.group_at(pos);
+                if !group.is_empty() {
+                    let flip = !table.dead[pos];
+                    for g in group {
+                        table.dead[g] = flip;
+                    }
+                    table.confirm_me = false;
+                    table.confirm_them = false;
+                    table.dirty = true;
+                    sfx("tick");
+                    if net.0.is_some() {
+                        send_wire("dead", pos);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Whose input is live? Online: your turn only. Vs machine: Black only.
     if let Some(cfg) = &net.0 {
         if table.board.turn != seat_stone(cfg.seat) {
             return;
         }
+    } else if table.bot && table.board.turn == Stone::White {
+        return;
     }
     if keys.just_pressed(KeyCode::KeyP) {
         table.board.pass();
         sfx("tick");
         if net.0.is_some() {
-            if let Ok(w) = serde_json::to_string(&WirePlay { t: "pass".into(), pos: 0 }) {
-                net_send(&w);
-            }
+            send_wire("pass", 0);
         }
         if table.board.over() {
-            settle(&mut table);
+            enter_marking(&mut table);
         }
         return;
     }
-    // Courtesy undo, hotseat only — the agreement happens across the table.
+    // Courtesy undo (local only). Vs the machine it takes back the full
+    // exchange — its reply and your stone — so it's your move again.
     if keys.just_pressed(KeyCode::KeyU) && net.0.is_none() {
-        if table.board.undo() {
+        let undone = if table.bot {
+            let a = table.board.undo();
+            let b = table.board.undo();
+            a || b
+        } else {
+            table.board.undo()
+        };
+        if undone {
             sfx("tick");
             repaint(&mut commands, &table, &stones);
         }
@@ -181,29 +334,14 @@ fn input(
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    let Ok(window) = windows.single() else { return };
-    let Ok((camera, cam_tf)) = cameras.single() else { return };
-    let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) else { return };
-    let gx = ((world.x - ORIGIN.x) / CELL).round();
-    let gy = ((world.y - ORIGIN.y) / CELL).round();
-    if !(0.0..SIZE as f32).contains(&gx) || !(0.0..SIZE as f32).contains(&gy) {
-        return;
-    }
-    // Reject clicks too far from an intersection.
-    let snapped = point(gx as usize, gy as usize);
-    if (world - snapped).length() > CELL * 0.42 {
-        return;
-    }
-    let pos = gy as usize * SIZE + gx as usize;
+    let Some(pos) = clicked_point(&windows, &cameras) else { return };
     let before = table.board.captures_black + table.board.captures_white;
     match table.board.play(pos) {
         Ok(()) => {
             let after = table.board.captures_black + table.board.captures_white;
             sfx(if after > before { "capture" } else { "place" });
             if net.0.is_some() {
-                if let Ok(w) = serde_json::to_string(&WirePlay { t: "mv".into(), pos }) {
-                    net_send(&w);
-                }
+                send_wire("mv", pos);
             }
             repaint(&mut commands, &table, &stones);
         }
@@ -214,7 +352,48 @@ fn input(
                 PlayError::Ko => "KO - PLAY ELSEWHERE FIRST",
                 PlayError::Over => "GAME OVER",
             };
+            // A rejected click must never look dead: buzz + a note right at
+            // the attempted intersection, not only in the far HUD.
+            sfx("buzz");
+            let short = match e {
+                PlayError::Occupied => "TAKEN",
+                PlayError::Suicide => "SUICIDE",
+                PlayError::Ko => "KO",
+                PlayError::Over => "OVER",
+            };
+            popup(&mut commands, short, 16.0, RED, point(pos % SIZE, pos / SIZE));
             table.flash = Some((why.to_string(), Timer::from_seconds(1.4, TimerMode::Once)));
+        }
+    }
+}
+
+/// The machine's move (it plays White locally when one human coined up).
+fn bot_play(time: Res<Time>, mut table: ResMut<Table>, mut rng: ResMut<Rng>, net: Res<NetMode>) {
+    if !table.bot || net.0.is_some() || table.over_wait.is_some() || table.marking {
+        return;
+    }
+    if table.board.turn != Stone::White {
+        table.bot_think.reset();
+        return;
+    }
+    if !table.bot_think.tick(time.delta()).finished() {
+        return;
+    }
+    let before = table.board.captures_black + table.board.captures_white;
+    match go_bot::bot_move(&table.board, rng.next_u64()) {
+        Some(pos) => {
+            if table.board.play(pos).is_ok() {
+                let after = table.board.captures_black + table.board.captures_white;
+                sfx(if after > before { "capture" } else { "place" });
+                table.dirty = true;
+            }
+        }
+        None => {
+            table.board.pass();
+            sfx("tick");
+            if table.board.over() {
+                enter_marking(&mut table);
+            }
         }
     }
 }
@@ -241,30 +420,81 @@ fn net_apply(
             }
             continue;
         }
-        if ev.seat == cfg.seat || seat_stone(ev.seat) != table.board.turn {
+        if ev.seat == cfg.seat {
             continue;
         }
         let Ok(wire) = serde_json::from_str::<WirePlay>(&ev.data) else { continue };
+        let sync_lost = |table: &mut Table| {
+            // The peers disagree about the position; the sender already
+            // committed. Dropping the play silently would wedge both clients
+            // forever — end it honestly instead.
+            table.result = "SYNC LOST\nCALLED OFF".into();
+            table.final_score = 250;
+            table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+            table.dirty = true;
+        };
         match wire.t.as_str() {
             "pass" => {
+                if seat_stone(ev.seat) != table.board.turn || table.marking {
+                    sync_lost(&mut table);
+                    continue;
+                }
                 table.board.pass();
                 if table.board.over() {
-                    settle(&mut table);
+                    enter_marking(&mut table);
                 }
             }
             "mv" => {
-                if wire.pos < SIZE * SIZE && table.board.play(wire.pos).is_ok() {
-                    table.dirty = true;
-                    sfx("place");
+                if seat_stone(ev.seat) != table.board.turn
+                    || table.marking
+                    || wire.pos >= SIZE * SIZE
+                    || table.board.play(wire.pos).is_err()
+                {
+                    sync_lost(&mut table);
+                    continue;
                 }
+                table.dirty = true;
+                sfx("place");
+            }
+            "rs" => {
+                table.result = "OPPONENT RESIGNS\nYOU WIN".into();
+                table.final_score = 700;
+                table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+            }
+            "dead" if table.marking && wire.pos < SIZE * SIZE => {
+                let group = table.board.group_at(wire.pos);
+                if !group.is_empty() {
+                    let flip = !table.dead[wire.pos];
+                    for g in group {
+                        table.dead[g] = flip;
+                    }
+                    // Any re-mark reopens the question for both sides.
+                    table.confirm_me = false;
+                    table.confirm_them = false;
+                    table.dirty = true;
+                    sfx("tick");
+                }
+            }
+            "ok" if table.marking => {
+                table.confirm_them = true;
+                if table.confirm_me {
+                    let netmode = NetMode(Some(cfg.clone()));
+                    settle(&mut table, &netmode);
+                }
+            }
+            "resume" if table.marking => {
+                table.board.resume();
+                table.marking = false;
+                table.dirty = true;
+                sfx("tick");
             }
             _ => {}
         }
     }
 }
 
-fn settle(table: &mut Table) {
-    let (black, white) = table.board.area_score();
+fn settle(table: &mut Table, net: &NetMode) {
+    let (black, white) = table.board.score_with_dead(&table.dead);
     let (bp, wp) = (black as f32 / 2.0, white as f32 / 2.0);
     let margin_half = (black - white).unsigned_abs();
     table.result = if black > white {
@@ -272,8 +502,23 @@ fn settle(table: &mut Table) {
     } else {
         format!("BLACK {bp:.1} - WHITE {wp:.1}\nWHITE WINS BY {:.1}", margin_half as f32 / 2.0)
     };
-    // House scoring: decisive play pays; komi means no draws.
-    table.final_score = 250 + margin_half * 5;
+    // Seat-aware payout: only the seat that WON collects the pot (margin
+    // bonus capped so running up the score stays flavor, not strategy).
+    // Hotseat pays a flat token — one person sat both chairs.
+    table.final_score = if table.hotseat {
+        100
+    } else {
+        let my_stone = match &net.0 {
+            Some(cfg) => seat_stone(cfg.seat),
+            None => Stone::Black, // vs the machine, the human holds Black
+        };
+        let i_won = (black > white) == (my_stone == Stone::Black);
+        if i_won {
+            400 + margin_half.min(60) * 3
+        } else {
+            150
+        }
+    };
     table.over_wait = Some(Timer::from_seconds(3.5, TimerMode::Once));
 }
 
@@ -292,14 +537,28 @@ fn hud(time: Res<Time>, mut table: ResMut<Table>, mut hud: Query<&mut Text2d, Wi
     }
     let s = if !table.result.is_empty() {
         table.result.clone()
+    } else if table.marking {
+        let (black, white) = table.board.score_with_dead(&table.dead);
+        let wait = if table.confirm_me && !table.confirm_them {
+            "\nWAITING FOR\nOPPONENT..."
+        } else {
+            ""
+        };
+        format!(
+            "MARK DEAD\nGROUPS\n\nCLICK TOGGLES\nENTER ACCEPTS\nM PLAYS ON\n\nB {:.1} / W {:.1}{wait}",
+            black as f32 / 2.0,
+            white as f32 / 2.0
+        )
     } else {
         let (b, w) = (table.board.captures_black, table.board.captures_white);
         let turn = match table.board.turn {
             Stone::Black => "BLACK",
             Stone::White => "WHITE",
         };
+        let thinking = if table.bot && table.board.turn == Stone::White { "\nMACHINE\nTHINKING..." } else { "" };
+        let resign = if table.resign_arm.is_some() { "\n\nR AGAIN\nTO RESIGN" } else { "" };
         let passes = if table.board.passes_in_a_row == 1 { "\n1 PASS - ONE MORE ENDS IT" } else { "" };
-        format!("{turn}\nTO PLAY\n\nCAPTURES\nB {b} / W {w}{passes}")
+        format!("{turn}\nTO PLAY{thinking}\n\nCAPTURES\nB {b} / W {w}{passes}{resign}")
     };
     if t.0 != s {
         t.0 = s;

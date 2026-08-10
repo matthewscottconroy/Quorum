@@ -101,6 +101,11 @@ pub struct LevelDoc {
 /// weaponize (out-of-bounds doors, absurd head-counts, zero rates).
 fn sanitize_doc(doc: &mut LevelDoc) {
     doc.w = doc.w.clamp(MIN_W, MAX_W);
+    // Geometry caps: a hand-written document with millions of entries must
+    // not stall build_mask (or get relayed verbatim to a guest).
+    doc.rects.truncate(10_000);
+    doc.holes.truncate(10_000);
+    doc.runs.truncate(30_000);
     doc.count = doc.count.clamp(1, MAX_COUNT);
     doc.rate = doc.rate.clamp(10, 120);
     doc.need = doc.need.clamp(1, doc.count);
@@ -251,13 +256,18 @@ struct Site {
     w: i32,
     mask: Vec<bool>,
     image: Handle<Image>,
-    /// Dirty rectangle (x0, y0, x1, y1) awaiting a partial CPU repaint.
-    dirty: Option<(i32, i32, i32, i32)>,
+    /// Dirty rectangles awaiting a partial CPU repaint. A short LIST, not a
+    /// single union: two diggers at opposite ends of a 1080-cell floor must
+    /// not degrade into a full-texture repaint every frame.
+    dirty: Vec<(i32, i32, i32, i32)>,
     /// Record per-cell deltas for the network? Host-only, else the buffer
     /// would grow without bound in local play.
     record: bool,
     changed: Vec<u32>,
 }
+
+const DIRTY_RECTS_MAX: usize = 4;
+const DIRTY_MERGE_NEAR: i32 = 48;
 
 impl Site {
     fn solid(&self, x: i32, y: i32) -> bool {
@@ -286,13 +296,38 @@ impl Site {
         }
     }
     fn grow_dirty(&mut self, x: i32, y: i32) {
-        self.dirty = Some(match self.dirty {
-            None => (x, y, x, y),
-            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
-        });
+        // Join a nearby rect if one exists…
+        for r in self.dirty.iter_mut() {
+            if x >= r.0 - DIRTY_MERGE_NEAR
+                && x <= r.2 + DIRTY_MERGE_NEAR
+                && y >= r.1 - DIRTY_MERGE_NEAR
+                && y <= r.3 + DIRTY_MERGE_NEAR
+            {
+                r.0 = r.0.min(x);
+                r.1 = r.1.min(y);
+                r.2 = r.2.max(x);
+                r.3 = r.3.max(y);
+                return;
+            }
+        }
+        // …otherwise start a new one, or as a last resort widen the nearest.
+        if self.dirty.len() < DIRTY_RECTS_MAX {
+            self.dirty.push((x, y, x, y));
+            return;
+        }
+        let nearest = self
+            .dirty
+            .iter_mut()
+            .min_by_key(|r| ((r.0 + r.2) / 2 - x).abs() + ((r.1 + r.3) / 2 - y).abs())
+            .expect("dirty is non-empty here");
+        nearest.0 = nearest.0.min(x);
+        nearest.1 = nearest.1.min(y);
+        nearest.2 = nearest.2.max(x);
+        nearest.3 = nearest.3.max(y);
     }
     fn all_dirty(&mut self) {
-        self.dirty = Some((0, 0, self.w - 1, GH - 1));
+        self.dirty.clear();
+        self.dirty.push((0, 0, self.w - 1, GH - 1));
     }
 }
 
@@ -403,9 +438,12 @@ struct Game {
     dead: [u32; 2],
     skills: [[u32; 7]; 2],
     selected: [usize; 2],
-    rate: u32,
+    /// Per-player spawn tempo: your T/R only throttles YOUR stream.
+    rate: [u32; 2],
     time_left: i32,
-    p2cursor: Vec2, // world (screen) coords
+    /// P2's crosshair in WORLD coordinates (x: 0..w*CELL px, y: screen) so
+    /// camera scrolling never drags their aim off a walker mid-assignment.
+    p2cursor: Vec2,
     nuke_armed: bool,
     over: bool,
     over_timer: Timer,
@@ -415,6 +453,12 @@ struct Game {
     guest_ready: bool,
     net_flush: Timer,
     end_sent: bool,
+    /// Guest: seconds spent waiting for the host's level (timeout notice),
+    /// and the multi-part level transfer in flight.
+    lv_wait: f32,
+    lv_doc: Option<LevelDoc>,
+    lv_parts: u32,
+    lv_runs: Vec<[i32; 3]>,
     // Guest interpolation: id → grid position, previous and current snapshot.
     guest_prev: HashMap<u32, (f32, f32)>,
     guest_curr: HashMap<u32, (f32, f32)>,
@@ -454,6 +498,8 @@ struct Editor {
     mirror: bool,
     skill_sel: usize,
     last_click: Option<(i32, i32)>,
+    /// Validation notice ("ENTRANCE 1 BURIED") shown on the HUD for a beat.
+    warning: Option<(String, Timer)>,
 }
 
 impl Editor {
@@ -493,6 +539,7 @@ impl Editor {
             mirror: false,
             skill_sel: 3,
             last_click: None,
+            warning: None,
         }
     }
 
@@ -636,7 +683,7 @@ fn setup(
         w,
         mask,
         image,
-        dirty: None,
+        dirty: Vec::new(),
         record: is_net && !is_guest,
         changed: Vec::new(),
     });
@@ -651,9 +698,9 @@ fn setup(
         dead: [0; 2],
         skills: [doc.skills, doc.skills],
         selected: [3, 3],
-        rate: doc.rate,
+        rate: [doc.rate; 2],
         time_left: (doc.time * TICKS_PER_SEC as u32) as i32,
-        p2cursor: Vec2::new(100.0, 50.0),
+        p2cursor: Vec2::new(460.0, 50.0),
         nuke_armed: false,
         over: false,
         over_timer: Timer::from_seconds(3.0, TimerMode::Once),
@@ -662,6 +709,10 @@ fn setup(
         guest_ready: !is_guest,
         net_flush: Timer::from_seconds(0.1, TimerMode::Repeating),
         end_sent: false,
+        lv_wait: 0.0,
+        lv_doc: None,
+        lv_parts: 0,
+        lv_runs: Vec::new(),
         guest_prev: HashMap::new(),
         guest_curr: HashMap::new(),
         guest_t: 0.0,
@@ -672,9 +723,7 @@ fn setup(
     if let Some(cfg) = &net.0 {
         if cfg.is_host() {
             if let Some(doc) = page_level() {
-                if let Ok(msg) = serde_json::to_string(&WireLevel { t: "lv".into(), doc }) {
-                    net_send(&msg);
-                }
+                send_level(doc);
             }
         }
     }
@@ -695,6 +744,45 @@ fn setup(
 struct WireLevel {
     t: String,
     doc: LevelDoc,
+    /// How many "lvr" run-batches follow (0 = the doc is complete as sent).
+    #[serde(default)]
+    parts: u32,
+}
+
+/// One batch of terrain runs for a level too painty to fit one websocket
+/// frame — a heavily drawn 1080-cell canvas can exceed the 56 KB cap as one
+/// document, which used to strand the guest on the waiting screen forever.
+#[derive(Serialize, Deserialize)]
+struct WireRuns {
+    t: String, // "lvr"
+    i: u32,
+    runs: Vec<[i32; 3]>,
+}
+
+const LV_RUNS_PER_PART: usize = 2500;
+
+/// Sends the level to the guest, splitting the run list into parts that
+/// each fit comfortably under the websocket message cap.
+fn send_level(mut doc: LevelDoc) {
+    let runs = std::mem::take(&mut doc.runs);
+    if runs.len() <= LV_RUNS_PER_PART {
+        doc.runs = runs;
+        if let Ok(msg) = serde_json::to_string(&WireLevel { t: "lv".into(), doc, parts: 0 }) {
+            net_send(&msg);
+        }
+        return;
+    }
+    let parts = runs.chunks(LV_RUNS_PER_PART).count() as u32;
+    if let Ok(msg) = serde_json::to_string(&WireLevel { t: "lv".into(), doc, parts }) {
+        net_send(&msg);
+    }
+    for (i, chunk) in runs.chunks(LV_RUNS_PER_PART).enumerate() {
+        if let Ok(msg) =
+            serde_json::to_string(&WireRuns { t: "lvr".into(), i: i as u32, runs: chunk.to_vec() })
+        {
+            net_send(&msg);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -703,6 +791,30 @@ struct WireAssign {
     x: i32,
     y: i32,
     skill: usize,
+}
+
+/// Guest → host: throttle MY spawn stream (rate is per player now).
+#[derive(Serialize, Deserialize)]
+struct WireRate {
+    t: String, // "rt"
+    v: u32,
+}
+
+/// Guest → host: MY crew quits (owner-scoped nuke).
+#[derive(Serialize, Deserialize)]
+struct WireNuke {
+    t: String, // "nk"
+}
+
+/// Arms the loud-quit countdown for every walker `player` owns. Nukes are
+/// personal: nobody detonates the other player's workforce.
+fn nuke_own(game: &mut Game, player: u8) {
+    for w in game.walkers.iter_mut() {
+        if w.alive && w.owner == player && w.quit < 0 {
+            w.quit = 60 + (w.x % 30);
+        }
+    }
+    sfx("saucer");
 }
 
 #[derive(Serialize, Deserialize)]
@@ -770,6 +882,7 @@ fn is_guest(net: &NetMode) -> bool {
 
 fn simulate(
     time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     net: Res<NetMode>,
     editor: Res<Editor>,
     mut game: ResMut<Game>,
@@ -779,17 +892,25 @@ fn simulate(
         return;
     }
     game.acc += time.delta_secs();
+    // Fast-forward (local rounds): hold F to run the fixed step at triple
+    // speed — the last stragglers' march is dead time nobody signed up for.
+    // Determinism is untouched; it's the same step, taken more often.
+    let mut step_cap = 4;
+    if net.0.is_none() && keys.pressed(KeyCode::KeyF) {
+        game.acc += 2.0 * time.delta_secs();
+        step_cap = 12;
+    }
     let step = 1.0 / TICKS_PER_SEC;
     let mut steps = 0;
-    while game.acc >= step && steps < 4 {
+    while game.acc >= step && steps < step_cap {
         game.acc -= step;
         steps += 1;
         game.tick += 1;
         game.time_left -= 1;
 
-        let rate = game.rate.max(10) as u64;
-        if game.tick % rate == 0 {
-            for p in 0..game.players as usize {
+        for p in 0..game.players as usize {
+            let rate = game.rate[p].max(10) as u64;
+            if game.tick % rate == 0 {
                 if game.spawned[p] < game.doc.count {
                     let e = if p == 0 { game.doc.e1 } else { game.doc.e2.unwrap_or(game.doc.e1) };
                     let id = game.next_id;
@@ -833,8 +954,15 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
         .filter(|w| w.alive && matches!(w.job, Job::Block))
         .map(|w| (w.id, w.x, w.y))
         .collect();
-    let blocked = |id: u32, x: i32, y: i32| {
-        blockers.iter().any(|&(bid, bx, by)| bid != id && (bx - x).abs() <= 3 && (by - y).abs() <= 8)
+    // A supervisor only turns walkers moving TOWARD them: a faller landing
+    // inside the field used to flip direction every tick, frozen forever.
+    let blocked = |id: u32, wx: i32, wy: i32, dir: i32| {
+        blockers.iter().any(|&(bid, bx, by)| {
+            bid != id
+                && (bx - (wx + dir * 2)).abs() <= 3
+                && (by - wy).abs() <= 8
+                && (bx - wx) * dir > 0
+        })
     };
 
     let n = game.walkers.len();
@@ -844,8 +972,10 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
             continue;
         }
 
-        // The quit countdown ticks over WHATEVER the walker is doing.
-        if w.quit >= 0 {
+        // The quit countdown ticks over WHATEVER the walker is doing —
+        // except one who already reached the door: crossed the sill = saved,
+        // no exploding in the doorway.
+        if w.quit >= 0 && !matches!(w.job, Job::Exiting { .. }) {
             w.quit -= 1;
             if w.quit < 0 {
                 for dy in -6..=6i32 {
@@ -905,7 +1035,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
             Job::Walk => {
                 if !grounded {
                     w.job = Job::Fall { dist: 0, chute: false };
-                } else if blocked(w.id, w.x + w.dir * 2, w.y) {
+                } else if blocked(w.id, w.x, w.y, w.dir) {
                     w.dir = -w.dir;
                 } else {
                     let ahead_x = w.x + w.dir;
@@ -934,7 +1064,12 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
             }
             Job::Climb => {
                 let wall_x = w.x + w.dir;
-                if !site.solid(wall_x, w.y - 4) {
+                // The map border reads as an endless "wall": a climber there
+                // would ascend into negative-y forever. Turn back instead.
+                if wall_x < 0 || wall_x >= site.w || w.y < -4 {
+                    w.dir = -w.dir;
+                    w.job = Job::Fall { dist: 0, chute: false };
+                } else if !site.solid(wall_x, w.y - 4) {
                     w.x = wall_x;
                     w.y -= 4;
                     w.job = Job::Walk;
@@ -977,10 +1112,14 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                     let mut any = false;
                     for k in 1..=5 {
                         for dy in -7..=0i32 {
-                            if site.solid(w.x + w.dir * k, w.y + dy) {
+                            let x = w.x + w.dir * k;
+                            // Only IN-BOUNDS rock counts as work: the border
+                            // reads as solid, and a basher crediting it would
+                            // tunnel off the map and live there forever.
+                            if x >= 0 && x < site.w && site.solid(x, w.y + dy) {
                                 any = true;
                             }
-                            site.set(w.x + w.dir * k, w.y + dy, false);
+                            site.set(x, w.y + dy, false);
                         }
                     }
                     if any {
@@ -1042,6 +1181,24 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
     }
 }
 
+/// 2P winner with tiebreakers: most rescues, then fewest casualties, then
+/// fewest skills spent. None = a genuine dead heat.
+fn winner_2p(game: &Game) -> Option<usize> {
+    let (a, b) = (game.saved[0], game.saved[1]);
+    if a != b {
+        return Some(if a > b { 0 } else { 1 });
+    }
+    if game.dead[0] != game.dead[1] {
+        return Some(if game.dead[0] < game.dead[1] { 0 } else { 1 });
+    }
+    let spent =
+        |p: usize| -> u32 { game.doc.skills.iter().sum::<u32>() - game.skills[p].iter().sum::<u32>() };
+    if spent(0) != spent(1) {
+        return Some(if spent(0) < spent(1) { 0 } else { 1 });
+    }
+    None
+}
+
 fn finish(game: &mut Game) {
     game.over = true;
     game.over_timer.reset();
@@ -1057,16 +1214,14 @@ fn finish(game: &mut Game) {
         sfx(if ok { "clear" } else { "death" });
     } else {
         let (a, b) = (game.saved[0], game.saved[1]);
-        game.result = format!(
-            "P1 SAVED {a}  /  P2 SAVED {b}\n{}",
-            if a > b {
-                "P1 TAKES THE FLOOR"
-            } else if b > a {
-                "P2 TAKES THE FLOOR"
-            } else {
-                "A TIE. HR IS FURIOUS."
-            }
-        );
+        let verdict = match winner_2p(game) {
+            Some(0) if a == b => "EQUAL RESCUES - P1 WINS ON CONDUCT",
+            Some(1) if a == b => "EQUAL RESCUES - P2 WINS ON CONDUCT",
+            Some(0) => "P1 TAKES THE FLOOR",
+            Some(_) => "P2 TAKES THE FLOOR",
+            None => "A DEAD HEAT. HR IS FURIOUS.",
+        };
+        game.result = format!("P1 SAVED {a}  /  P2 SAVED {b}\n{verdict}");
         sfx("clear");
     }
 }
@@ -1173,12 +1328,14 @@ fn camera_scroll(
             }
         }
     }
-    // P2 shoving the crosshair against the edge scrolls too (local 2P).
+    // P2 shoving the crosshair against the view edge scrolls too (local 2P).
+    // The crosshair is world-space now, so compare against the camera window.
     if !editor.active && game.players == 2 {
-        if game.p2cursor.x >= 350.0 {
+        let sx = game.p2cursor.x - cam.x; // 0..VIEW_W inside the window
+        if sx >= VIEW_W - 12.0 {
             dx += 360.0 * dt;
         }
-        if game.p2cursor.x <= -350.0 {
+        if sx <= 12.0 {
             dx -= 360.0 * dt;
         }
     }
@@ -1203,7 +1360,7 @@ fn input_p1(
     cameras: Query<(&Camera, &GlobalTransform)>,
     net: Res<NetMode>,
     editor: Res<Editor>,
-    cam: Res<Cam>,
+    mut cam: ResMut<Cam>,
     mut game: ResMut<Game>,
 ) {
     if editor.active || game.over {
@@ -1230,27 +1387,37 @@ fn input_p1(
             sfx("tick");
         }
     }
-    let host_or_local = net.0.as_ref().map(|c| c.is_host()).unwrap_or(true);
-    if host_or_local {
-        // T = faster flow, R = slower (rate is the tick interval).
-        if keys.just_pressed(KeyCode::KeyR) {
-            game.rate = (game.rate + 10).min(120);
-        }
-        if keys.just_pressed(KeyCode::KeyT) {
-            game.rate = game.rate.saturating_sub(10).max(10);
-        }
-        if keys.just_pressed(KeyCode::KeyN) {
-            if game.nuke_armed {
-                for w in game.walkers.iter_mut() {
-                    if w.alive && w.quit < 0 {
-                        w.quit = 60 + (w.x % 30);
-                    }
-                }
-                sfx("saucer");
-                game.nuke_armed = false;
-            } else {
-                game.nuke_armed = true;
+    // T = faster flow, R = slower — YOUR stream only; guests relay theirs.
+    let guest = is_guest(&net);
+    if keys.just_pressed(KeyCode::KeyR) {
+        game.rate[me.min(1)] = (game.rate[me.min(1)] + 10).min(120);
+        if guest {
+            if let Ok(msg) = serde_json::to_string(&WireRate { t: "rt".into(), v: game.rate[me.min(1)] }) {
+                net_send(&msg);
             }
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        game.rate[me.min(1)] = game.rate[me.min(1)].saturating_sub(10).max(10);
+        if guest {
+            if let Ok(msg) = serde_json::to_string(&WireRate { t: "rt".into(), v: game.rate[me.min(1)] }) {
+                net_send(&msg);
+            }
+        }
+    }
+    // N-N: YOUR crew quits. Owner-scoped — no detonating the opposition.
+    if keys.just_pressed(KeyCode::KeyN) {
+        if game.nuke_armed {
+            game.nuke_armed = false;
+            if guest {
+                if let Ok(msg) = serde_json::to_string(&WireNuke { t: "nk".into() }) {
+                    net_send(&msg);
+                }
+            } else {
+                nuke_own(&mut game, me.min(1) as u8);
+            }
+        } else {
+            game.nuke_armed = true;
         }
     }
 
@@ -1261,6 +1428,20 @@ fn input_p1(
         game.hover[me.min(1)] = None;
         return;
     };
+    // Click-to-jump on the minimap: teleport the camera window there.
+    let site_px = cam.max + VIEW_W;
+    if site_px > VIEW_W
+        && (world.x - MM_CX).abs() <= (MM_W + 4.0) / 2.0
+        && (world.y - MM_CY).abs() <= (MM_H + 4.0) / 2.0
+    {
+        game.hover[me.min(1)] = None;
+        if buttons.just_pressed(MouseButton::Left) {
+            let frac = ((world.x - (MM_CX - MM_W / 2.0)) / MM_W).clamp(0.0, 1.0);
+            cam.x = (frac * site_px - VIEW_W / 2.0).clamp(0.0, cam.max);
+            sfx("tick");
+        }
+        return;
+    }
     let (gx, gy) = world_to_grid(&cam, world);
     game.hover[me.min(1)] = candidate(&game, me, gx, gy).map(|i| game.walkers[i].id);
 
@@ -1282,12 +1463,14 @@ fn input_p2(
     time: Res<Time>,
     net: Res<NetMode>,
     editor: Res<Editor>,
-    cam: Res<Cam>,
+    site: Res<Site>,
     mut game: ResMut<Game>,
 ) {
     if editor.active || game.over || net.0.is_some() || game.players < 2 {
         return;
     }
+    // The crosshair lives in WORLD x: camera scrolling (P1's or their own)
+    // never slides P2's aim off the walker they lined up.
     let speed = 220.0 * time.delta_secs();
     if keys.pressed(KeyCode::ArrowLeft) {
         game.p2cursor.x -= speed;
@@ -1301,7 +1484,7 @@ fn input_p2(
     if keys.pressed(KeyCode::ArrowDown) {
         game.p2cursor.y -= speed;
     }
-    game.p2cursor.x = game.p2cursor.x.clamp(-355.0, 355.0);
+    game.p2cursor.x = game.p2cursor.x.clamp(0.0, site.w as f32 * CELL);
     game.p2cursor.y = game.p2cursor.y.clamp(-220.0, 320.0);
     if keys.just_pressed(KeyCode::KeyQ) {
         game.selected[1] = (game.selected[1] + 6) % 7;
@@ -1311,7 +1494,8 @@ fn input_p2(
         game.selected[1] = (game.selected[1] + 1) % 7;
         sfx("tick");
     }
-    let (gx, gy) = world_to_grid(&cam, game.p2cursor);
+    let gx = (game.p2cursor.x / CELL) as i32;
+    let gy = ((320.0 - game.p2cursor.y) / CELL) as i32;
     game.hover[1] = candidate(&game, 1, gx, gy).map(|i| game.walkers[i].id);
     if keys.just_pressed(KeyCode::Enter) {
         let skill = game.selected[1];
@@ -1389,6 +1573,16 @@ fn net_apply(
         return;
     };
     let host = cfg.is_host();
+    // A guest can't sit on "WAITING FOR THE HOST'S LEVEL..." forever: if the
+    // transfer never lands (dropped frames, a host bug), say so and end it.
+    if !host && !game.guest_ready && !game.over {
+        game.lv_wait += time.delta_secs();
+        if game.lv_wait > 20.0 {
+            game.over = true;
+            game.over_timer.reset();
+            game.result = "THE LEVEL NEVER ARRIVED\nTRY A NEW ROOM".into();
+        }
+    }
     for ev in events.read() {
         if ev.left {
             if !game.over {
@@ -1410,25 +1604,39 @@ fn net_apply(
                     }
                 }
             }
+            Some("rt") if host => {
+                if let Ok(r) = serde_json::from_str::<WireRate>(&ev.data) {
+                    game.rate[(ev.seat as usize).min(1)] = r.v.clamp(10, 120);
+                }
+            }
+            Some("nk") if host => {
+                nuke_own(&mut game, (ev.seat as usize).min(1) as u8);
+            }
             Some("lv") if !host => {
                 if let Ok(mut wl) = serde_json::from_str::<WireLevel>(&ev.data) {
                     sanitize_doc(&mut wl.doc);
-                    // Rebuild the site at the host's level width.
-                    let w = wl.doc.w;
-                    site.w = w;
-                    build_mask(&wl.doc, w, &mut site.mask);
-                    site.image = images.add(terrain_image(w, &site.mask));
-                    site.dirty = None;
-                    if let Ok((mut sprite, _)) = terrain.single_mut() {
-                        sprite.image = site.image.clone();
-                        sprite.custom_size = Some(Vec2::new(w as f32 * CELL, 540.0));
+                    if wl.parts == 0 {
+                        apply_level(wl.doc, &mut game, &mut site, &mut cam, &mut images, &mut terrain);
+                    } else {
+                        // Big painted level: the runs arrive in "lvr" parts.
+                        game.lv_parts = wl.parts;
+                        game.lv_runs.clear();
+                        game.lv_doc = Some(wl.doc);
                     }
-                    cam.x = 0.0;
-                    cam.max = (w as f32 * CELL - VIEW_W).max(0.0);
-                    game.skills = [wl.doc.skills, wl.doc.skills];
-                    game.time_left = (wl.doc.time * TICKS_PER_SEC as u32) as i32;
-                    game.doc = wl.doc;
-                    game.guest_ready = true;
+                }
+            }
+            Some("lvr") if !host => {
+                if let Ok(part) = serde_json::from_str::<WireRuns>(&ev.data) {
+                    if game.lv_doc.is_some() && game.lv_parts > 0 {
+                        game.lv_runs.extend(part.runs);
+                        game.lv_parts -= 1;
+                        if game.lv_parts == 0 {
+                            let mut doc = game.lv_doc.take().expect("checked above");
+                            doc.runs = std::mem::take(&mut game.lv_runs);
+                            sanitize_doc(&mut doc);
+                            apply_level(doc, &mut game, &mut site, &mut cam, &mut images, &mut terrain);
+                        }
+                    }
                 }
             }
             Some("tr") if !host => {
@@ -1499,14 +1707,45 @@ fn net_apply(
     }
 }
 
+/// Points the guest's site at a freshly received host level.
+fn apply_level(
+    doc: LevelDoc,
+    game: &mut Game,
+    site: &mut Site,
+    cam: &mut Cam,
+    images: &mut Assets<Image>,
+    terrain: &mut Query<(&mut Sprite, &mut Transform), With<TerrainSprite>>,
+) {
+    let w = doc.w;
+    site.w = w;
+    build_mask(&doc, w, &mut site.mask);
+    site.image = images.add(terrain_image(w, &site.mask));
+    site.dirty.clear();
+    if let Ok((mut sprite, _)) = terrain.single_mut() {
+        sprite.image = site.image.clone();
+        sprite.custom_size = Some(Vec2::new(w as f32 * CELL, 540.0));
+    }
+    cam.x = 0.0;
+    cam.max = (w as f32 * CELL - VIEW_W).max(0.0);
+    game.skills = [doc.skills, doc.skills];
+    game.time_left = (doc.time * TICKS_PER_SEC as u32) as i32;
+    game.doc = doc;
+    game.guest_ready = true;
+}
+
 // ---- rendering ----
 
 fn refresh_terrain(mut site: ResMut<Site>, mut images: ResMut<Assets<Image>>) {
-    let Some((x0, y0, x1, y1)) = site.dirty.take() else { return };
+    if site.dirty.is_empty() {
+        return;
+    }
+    let rects = std::mem::take(&mut site.dirty);
     let w = site.w;
     if let Some(img) = images.get_mut(&site.image) {
         if let Some(data) = img.data.as_mut() {
-            paint_region(w, &site.mask, data, x0, y0, x1, y1);
+            for (x0, y0, x1, y1) in rects {
+                paint_region(w, &site.mask, data, x0, y0, x1, y1);
+            }
         }
     }
 }
@@ -1564,10 +1803,29 @@ fn draw(
     net: Res<NetMode>,
     cam: Res<Cam>,
     site: Res<Site>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
 ) {
     let wide = site.w as f32 * CELL > VIEW_W;
     if editor.active {
         draw_doors(&mut gizmos, &editor.doc, &cam, true);
+        // Brush cursor: size, position, paint-vs-erase, and the mirror twin —
+        // authoring blind was the editor's biggest friction.
+        if let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) {
+            if let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) {
+                let r = editor.brush as f32 * CELL;
+                let color = if buttons.pressed(MouseButton::Right) { RED } else { GREEN };
+                gizmos.circle_2d(world, r, color.with_alpha(0.85));
+                if editor.mirror {
+                    let (gx, gy) = world_to_grid(&cam, world);
+                    let twin = grid_to_world(&cam, editor.w - 1 - gx, gy);
+                    if twin.x > -380.0 && twin.x < 380.0 {
+                        gizmos.circle_2d(twin, r, color.with_alpha(0.35));
+                    }
+                }
+            }
+        }
         if wide {
             draw_minimap(&mut gizmos, &game, &cam, &site, true, &editor.doc);
         }
@@ -1599,9 +1857,12 @@ fn draw(
         }
     }
     if game.players == 2 && net.0.is_none() {
-        let c = game.p2cursor;
-        gizmos.line_2d(c - Vec2::X * 8.0, c + Vec2::X * 8.0, MAGENTA);
-        gizmos.line_2d(c - Vec2::Y * 8.0, c + Vec2::Y * 8.0, MAGENTA);
+        // World-space crosshair → screen position under the current camera.
+        let c = Vec2::new(game.p2cursor.x - cam.x - 360.0, game.p2cursor.y);
+        if c.x >= -368.0 && c.x <= 368.0 {
+            gizmos.line_2d(c - Vec2::X * 8.0, c + Vec2::X * 8.0, MAGENTA);
+            gizmos.line_2d(c - Vec2::Y * 8.0, c + Vec2::Y * 8.0, MAGENTA);
+        }
     }
     if wide {
         draw_minimap(&mut gizmos, &game, &cam, &site, false, &game.doc);
@@ -1686,15 +1947,20 @@ fn hud_update(
             editor.brush,
             if editor.mirror { "ON" } else { "OFF" }
         );
-        let s2 = format!(
-            "POOL {} {} (TAB, 8/9, 0=ALL)  COUNT {} (C/V)  NEED {} (B/N)  RATE {} (R/T)  TIME {}s (K/L)",
-            SKILL_NAMES[editor.skill_sel],
-            editor.doc.skills[editor.skill_sel],
-            editor.doc.count,
-            editor.doc.need,
-            editor.doc.rate,
-            editor.doc.time
-        );
+        // A validation warning owns the second line while it lasts.
+        let s2 = if let Some((warning, _)) = &editor.warning {
+            format!("!! {warning} !!")
+        } else {
+            format!(
+                "POOL {} {} (TAB, 8/9, 0=ALL)  COUNT {} (C/V)  NEED {} (B/N)  RATE {} (R/T)  TIME {}s (K/L)",
+                SKILL_NAMES[editor.skill_sel],
+                editor.doc.skills[editor.skill_sel],
+                editor.doc.count,
+                editor.doc.need,
+                editor.doc.rate,
+                editor.doc.time
+            )
+        };
         if t.0 != s {
             t.0 = s;
         }
@@ -1715,14 +1981,19 @@ fn hud_update(
         "WAITING FOR THE HOST'S LEVEL...".to_string()
     } else {
         let secs = (game.time_left as f32 / TICKS_PER_SEC).max(0.0) as i32;
-        let flow = 1800 / game.rate.max(10); // spawns per minute
+        let me: usize = match &net.0 {
+            Some(cfg) => (cfg.seat as usize).min(1),
+            None => 0,
+        };
+        let flow = 1800 / game.rate[me].max(10); // YOUR spawns per minute
         let nuke = if game.nuke_armed && !guest { "   N AGAIN: EVERYONE QUITS" } else { "" };
         let goal = if game.players == 2 {
             "MOST RESCUES WINS".to_string()
         } else {
             format!("NEED {}", game.doc.need)
         };
-        let rate_ui = if guest { String::new() } else { format!("   FLOW {flow}/MIN (T+ R-)") };
+        // Guests control their own stream now, so everyone sees the dial.
+        let rate_ui = format!("   FLOW {flow}/MIN (T+ R-)");
         format!(
             "OUT {}  IN {}/{}  {}   TIME {}:{:02}{}{}",
             game.walkers.iter().filter(|w| w.alive).count(),
@@ -1828,11 +2099,8 @@ fn endgame(
         if mine >= game.doc.need {
             score += 500 + (game.time_left.max(0) as u32 / 30) * 2;
         }
-    } else {
-        let other = game.saved[1 - me.min(1)];
-        if mine > other {
-            score += 300;
-        }
+    } else if winner_2p(&game) == Some(me.min(1)) {
+        score += 300;
     }
     final_score.0 = score;
     next.set(Phase::GameOver);
@@ -1859,7 +2127,7 @@ fn restore_editor_site(
     site.w = editor.w;
     site.mask = editor.mask.clone();
     site.image = images.add(terrain_image(editor.w, &site.mask));
-    site.dirty = None;
+    site.dirty.clear();
     if let Ok(mut sprite) = terrain.single_mut() {
         sprite.image = site.image.clone();
         sprite.custom_size = Some(Vec2::new(editor.w as f32 * CELL, 540.0));
@@ -1870,10 +2138,50 @@ fn restore_editor_site(
 
 // ---- the level editor ----
 
+/// Save/test gate: a buried door ships a broken round — walkers spawn inside
+/// rock or nothing can ever leave. Requires each door's pocket to be mostly
+/// open. (No reachability check on purpose: bashers and diggers exist.)
+fn validate_canvas(editor: &Editor) -> Option<String> {
+    let clear = |pos: [i32; 2]| -> bool {
+        let (mut solid, mut total) = (0, 0);
+        for dy in -4..=1i32 {
+            for dx in -2..=2i32 {
+                let (x, y) = (pos[0] + dx, pos[1] + dy);
+                if x < 0 || x >= editor.w || y < 0 || y >= GH {
+                    continue;
+                }
+                total += 1;
+                if editor.mask[(y * editor.w + x) as usize] {
+                    solid += 1;
+                }
+            }
+        }
+        total == 0 || solid * 2 < total
+    };
+    if !clear(editor.doc.e1) {
+        return Some("ENTRANCE 1 IS BURIED - CLEAR IT".into());
+    }
+    if !clear(editor.doc.x1) {
+        return Some("EXIT 1 IS BURIED - CLEAR IT".into());
+    }
+    if let Some(e2) = editor.doc.e2 {
+        if !clear(e2) {
+            return Some("ENTRANCE 2 IS BURIED - CLEAR IT".into());
+        }
+    }
+    if let Some(x2) = editor.doc.x2 {
+        if !clear(x2) {
+            return Some("EXIT 2 IS BURIED - CLEAR IT".into());
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn editor_update(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     mut cam: ResMut<Cam>,
@@ -1894,13 +2202,25 @@ fn editor_update(
         return;
     }
 
+    // Tick the validation notice.
+    if let Some((_, t)) = editor.warning.as_mut() {
+        if t.tick(time.delta()).finished() {
+            editor.warning = None;
+        }
+    }
+
     if keys.just_pressed(KeyCode::KeyG) {
+        if let Some(problem) = validate_canvas(&editor) {
+            editor.warning = Some((problem, Timer::from_seconds(2.5, TimerMode::Once)));
+            sfx("buzz");
+            return;
+        }
         let doc = compile_doc(&editor);
         game.doc = doc;
         game.players = 1;
         reset_round(&mut game);
         game.skills = [game.doc.skills, game.doc.skills];
-        game.rate = game.doc.rate;
+        game.rate = [game.doc.rate; 2];
         game.time_left = (game.doc.time * TICKS_PER_SEC as u32) as i32;
         game.guest_ready = true;
         build_mask(&game.doc, site.w, &mut site.mask);
@@ -1911,6 +2231,11 @@ fn editor_update(
         return;
     }
     if keys.just_pressed(KeyCode::KeyS) {
+        if let Some(problem) = validate_canvas(&editor) {
+            editor.warning = Some((problem, Timer::from_seconds(2.5, TimerMode::Once)));
+            sfx("buzz");
+            return;
+        }
         let doc = compile_doc(&editor);
         if let Ok(json) = serde_json::to_string(&doc) {
             crate::shell::save_level(&json);
@@ -2007,11 +2332,34 @@ fn editor_update(
         (KeyCode::Digit4, 3),
     ] {
         if keys.just_pressed(key) {
+            // Mirror mode exists FOR symmetric 2P maps: placing a P1 door
+            // auto-places P2's twin across the axis (and vice versa).
+            let twin = [editor.w - 1 - gx, gy];
             match which {
-                0 => editor.doc.e1 = [gx, gy],
-                1 => editor.doc.x1 = [gx, gy],
-                2 => editor.doc.e2 = Some([gx, gy]),
-                _ => editor.doc.x2 = Some([gx, gy]),
+                0 => {
+                    editor.doc.e1 = [gx, gy];
+                    if editor.mirror {
+                        editor.doc.e2 = Some(twin);
+                    }
+                }
+                1 => {
+                    editor.doc.x1 = [gx, gy];
+                    if editor.mirror {
+                        editor.doc.x2 = Some(twin);
+                    }
+                }
+                2 => {
+                    editor.doc.e2 = Some([gx, gy]);
+                    if editor.mirror {
+                        editor.doc.e1 = twin;
+                    }
+                }
+                _ => {
+                    editor.doc.x2 = Some([gx, gy]);
+                    if editor.mirror {
+                        editor.doc.x1 = twin;
+                    }
+                }
             }
             sanitize_doc(&mut editor.doc);
             sfx("place");

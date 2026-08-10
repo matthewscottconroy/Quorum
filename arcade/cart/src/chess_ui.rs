@@ -105,8 +105,27 @@ struct Table {
     /// The machine plays Black in local single-player rounds.
     bot: bool,
     bot_think: Timer,
+    /// In-flight incremental search: a few root moves per frame, no hitch.
+    search: Option<BotSearch>,
+    /// Two humans, one keyboard: every result pays a flat token so nobody
+    /// farms the leaderboard by playing both chairs.
+    hotseat: bool,
+    /// Online per-turn clock: stall past it and you forfeit.
+    turn_clock: Timer,
     result: String,
 }
+
+struct BotSearch {
+    moves: Vec<Move>,
+    idx: usize,
+    best: Option<Move>,
+    best_score: i32,
+    seed: u64,
+}
+
+/// Online per-turn allowance, generous by design: this is a stall-breaker,
+/// not a blitz clock.
+const TURN_SECS: f32 = 150.0;
 
 #[derive(Component)]
 struct PieceSprite;
@@ -126,7 +145,7 @@ impl Plugin for ChessPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
             Update,
-            (net_apply, bot_move, clicks, endgame)
+            (net_apply, bot_move, clicks, turn_clock_run, endgame)
                 .chain()
                 .run_if(in_state(Phase::Playing))
                 .run_if(crate::unpaused),
@@ -152,6 +171,9 @@ fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) 
         resign_arm: None,
         bot: net.0.is_none() && config.humans == 1,
         bot_think: Timer::from_seconds(0.55, TimerMode::Once),
+        search: None,
+        hotseat: net.0.is_none() && config.humans >= 2,
+        turn_clock: Timer::from_seconds(TURN_SECS, TimerMode::Once),
         result: String::new(),
     });
     // The board: light/dark squares in muted CRT blues.
@@ -210,6 +232,7 @@ fn commit_move(table: &mut Table, m: Move) {
     table.selected = None;
     table.legal = table.board.legal_moves();
     table.dirty = true;
+    table.turn_clock.reset();
     sfx(if capture { "capture" } else { "place" });
     check_end(table);
 }
@@ -310,21 +333,55 @@ fn repaint(
     }
 }
 
-/// The machine's turn: think briefly, then play like it means it.
+/// The machine's turn: think briefly, then search TWO root moves per frame —
+/// depth three never stalls a frame, the CRT keeps flickering.
 fn bot_move(time: Res<Time>, mut table: ResMut<Table>, mut rng: ResMut<Rng>, net: Res<NetMode>) {
     if !table.bot || net.0.is_some() || table.over_wait.is_some() || table.promo.is_some() {
         return;
     }
     if table.board.turn != Side::Black {
         table.bot_think.reset();
+        table.search = None;
         return;
     }
     if !table.bot_think.tick(time.delta()).finished() {
         return;
     }
-    let seed = rng.next_u64();
-    if let Some(m) = chess_bot::best_move(&table.board, seed) {
-        commit_move(&mut table, m);
+    if table.search.is_none() {
+        let moves = chess_bot::root_moves(&table.board);
+        if moves.is_empty() {
+            return; // check_end already handled mate/stalemate
+        }
+        table.search = Some(BotSearch {
+            moves,
+            idx: 0,
+            best: None,
+            best_score: i32::MIN,
+            seed: rng.next_u64(),
+        });
+    }
+    let mut search = table.search.take().expect("initialized above");
+    let seen = table.hashes.clone();
+    for _ in 0..2 {
+        if search.idx >= search.moves.len() {
+            break;
+        }
+        let m = search.moves[search.idx];
+        let score = chess_bot::score_root_move(&table.board, m, &seen)
+            + chess_bot::jitter(search.seed, search.idx);
+        if search.best.is_none() || score > search.best_score {
+            search.best_score = score;
+            search.best = Some(m);
+        }
+        search.idx += 1;
+    }
+    if search.idx >= search.moves.len() {
+        if let Some(m) = search.best {
+            commit_move(&mut table, m);
+        }
+        table.search = None;
+    } else {
+        table.search = Some(search);
     }
 }
 
@@ -355,8 +412,10 @@ fn clicks(
         }
     }
     if keys.just_pressed(KeyCode::KeyR) && table.over_wait.is_none() && table.promo.is_none() {
+        // Resignation is legal OFF-turn online — a stalled opponent must
+        // never be able to hold your seat hostage.
         let its_my_input = match &net.0 {
-            Some(cfg) => table.board.turn == seat_side(cfg.seat),
+            Some(_) => true,
             None => !(table.bot && table.board.turn == Side::Black),
         };
         if its_my_input {
@@ -372,7 +431,10 @@ fn clicks(
                         net_send(&w);
                     }
                 }
-                let quitter = table.board.turn;
+                let quitter = match &net.0 {
+                    Some(cfg) => seat_side(cfg.seat),
+                    None => table.board.turn,
+                };
                 table.result = format!(
                     "{} RESIGNS\n{} WINS",
                     if quitter == Side::White { "WHITE" } else { "BLACK" },
@@ -380,7 +442,7 @@ fn clicks(
                 );
                 // The credited account resigned (online / vs machine) or sat
                 // both chairs (hotseat): a token payout either way.
-                table.final_score = if net.0.is_some() || table.bot { 100 } else { 400 };
+                table.final_score = 100;
                 table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             } else {
                 table.resign_arm = Some(Timer::from_seconds(2.0, TimerMode::Once));
@@ -402,7 +464,21 @@ fn clicks(
                 _ => "",
             };
             let resign = if table.resign_arm.is_some() { "\n\nR AGAIN\nTO RESIGN" } else { "" };
-            format!("{turn}\nTO MOVE{check}{whose}{resign}")
+            // Material tally: the vs-machine game reads at a glance.
+            let mat = table.board.material(Side::White);
+            let mat_line = match mat.signum() {
+                1 => format!("\n\nMATERIAL\nWHITE +{mat}"),
+                -1 => format!("\n\nMATERIAL\nBLACK +{}", -mat),
+                _ => String::new(),
+            };
+            // Online stall-breaker countdown, surfaced for the last minute.
+            let clock = match &net.0 {
+                Some(_) if table.turn_clock.remaining_secs() < 60.0 => {
+                    format!("\n\nCLOCK 0:{:02}", table.turn_clock.remaining_secs() as u32)
+                }
+                _ => String::new(),
+            };
+            format!("{turn}\nTO MOVE{check}{whose}{mat_line}{clock}{resign}")
         };
         if t.0 != s {
             t.0 = s;
@@ -520,15 +596,28 @@ fn net_apply(
                 table.final_score = 700;
                 table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
             }
-            "mv" if seat_side(ev.seat) == table.board.turn => {
+            "mv" => {
                 let promo = promo_piece(&wire.promo);
-                let candidate = table
-                    .board
-                    .legal_moves()
-                    .into_iter()
-                    .find(|m| m.from == wire.from && m.to == wire.to && m.promo == promo);
-                if let Some(m) = candidate {
-                    commit_move(&mut table, m);
+                let candidate = if seat_side(ev.seat) == table.board.turn {
+                    table
+                        .board
+                        .legal_moves()
+                        .into_iter()
+                        .find(|m| m.from == wire.from && m.to == wire.to && m.promo == promo)
+                } else {
+                    None // an off-turn move from the peer is already a desync
+                };
+                match candidate {
+                    Some(m) => commit_move(&mut table, m),
+                    None => {
+                        // The peers disagree about the position. The sender
+                        // has already committed; silently dropping the move
+                        // would wedge both clients forever. End it honestly.
+                        table.result = "SYNC LOST\nCALLED A DRAW".into();
+                        table.final_score = 250;
+                        table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+                        table.dirty = true;
+                    }
                 }
             }
             _ => {}
@@ -572,6 +661,34 @@ fn check_end(table: &mut Table) {
             };
             table.over_wait = Some(Timer::from_seconds(3.0, TimerMode::Once));
         }
+    }
+    // Hotseat: one person controls both chairs, so every result — mate,
+    // draw, shuffle-to-repetition — pays the same flat token. The graded
+    // purse is for rounds the credited account actually had to win.
+    if table.hotseat && table.over_wait.is_some() {
+        table.final_score = 100;
+    }
+}
+
+/// Online stall-breaker: the side that lets its turn clock lapse forfeits.
+/// Both clients run the clock independently; they agree on whose turn it is,
+/// so they agree on the verdict (frame-drift of a second is harmless — the
+/// result is the same either way).
+fn turn_clock_run(time: Res<Time>, net: Res<NetMode>, mut table: ResMut<Table>) {
+    let Some(cfg) = &net.0 else { return };
+    if table.over_wait.is_some() {
+        return;
+    }
+    table.turn_clock.tick(time.delta());
+    if table.turn_clock.finished() {
+        let slow = table.board.turn;
+        table.result = format!(
+            "OUT OF TIME\n{} FORFEITS",
+            if slow == Side::White { "WHITE" } else { "BLACK" }
+        );
+        table.final_score = if seat_side(cfg.seat) == slow { 100 } else { 700 };
+        table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+        table.dirty = true;
     }
 }
 

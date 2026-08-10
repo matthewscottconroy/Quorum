@@ -44,7 +44,7 @@ struct WireInput {
 }
 
 #[derive(Serialize, Deserialize)]
-struct WireFighter(u8, i32, i32, i32, i32, u8, u8, u32); // seat,cx,cy,dx,dy,progress%,alive,kills
+struct WireFighter(u8, i32, i32, i32, i32, u8, u8, u32, u8); // seat,cx,cy,dx,dy,progress%,alive,kills,speed*10
 
 #[derive(Serialize, Deserialize)]
 struct WireState {
@@ -55,6 +55,18 @@ struct WireState {
     fl: Vec<u16>,
     p: Vec<(u16, u8)>,
     clk: u32, // deciseconds
+    /// Sudden-death progress: how far the wall spiral has closed, so guests
+    /// can draw the warning tint and the HUD reads right everywhere.
+    #[serde(default)]
+    sp: u32,
+    /// Settle-fuse deciseconds remaining once the walls stop (u32::MAX
+    /// before the settle phase).
+    #[serde(default = "u32_max")]
+    sd: u32,
+}
+
+fn u32_max() -> u32 {
+    u32::MAX
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,6 +87,61 @@ struct GuestFx {
     bombs: std::collections::HashMap<usize, Entity>,
     flames: std::collections::HashMap<usize, Entity>,
     perks: std::collections::HashMap<usize, Entity>,
+    /// Latest fuse per bomb cell — feeds the telegraph pulse on guests.
+    fuses: std::collections::HashMap<usize, f32>,
+}
+
+fn tile_color(t: Tile) -> Color {
+    match t {
+        Tile::Solid => Color::srgb(0.16, 0.16, 0.24),
+        Tile::Crate => Color::srgb(0.45, 0.30, 0.13),
+        Tile::Empty => Color::srgb(0.05, 0.05, 0.09),
+    }
+}
+
+fn perk_color(p: Perk) -> Color {
+    match p {
+        Perk::Range => RED,
+        Perk::Bombs => Color::srgb(0.3, 0.6, 1.0),
+        Perk::Speed => Color::srgb(0.55, 1.0, 0.3),
+        Perk::Kick => WHITE,
+    }
+}
+
+fn perk_color_by_kind(kind: u8) -> Color {
+    match kind {
+        0 => RED,
+        1 => Color::srgb(0.3, 0.6, 1.0),
+        2 => Color::srgb(0.55, 1.0, 0.3),
+        _ => WHITE,
+    }
+}
+
+/// The blast shape, computed once and shared by every consumer (danger map,
+/// bot self-blast sim, chain detection, burst application): each of the four
+/// arms stops at Solid, includes a Crate cell, then stops. `(cell, was_crate)`
+/// per reached cell, center NOT included.
+fn blast_cells(tiles: &[Tile], cell: usize, range: i32) -> Vec<(usize, bool)> {
+    let (c0, r0) = ((cell as i32) % COLS, (cell as i32) / COLS);
+    let mut out = Vec::new();
+    for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        for k in 1..=range {
+            let (c, r) = (c0 + dc * k, r0 + dr * k);
+            if c < 0 || c >= COLS || r < 0 || r >= ROWS {
+                break;
+            }
+            let j = Arena::idx(c, r);
+            if tiles[j] == Tile::Solid {
+                break;
+            }
+            let is_crate = tiles[j] == Tile::Crate;
+            out.push((j, is_crate));
+            if is_crate {
+                break;
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,7 +166,10 @@ struct Arena {
     finished: bool,
     finish_timer: Timer,
     p1_score: u32,
-    death_order: Vec<usize>,
+    /// Deaths in order, grouped by simultaneity: everyone killed by the same
+    /// blast/wall tick shares a group and therefore a rank — no more ECS
+    /// iteration order deciding who "died first".
+    death_groups: Vec<Vec<usize>>,
     net_timer: Timer, // host snapshot cadence
     end_sent: bool,
     /// Once the walls stop, this fuse burns toward a declared draw so two
@@ -179,6 +249,8 @@ impl Plugin for PowderPlugin {
                 guest_input,
                 guest_apply,
                 guest_smooth,
+                bomb_telegraph,
+                wall_warning,
                 hud,
             )
                 .chain()
@@ -264,11 +336,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
     for r in 0..ROWS {
         for c in 0..COLS {
             let i = Arena::idx(c, r);
-            let color = match tiles[i] {
-                Tile::Solid => Color::srgb(0.16, 0.16, 0.24),
-                Tile::Crate => Color::srgb(0.45, 0.30, 0.13),
-                Tile::Empty => Color::srgb(0.05, 0.05, 0.09),
-            };
+            let color = tile_color(tiles[i]);
             let p = world(c, r);
             commands.spawn((
                 Sprite { color, custom_size: Some(Vec2::splat(CELL - 2.0)), ..default() },
@@ -293,7 +361,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>, config: Res<CabinetConfig
         finished: false,
         finish_timer: Timer::from_seconds(2.0, TimerMode::Once),
         p1_score: 0,
-        death_order: Vec::new(),
+        death_groups: Vec::new(),
         net_timer: Timer::from_seconds(0.05, TimerMode::Repeating),
         end_sent: false,
         settle: Timer::from_seconds(20.0, TimerMode::Once),
@@ -400,23 +468,9 @@ fn danger_map(arena: &Arena, soon: f32) -> Vec<bool> {
         if *fuse > soon {
             continue;
         }
-        let (c0, r0) = ((i as i32) % COLS, (i as i32) / COLS);
         danger[i] = true;
-        for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            for k in 1..=*range {
-                let (c, r) = (c0 + dc * k, r0 + dr * k);
-                if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-                    break;
-                }
-                let j = Arena::idx(c, r);
-                if arena.tiles[j] == Tile::Solid {
-                    break;
-                }
-                danger[j] = true;
-                if arena.tiles[j] == Tile::Crate {
-                    break;
-                }
-            }
+        for (j, _) in blast_cells(&arena.tiles, i, *range) {
+            danger[j] = true;
         }
     }
     danger
@@ -493,56 +547,43 @@ fn bot_brains(
         }
         let here = Arena::idx(f.tile.x, f.tile.y);
 
-        // 1. In danger: sprint to the nearest safe cell, danger transit allowed.
+        // 1. In danger: sprint to the nearest safe cell, danger transit
+        // allowed. Cornered WITH the kick perk: shove the keg in the way —
+        // the shove clears a lane the pathfinder can't see.
         if danger[here] {
             if let Some(step) = bfs_step(&arena, &danger, f.tile, true, |i| !danger[i]) {
                 f.want = step;
+            } else if f.kick {
+                for d in [IVec2::new(1, 0), IVec2::new(-1, 0), IVec2::new(0, 1), IVec2::new(0, -1)] {
+                    let t = f.tile + d;
+                    if t.x >= 0
+                        && t.x < COLS
+                        && t.y >= 0
+                        && t.y < ROWS
+                        && arena.bombs[Arena::idx(t.x, t.y)].is_some()
+                    {
+                        f.want = d;
+                        break;
+                    }
+                }
             }
             f.wants_bomb = false;
             continue;
         }
         // 2. Adjacent crate or enemy, with an escape route? Drop a keg.
-        let mut worth_bombing = false;
-        for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            for k in 1..=f.range {
-                let (c, r) = (f.tile.x + dc * k, f.tile.y + dr * k);
-                if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-                    break;
-                }
-                let j = Arena::idx(c, r);
-                if arena.tiles[j] == Tile::Solid {
-                    break;
-                }
-                if arena.tiles[j] == Tile::Crate {
-                    worth_bombing = true;
-                    break;
-                }
-                if positions.iter().any(|&(s, t, alive)| alive && s != f.seat && t == IVec2::new(c, r)) {
-                    worth_bombing = true;
-                    break;
-                }
+        let worth_bombing = blast_cells(&arena.tiles, here, f.range).iter().any(|&(j, is_crate)| {
+            is_crate || {
+                let cell = IVec2::new((j as i32) % COLS, (j as i32) / COLS);
+                positions.iter().any(|&(s, t, alive)| alive && s != f.seat && t == cell)
             }
-        }
+        });
         if worth_bombing && f.live_bombs < f.max_bombs {
             // Simulate our own blast: is there still a safe cell to reach?
             let mut sim = vec![false; danger.len()];
             sim.copy_from_slice(&danger);
             sim[here] = true;
-            for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                for k in 1..=f.range {
-                    let (c, r) = (f.tile.x + dc * k, f.tile.y + dr * k);
-                    if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-                        break;
-                    }
-                    let j = Arena::idx(c, r);
-                    if arena.tiles[j] == Tile::Solid {
-                        break;
-                    }
-                    sim[j] = true;
-                    if arena.tiles[j] == Tile::Crate {
-                        break;
-                    }
-                }
+            for (j, _) in blast_cells(&arena.tiles, here, f.range) {
+                sim[j] = true;
             }
             if bfs_step(&arena, &sim, f.tile, true, |i| !sim[i]).is_some() {
                 f.wants_bomb = true;
@@ -617,15 +658,15 @@ fn movement(
     time: Res<Time>,
     mut arena: ResMut<Arena>,
     net: Res<NetMode>,
-    mut fighters: Query<(&mut Fighter, &mut Transform), Without<BombSprite>>,
+    mut fighters: Query<(&mut Fighter, &mut Transform, &mut Sprite), Without<BombSprite>>,
     mut bomb_tfs: Query<&mut Transform, (With<BombSprite>, Without<Fighter>)>,
 ) {
     if net_guest(&net) {
         return;
     }
     // Kick pass: a fighter with the perk shoves the keg in their way.
-    let occupied: Vec<IVec2> = fighters.iter().filter(|(f, _)| f.alive).map(|(f, _)| f.tile).collect();
-    for (f, _) in &fighters {
+    let occupied: Vec<IVec2> = fighters.iter().filter(|(f, _, _)| f.alive).map(|(f, _, _)| f.tile).collect();
+    for (f, _, _) in &fighters {
         if !f.alive || !f.kick || f.want == IVec2::ZERO {
             continue;
         }
@@ -642,7 +683,8 @@ fn movement(
         }
     }
     let dt = time.delta_secs();
-    for (mut f, mut tf) in &mut fighters {
+    let mut crushed: Vec<usize> = Vec::new();
+    for (mut f, mut tf, mut sprite) in &mut fighters {
         if !f.alive {
             continue;
         }
@@ -662,6 +704,16 @@ fn movement(
                 let d = f.dir;
                 f.tile += d;
                 f.progress = 0.0;
+                // The closing wall can solidify the destination mid-step;
+                // finishing the step would entomb the fighter alive and
+                // stall the round. The wall wins: crushed.
+                if arena.tiles[Arena::idx(f.tile.x, f.tile.y)] == Tile::Solid {
+                    f.alive = false;
+                    sprite.color.set_alpha(0.15);
+                    sfx("death");
+                    crushed.push(f.seat);
+                    break;
+                }
                 let turn_ok = f.want != IVec2::ZERO && arena.open(f.tile.x + f.want.x, f.tile.y + f.want.y);
                 if turn_ok {
                     f.dir = f.want;
@@ -675,6 +727,9 @@ fn movement(
         let p = from.lerp(to, f.progress);
         tf.translation.x = p.x;
         tf.translation.y = p.y;
+    }
+    if !crushed.is_empty() {
+        arena.death_groups.push(crushed);
     }
 }
 
@@ -746,23 +801,9 @@ fn bombs_and_flames(
         let credited = initiator.unwrap_or(owner);
         burst.push((i, range, credited));
         // Chain: any bomb in this blast goes off now, on the initiator's tab.
-        let (c0, r0) = ((i as i32) % COLS, (i as i32) / COLS);
-        for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            for k in 1..=range {
-                let (c, r) = (c0 + dc * k, r0 + dr * k);
-                if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-                    break;
-                }
-                let j = Arena::idx(c, r);
-                if arena.tiles[j] == Tile::Solid {
-                    break;
-                }
-                if arena.bombs[j].is_some() && !exploding.iter().any(|&(cell, _)| cell == j) {
-                    exploding.push((j, Some(credited)));
-                }
-                if arena.tiles[j] == Tile::Crate {
-                    break;
-                }
+        for (j, _) in blast_cells(&arena.tiles, i, range) {
+            if arena.bombs[j].is_some() && !exploding.iter().any(|&(cell, _)| cell == j) {
+                exploding.push((j, Some(credited)));
             }
         }
     }
@@ -791,58 +832,37 @@ fn bombs_and_flames(
             ));
         };
         lay_flame(&mut arena, &mut commands, c0, r0, (0, 0));
-        for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            for k in 1..=range {
-                let (c, r) = (c0 + dc * k, r0 + dr * k);
-                if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-                    break;
-                }
-                let j = Arena::idx(c, r);
-                if arena.tiles[j] == Tile::Solid {
-                    break;
-                }
-                let was_crate = arena.tiles[j] == Tile::Crate;
-                if was_crate {
-                    arena.tiles[j] = Tile::Empty;
-                    // A third of crates hide an upgrade.
-                    if rng.chance(0.34) {
-                        let perk = match rng.range(7) {
-                            0 | 1 => Perk::Range,
-                            2 | 3 => Perk::Bombs,
-                            4 | 5 => Perk::Speed,
-                            _ => Perk::Kick,
-                        };
-                        let p = world(c, r);
-                        let color = match perk {
-                            Perk::Range => RED,
-                            Perk::Bombs => Color::srgb(0.3, 0.6, 1.0),
-                            Perk::Speed => Color::srgb(0.55, 1.0, 0.3),
-                            Perk::Kick => WHITE,
-                        };
-                        let e = commands
-                            .spawn((
-                                Sprite { color, custom_size: Some(Vec2::splat(CELL * 0.45)), ..default() },
-                                Transform::from_xyz(p.x, p.y, 3.0),
-                                GameTag,
-                            ))
-                            .id();
-                        arena.perks[j] = Some((perk, e));
-                    }
-                }
-                lay_flame(&mut arena, &mut commands, c, r, (dc, dr));
-                if was_crate {
-                    break;
+        let cells = blast_cells(&arena.tiles, i, range);
+        for (j, was_crate) in cells {
+            let (c, r) = ((j as i32) % COLS, (j as i32) / COLS);
+            if was_crate {
+                arena.tiles[j] = Tile::Empty;
+                // A third of crates hide an upgrade.
+                if rng.chance(0.34) {
+                    let perk = match rng.range(7) {
+                        0 | 1 => Perk::Range,
+                        2 | 3 => Perk::Bombs,
+                        4 | 5 => Perk::Speed,
+                        _ => Perk::Kick,
+                    };
+                    let p = world(c, r);
+                    let e = commands
+                        .spawn((
+                            Sprite { color: perk_color(perk), custom_size: Some(Vec2::splat(CELL * 0.45)), ..default() },
+                            Transform::from_xyz(p.x, p.y, 3.0),
+                            GameTag,
+                        ))
+                        .id();
+                    arena.perks[j] = Some((perk, e));
                 }
             }
+            let dir = ((c - c0).signum(), (r - r0).signum());
+            lay_flame(&mut arena, &mut commands, c, r, dir);
         }
     }
     // Refresh tile colors (crates burn away).
     for (ts, mut sprite) in &mut tiles_q {
-        let want = match arena.tiles[ts.0] {
-            Tile::Solid => Color::srgb(0.16, 0.16, 0.24),
-            Tile::Crate => Color::srgb(0.45, 0.30, 0.13),
-            Tile::Empty => Color::srgb(0.05, 0.05, 0.09),
-        };
+        let want = tile_color(arena.tiles[ts.0]);
         if sprite.color != want {
             sprite.color = want;
         }
@@ -861,8 +881,11 @@ fn bombs_and_flames(
         }
     }
 
-    // Flames kill.
+    // Flames kill. Everyone burned this frame shares one death group (same
+    // rank), and kill credit lands even when the killer died in the same
+    // blast — trades count, posthumously.
     let mut kill_credit: Vec<(usize, usize)> = Vec::new(); // victim, owner
+    let mut burned: Vec<usize> = Vec::new();
     for (mut f, mut sprite) in &mut fighters {
         if !f.alive {
             continue;
@@ -885,15 +908,18 @@ fn bombs_and_flames(
             f.alive = false;
             sprite.color.set_alpha(0.15);
             sfx("death");
-            arena.death_order.push(f.seat);
+            burned.push(f.seat);
             if owner != f.seat && owner != usize::MAX {
                 kill_credit.push((f.seat, owner));
             }
         }
     }
+    if !burned.is_empty() {
+        arena.death_groups.push(burned);
+    }
     for (_victim, owner) in kill_credit {
         for (mut f, _) in &mut fighters {
-            if f.seat == owner && f.alive {
+            if f.seat == owner {
                 f.kills += 1;
             }
         }
@@ -944,13 +970,16 @@ fn closing_walls(
     // it burns out, everyone still standing goes down together (draw).
     if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
         if arena.settle.tick(time.delta()).just_finished() {
+            let mut settled = Vec::new();
             for (mut f, mut sprite) in &mut fighters {
                 if f.alive {
                     f.alive = false;
                     sprite.color.set_alpha(0.15);
-                    let seat = f.seat;
-                    arena.death_order.push(seat);
+                    settled.push(f.seat);
                 }
+            }
+            if !settled.is_empty() {
+                arena.death_groups.push(settled); // a true draw: shared rank
             }
             sfx("death");
         }
@@ -974,23 +1003,35 @@ fn closing_walls(
         commands.entity(e).despawn();
     }
     let cell = IVec2::new((i as i32) % COLS, (i as i32) / COLS);
+    let mut walled = Vec::new();
     for (mut f, mut sprite) in &mut fighters {
         if f.alive && f.tile == cell {
             f.alive = false;
             sprite.color.set_alpha(0.15);
-            arena.death_order.push(f.seat);
+            walled.push(f.seat);
         }
+    }
+    if !walled.is_empty() {
+        arena.death_groups.push(walled);
     }
 }
 
+/// Competition ranking over the death groups: survivors are rank 1;
+/// everyone in a death group shares the rank equal to how many players were
+/// still standing when that group fell (earlier death = worse rank,
+/// simultaneous deaths = the same rank).
 fn seat_rank(arena: &Arena, total: usize, seat: usize, alive: bool) -> usize {
     if alive {
-        1
-    } else {
-        // death_order position: earlier death = worse rank.
-        let pos = arena.death_order.iter().position(|&s| s == seat).unwrap_or(0);
-        total - pos
+        return 1;
     }
+    let mut fallen_before = 0usize;
+    for group in &arena.death_groups {
+        if group.contains(&seat) {
+            return total - fallen_before;
+        }
+        fallen_before += group.len();
+    }
+    total
 }
 
 fn placement_score(total: usize, rank: usize, kills: u32, alive: bool) -> u32 {
@@ -1007,6 +1048,12 @@ fn finish(
     mut commands: Commands,
 ) {
     if net_guest(&net) {
+        // Guests get the same 2s banner window the host does; guest_apply
+        // arms the timer when the "end" message lands.
+        if arena.finished && arena.finish_timer.tick(time.delta()).finished() {
+            final_score.0 = arena.p1_score;
+            next.set(Phase::GameOver);
+        }
         return;
     }
     let alive: Vec<&Fighter> = fighters.iter().filter(|f| f.alive).collect();
@@ -1095,7 +1142,11 @@ fn host_net_input(
                 continue;
             }
             let Ok(wire) = serde_json::from_str::<WireInput>(&ev.data) else { continue };
-            if wire.t == "in" && f.remote && f.alive {
+            if wire.t == "in" && f.alive {
+                // An input from this seat proves a human is at it — including
+                // one who dropped, was botified, and reclaimed their seat
+                // through the relay. Welcome back; the bot stands down.
+                f.remote = true;
                 f.want = IVec2::new(wire.d[0].clamp(-1, 1), wire.d[1].clamp(-1, 1));
                 if wire.b {
                     f.wants_bomb = true;
@@ -1114,7 +1165,13 @@ fn host_broadcast(
     fighters: Query<&Fighter>,
 ) {
     let Some(cfg) = &net.0 else { return };
-    if !cfg.is_host() || arena.finished {
+    if !cfg.is_host() {
+        return;
+    }
+    // Keep broadcasting through the finish window: the killing flame and the
+    // final death usually land BETWEEN snapshots, and guests deserve to see
+    // how it ended before the score screen.
+    if arena.finished && arena.finish_timer.finished() {
         return;
     }
     if !arena.net_timer.tick(time.delta()).just_finished() {
@@ -1144,6 +1201,7 @@ fn host_broadcast(
                     (f.progress * 100.0) as u8,
                     u8::from(f.alive),
                     f.kills,
+                    (f.speed * 10.0) as u8,
                 )
             })
             .collect(),
@@ -1175,6 +1233,13 @@ fn host_broadcast(
             })
             .collect(),
         clk: (arena.clock * 10.0) as u32,
+        sp: arena.spiral_next as u32,
+        sd: if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
+            ((arena.settle.duration().as_secs_f32() - arena.settle.elapsed_secs()).max(0.0) * 10.0)
+                as u32
+        } else {
+            u32::MAX
+        },
     };
     if let Ok(msg) = serde_json::to_string(&state) {
         net_send(&msg);
@@ -1202,6 +1267,11 @@ fn guest_input(
         IVec2::ZERO
     };
     let bomb = keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::Enter);
+    if bomb {
+        // Instant local feedback; the keg itself appears when the snapshot
+        // echoes back. Sound now, sight in ~100ms — feels responsive.
+        sfx("place");
+    }
     if want != *last || bomb {
         *last = want;
         let wire = WireInput { t: "in".into(), d: [want.x, want.y], b: bomb };
@@ -1254,7 +1324,7 @@ fn guest_apply(
                     latest_state = Some(st);
                 }
             }
-            Some("end") => {
+            Some("end") if !arena.finished => {
                 if let Ok(end) = serde_json::from_str::<WireEnd>(&ev.data) {
                     let total = end.ranks.len().max(2);
                     let rank = end
@@ -1270,8 +1340,17 @@ fn guest_apply(
                         .map(|(_, k)| *k)
                         .unwrap_or(0);
                     let alive = end.alive.iter().any(|&s| s as usize == my_seat);
-                    final_score.0 = placement_score(total, rank, kills, alive);
-                    next.set(Phase::GameOver);
+                    // Same 2s winner banner the host shows, then the score
+                    // screen — no more jump-cut past the ending.
+                    arena.finished = true;
+                    arena.finish_timer.reset();
+                    arena.p1_score = placement_score(total, rank, kills, alive);
+                    let banner = match end.alive.first() {
+                        Some(&w) => format!("SEAT {} TAKES THE CELLAR", w + 1),
+                        None => "MUTUAL DESTRUCTION".to_string(),
+                    };
+                    let e = text(&mut commands, &banner, 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
+                    commands.entity(e).insert(GameTag);
                 }
             }
             _ => {}
@@ -1291,16 +1370,20 @@ fn guest_apply(
         };
     }
     for (ts, mut sprite) in &mut tiles_q {
-        let want = match arena.tiles[ts.0] {
-            Tile::Solid => Color::srgb(0.16, 0.16, 0.24),
-            Tile::Crate => Color::srgb(0.45, 0.30, 0.13),
-            Tile::Empty => Color::srgb(0.05, 0.05, 0.09),
-        };
+        let want = tile_color(arena.tiles[ts.0]);
         if sprite.color != want {
             sprite.color = want;
         }
     }
     arena.clock = st.clk as f32 / 10.0;
+    // Sudden-death state rides along so the warning tint and the HUD read
+    // correctly on guests too (spiral cell order is deterministic).
+    arena.spiral_next = (st.sp as usize).min(arena.spiral.len());
+    if st.sd != u32::MAX {
+        let dur = arena.settle.duration().as_secs_f32();
+        let elapsed = (dur - st.sd as f32 / 10.0).clamp(0.0, dur);
+        arena.settle.set_elapsed(std::time::Duration::from_secs_f32(elapsed));
+    }
 
     // Fighters: update targets; guest_smooth eases the sprites over.
     for wf in &st.f {
@@ -1311,6 +1394,7 @@ fn guest_apply(
             f.tile = IVec2::new(wf.1, wf.2);
             f.dir = IVec2::new(wf.3, wf.4);
             f.progress = wf.5 as f32 / 100.0;
+            f.speed = wf.8 as f32 / 10.0;
             let was_alive = f.alive;
             f.alive = wf.6 == 1;
             f.kills = wf.7;
@@ -1331,6 +1415,10 @@ fn guest_apply(
             false
         }
     });
+    fx.fuses.retain(|cell, _| want_bombs.contains(cell));
+    for &(cell, fuse) in &st.b {
+        fx.fuses.insert(cell as usize, fuse as f32 / 100.0);
+    }
     for &(cell, _) in &st.b {
         let cell = cell as usize;
         if !fx.bombs.contains_key(&cell) {
@@ -1389,12 +1477,7 @@ fn guest_apply(
     for &(cell, kind) in &st.p {
         let cell = cell as usize;
         fx.perks.entry(cell).or_insert_with(|| {
-            let color = match kind {
-                0 => RED,
-                1 => Color::srgb(0.3, 0.6, 1.0),
-                2 => Color::srgb(0.55, 1.0, 0.3),
-                _ => WHITE,
-            };
+            let color = perk_color_by_kind(kind);
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
             commands
                 .spawn((
@@ -1407,19 +1490,25 @@ fn guest_apply(
     }
 }
 
-/// Guest render smoothing: ease each fighter toward its latest snapshot
-/// target instead of teleporting between 20 Hz frames. Snaps across large
-/// jumps (spawn, respawn) so easing never smears the arena.
+/// Guest render smoothing: dead-reckon each fighter forward at its known
+/// speed between 20 Hz snapshots (clamped at the next tile center so we
+/// never invent a turn), then ease the sprite toward that moving target.
+/// Snaps across large jumps (spawn, respawn) so easing never smears.
 fn guest_smooth(
     time: Res<Time>,
     net: Res<NetMode>,
-    mut fighters: Query<(&Fighter, &mut Transform)>,
+    mut fighters: Query<(&mut Fighter, &mut Transform)>,
 ) {
     if !net_guest(&net) {
         return;
     }
-    let blend = 1.0 - (-14.0 * time.delta_secs()).exp();
-    for (f, mut tf) in &mut fighters {
+    let dt = time.delta_secs();
+    let blend = 1.0 - (-14.0 * dt).exp();
+    for (mut f, mut tf) in &mut fighters {
+        if f.alive && f.dir != IVec2::ZERO {
+            // Chase a moving target, not a 20 Hz stairstep.
+            f.progress = (f.progress + f.speed * dt).min(0.99);
+        }
         let from = world(f.tile.x, f.tile.y);
         let to = world(f.tile.x + f.dir.x, f.tile.y + f.dir.y);
         let target = from.lerp(to, f.progress);
@@ -1431,5 +1520,66 @@ fn guest_smooth(
         };
         tf.translation.x = next.x;
         tf.translation.y = next.y;
+    }
+}
+
+/// Kegs telegraph their fuse everywhere: a slow gray blink that reddens and
+/// accelerates as the boom approaches. The wire already carried the fuse;
+/// now somebody reads it.
+fn bomb_telegraph(
+    time: Res<Time>,
+    net: Res<NetMode>,
+    arena: Res<Arena>,
+    fx: Res<GuestFx>,
+    mut bombs: Query<(Entity, &mut Sprite, &mut Transform), With<BombSprite>>,
+) {
+    let mut fuses: std::collections::HashMap<Entity, f32> = std::collections::HashMap::new();
+    if net_guest(&net) {
+        for (cell, e) in &fx.bombs {
+            if let Some(&fuse) = fx.fuses.get(cell) {
+                fuses.insert(*e, fuse);
+            }
+        }
+    } else {
+        for b in arena.bombs.iter().flatten() {
+            fuses.insert(b.0, b.1);
+        }
+    }
+    for (e, mut sprite, mut tf) in &mut bombs {
+        let Some(&fuse) = fuses.get(&e) else { continue };
+        let urgency = ((FUSE - fuse) / FUSE).clamp(0.0, 1.0);
+        let hz = 2.0 + urgency * 9.0;
+        let on = (time.elapsed_secs() * hz) as i32 % 2 == 0;
+        sprite.color = if on && fuse < 1.2 {
+            Color::srgb(0.75, 0.22, 0.18)
+        } else {
+            Color::srgb(0.25, 0.25, 0.3)
+        };
+        tf.scale = Vec3::splat(if on { 1.0 + 0.12 * urgency } else { 1.0 });
+    }
+}
+
+/// Tints the next few cells the sudden-death spiral will claim — one tick of
+/// warning before the wall closes. Runs after both tile-refresh paths so the
+/// tint wins the frame on host and guest alike.
+fn wall_warning(
+    arena: Res<Arena>,
+    mut tiles_q: Query<(&TileSprite, &mut Sprite), Without<Fighter>>,
+) {
+    if arena.clock < SUDDEN_DEATH_AT
+        || arena.finished
+        || arena.spiral_next >= arena.spiral.len().saturating_sub(9)
+    {
+        return;
+    }
+    let upcoming: Vec<usize> = arena.spiral[arena.spiral_next..]
+        .iter()
+        .take(3)
+        .copied()
+        .collect();
+    for (ts, mut sprite) in &mut tiles_q {
+        if upcoming.contains(&ts.0) && arena.tiles[ts.0] != Tile::Solid {
+            sprite.color = Color::srgb(0.45, 0.12, 0.14);
+        }
     }
 }

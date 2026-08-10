@@ -29,7 +29,7 @@ const CABINETS = [
   },
   {
     id: 'go', name: 'GO', tag: 'Surround territory on a 9×9 board. Two passes end it.',
-    players: '2P hotseat or online', controls: 'Mouse places a stone · P passes · U undoes (hotseat). Capture dead stones before passing.',
+    players: '1P vs machine · 2P hotseat · online', controls: 'Mouse places a stone · P passes · U undoes (local) · R-R resigns. After two passes: click dead groups, Enter accepts, M plays on.',
   },
   {
     id: 'comet-buster', name: 'COMET BUSTER', tag: 'Vector rocks, one ship, and now a saucer with opinions.',
@@ -41,7 +41,7 @@ const CABINETS = [
   },
   {
     id: 'brickfall', name: 'BRICKFALL', tag: 'Four-square bricks fall. Lines pay out. Speed climbs.',
-    players: '1P', controls: '← → move · ↑/X rotate · ↓ soft drop · Space hard drop · Esc pause.',
+    players: '1P', controls: '← → move · ↑/X rotate · ↓ soft drop · Space hard drop · C holds a piece · Esc pause. The dim outline is where it lands.',
   },
   {
     id: 'powder-keg', name: 'POWDER KEG', tag: 'Kegs, fuses, and up to a dozen rivals in the cellar.',
@@ -53,14 +53,14 @@ const CABINETS = [
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
-    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-7 jobs, T/R flow, A/D or screen edge scrolls, N-N everyone quits. P2 (local): arrows + Enter, Q/E job. Wide levels get a minimap. Esc pause (you can still assign).',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-7 jobs, T/R your flow, A/D or screen edge scrolls, click the minimap to jump, N-N your crew quits, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
 const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 } };
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
-const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
+const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
 const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 } };
 
@@ -129,6 +129,11 @@ const SFX = {
   extra:   () => { for (let i = 0; i < 4; i++) _tone(523 * (1 + i * 0.25), 523 * (1 + i * 0.25), 0.08, i * 0.09); },
   over:    () => { _tone(523, 523, 0.12); _tone(392, 392, 0.12, 0.13); _tone(311, 311, 0.12, 0.26); _tone(262, 131, 0.4, 0.39); },
   pause:   () => _tone(440, 440, 0.05, 0, 0.05),
+  thrust:  () => _tone(95, 75, 0.1, 0, 0.03),
+  rotate:  () => _tone(540, 620, 0.03, 0, 0.035),
+  levelup: () => { _tone(523, 523, 0.07); _tone(659, 659, 0.07, 0.08); _tone(784, 784, 0.07, 0.16); _tone(1047, 1047, 0.12, 0.24); },
+  buzz:    () => _tone(140, 110, 0.12, 0, 0.06, 'sawtooth'),
+  win:     () => { for (let i = 0; i < 5; i++) _tone(523 * Math.pow(1.2, i), 523 * Math.pow(1.2, i), 0.09, i * 0.1); },
 };
 window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
 
