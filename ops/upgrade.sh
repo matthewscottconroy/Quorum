@@ -59,7 +59,9 @@ CARGO_BIN="$DIR/.cargo/bin"
 if [ -x "$CARGO_BIN/cargo" ]; then
     if [ ! -f web/arcade/arcade_bg.wasm ] || ! as_owner git diff --quiet "$CUR" HEAD -- arcade/; then
         echo "==> building arcade cartridge (Rust → wasm; first build takes a while)"
-        if as_owner env PATH="$CARGO_BIN:$PATH" HOME="$DIR" ./arcade/build.sh; then
+        # /usr/local/bin explicitly: sudo's secure_path drops it, which would
+        # silently skip an operator-installed wasm-opt.
+        if as_owner env PATH="$CARGO_BIN:/usr/local/bin:$PATH" HOME="$DIR" ./arcade/build.sh; then
             echo "    cartridge rebuilt"
         else
             echo "!! arcade cartridge build FAILED — keeping the previous cartridge; app upgrade continues" >&2
