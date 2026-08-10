@@ -145,8 +145,24 @@ seconds; `cargo install wasm-bindgen-cli` **compiles it from source and
 takes several minutes** on a small instance — that's normal. The
 `--version 0.2.126` pin matters: it must match the `wasm-bindgen` pin in
 `arcade/cart/Cargo.toml`, and the build fails with a clear version
-message if they drift. (Optional: `sudo dnf install binaryen` gets you
-`wasm-opt`, ~15-20% smaller downloads. Skipping it is fine.)
+message if they drift.
+
+Optional: `wasm-opt` (from binaryen) shrinks the cartridge ~40%. It is
+**not in Rocky's stock repos** and may be missing from EPEL on newer
+releases; try `sudo dnf install epel-release && sudo dnf install
+binaryen`, and if that says "no match", install the project's prebuilt
+binary instead:
+
+```
+cd /tmp
+curl -LO https://github.com/WebAssembly/binaryen/releases/download/version_119/binaryen-version_119-x86_64-linux.tar.gz
+tar xzf binaryen-version_119-x86_64-linux.tar.gz
+sudo install -m 755 binaryen-version_119/bin/wasm-opt /usr/local/bin/wasm-opt
+wasm-opt --version    # → "wasm-opt version 119"
+```
+
+Or skip it entirely — the only consequence is a larger one-time
+download for members (~6-7 MB gzipped instead of ~4 MB).
 
 From then on, upgrades just work. In `sudo ops/upgrade.sh` output you'll
 see one of:
