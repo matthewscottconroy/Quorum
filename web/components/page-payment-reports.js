@@ -11,6 +11,7 @@ class PagePaymentReports extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
       <div class="page-header"><h1>Payment confirmations</h1></div>
+      <money-nav current="payment-reports"></money-nav>
       <p style="color:var(--color-text-muted);font-size:.85rem;margin-bottom:1rem">
         Members report payments they've sent through manual rails (Zelle, check…).
         Confirming records the payment against the invoice; dismissing clears it

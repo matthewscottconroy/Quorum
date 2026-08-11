@@ -360,6 +360,7 @@ const routes = {
   '#/notifications':   '<page-notifications>',
   '#/audit':           '<page-audit>',
   '#/meetings':        '<page-meetings>',
+  '#/meeting-run':     '<page-meeting-run>',
   '#/calendar':        '<page-calendar>',
   '#/board':           '<page-board>',
   '#/discussions':     '<page-chat>',
@@ -423,6 +424,8 @@ import './components/page-fx.js';
 import './components/page-notifications.js';
 import './components/page-audit.js';
 import './components/page-meetings.js';
+import './components/page-meeting-run.js';
+import './components/money-nav.js';
 import './components/page-calendar.js';
 import './components/page-board.js';
 import './components/page-chat.js';

@@ -36,6 +36,7 @@ class PageAccounting extends HTMLElement {
           <button class="btn-secondary" id="ac-run">Run</button>
           ${isAdmin() ? '<button class="btn-secondary" id="ac-entry">+ Adjusting entry</button>' : ''}
         </div></div>
+      <money-nav current="accounting"></money-nav>
       <div id="ac-body"><span class="spinner"></span></div>`;
     this.querySelector('#ac-run').addEventListener('click', () => this.load());
     this.querySelector('#ac-entry')?.addEventListener('click', () => this.openEntryModal());

@@ -19,6 +19,7 @@ class PageFX extends HTMLElement {
         <h1>Currencies</h1>
         ${isAdmin() ? '<button class="btn-primary" id="add-btn">+ Add rate</button>' : ''}
       </div>
+      <money-nav current="currencies"></money-nav>
 
       <div class="card" style="padding:1rem;margin-bottom:1rem">
         <label for="reporting-inp" style="display:block;font-weight:600;margin-bottom:.35rem">Reporting currency</label>

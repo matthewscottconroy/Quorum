@@ -31,6 +31,7 @@ class PageFunds extends HTMLElement {
     this.innerHTML = `
       <div class="page-header"><h1>Funds</h1>
         ${isAdmin() ? '<button class="btn-primary" id="fund-new">+ New fund</button>' : ''}</div>
+      <money-nav current="funds"></money-nav>
       <p style="color:var(--color-text-muted);font-size:.85rem;margin-bottom:1rem">
         Purpose-restricted money with multi-person sign-off. Every approval is a password-confirmed,
         recorded signature; completing a purchase posts it to the books automatically.</p>

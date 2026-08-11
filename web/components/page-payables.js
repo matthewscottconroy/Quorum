@@ -26,6 +26,7 @@ class PagePayables extends HTMLElement {
           </select>
           ${canWrite() ? '<button class="btn-primary" id="bl-new">+ New bill</button>' : ''}
         </div></div>
+      <money-nav current="payables"></money-nav>
       <p style="color:var(--color-text-muted);font-size:.85rem;margin-bottom:1rem">
         What the organization owes vendors. Entering a bill puts the liability on the books
         immediately; paying it moves cash. Both are journal entries — nothing here bypasses

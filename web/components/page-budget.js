@@ -72,6 +72,7 @@ class PageBudget extends HTMLElement {
           ${canWrite() ? '<button class="btn-primary" id="new-btn">+ New scenario</button>' : ''}
         </div>
       </div>
+      <money-nav current="budget"></money-nav>
       <p style="font-size:.85rem;color:var(--color-text-muted);margin:-.5rem 0 1rem">
         Draft budget scenarios, model income and expenses as quantity × unit amount, and tweak the numbers to see the
         surplus or deficit update. Clone a scenario to explore a variation, or seed dues income straight from your roster.

@@ -39,6 +39,7 @@ class PageDues extends HTMLElement {
           ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Create invoice</button>' : ''}
         </div>
       </div>
+      <money-nav current="dues"></money-nav>
       <div class="search-bar">
         <select id="status-sel" style="max-width:160px">
           ${STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s||'All statuses'}</option>`).join('')}

@@ -76,13 +76,14 @@ class PageMeetings extends HTMLElement {
               <div style="font-size:.85rem;color:var(--color-text-muted)">${fmtDateTime(m.scheduled_at)}${m.ends_at ? ' – ' + esc(new Date(m.ends_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})) : ''}${m.location ? ' · ' + esc(m.location) : ''}</div>
             </div>
             <span class="badge badge-${esc(m.status)}">${esc(m.status)}</span>
+            <button class="btn-secondary run-btn" data-id="${esc(m.id)}" style="font-size:.78rem" title="Full-screen view for running the meeting live: motions, minutes, attendance">▶ Run</button>
             ${isSuperadmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" style="color:var(--color-danger)">Del</button>` : ''}
           </div>`).join('')
       : '<div class="empty-state"><p>No meetings found.</p></div>';
 
     list.querySelectorAll('.meeting-card').forEach(card => {
       const open = e => {
-        if (e.target.classList.contains('del-btn')) return;
+        if (e.target.classList.contains('del-btn') || e.target.classList.contains('run-btn')) return;
         this.openEditor(card.dataset.id);
       };
       card.addEventListener('click', open);
@@ -92,6 +93,9 @@ class PageMeetings extends HTMLElement {
         if (e.target !== card && e.target.closest('button, a, input, select, textarea')) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
       });
+    });
+    list.querySelectorAll('.run-btn').forEach(btn => {
+      btn.addEventListener('click', () => { location.hash = `#/meeting-run?id=${btn.dataset.id}`; });
     });
     list.querySelectorAll('.del-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -232,6 +236,7 @@ class PageMeetings extends HTMLElement {
           </div>
         </div>
         <div class="modal-footer">
+          <button class="btn-secondary" id="run-page-btn" style="margin-right:auto" title="Full-screen view for running the meeting live">▶ Run meeting</button>
           <button class="btn-secondary" id="cancel-btn">Close</button>
           ${canWrite()?'<button class="btn-primary" id="save-btn">Save changes</button>':''}
         </div>
@@ -285,6 +290,10 @@ class PageMeetings extends HTMLElement {
     // (openModal force-closes on auth-changed) doesn't fire a stray authed fetch.
     dialog.addEventListener('close', () => { if (this.isConnected && isAuthenticated()) this.load(); });
     dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    dialog.querySelector('#run-page-btn').addEventListener('click', () => {
+      close();
+      location.hash = `#/meeting-run?id=${id}`;
+    });
 
     dialog.querySelector('#add-decision-btn')?.addEventListener('click', async () => {
       const summary = dialog.querySelector('#new-decision').value.trim();
