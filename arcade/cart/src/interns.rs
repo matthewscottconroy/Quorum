@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::retro::{text, AMBER, CYAN, GREEN, MAGENTA, RED, WHITE};
+use crate::retro::{text, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
@@ -34,12 +34,11 @@ const MAX_W: i32 = 1080;
 const CELL: f32 = 2.0;
 const VIEW_W: f32 = 720.0; // the camera window, in px
 /// Simulation tempo. The genre's whole feel is a DELIBERATE march — you're
-/// meant to have time to look, think, and click. 15Hz halves the original
-/// 30Hz pace: walkers stroll ~30px/s, the quit fuse burns ~4-6 seconds
-/// (right in classic bomber territory), and F still fast-forwards the
-/// stragglers. Round length is unaffected: the clock counts ticks against
-/// this same constant.
-const TICKS_PER_SEC: f32 = 15.0;
+/// meant to have time to look, think, and click. 10Hz is a third of the
+/// original 30Hz pace: walkers stroll ~20px/s, unhurried enough to plan two
+/// jobs ahead, and F still fast-forwards the stragglers. Round length is
+/// unaffected: the clock counts ticks against this same constant.
+const TICKS_PER_SEC: f32 = 10.0;
 const MAX_FALL: i32 = 32; // survivable fall, in cells, without a chute
 const MAX_COUNT: u32 = 100; // walkers per player: sim comfort + sane rounds
 const SKILL_NAMES: [&str; 7] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "QUIT"];
@@ -133,6 +132,32 @@ fn sanitize_doc(doc: &mut LevelDoc) {
     }
 }
 
+/// Doors drop to the deck: each one slides down until its sill rests on the
+/// first solid ground at or below the authored spot. Authors eyeball door
+/// positions; walkers deserve a gate they can walk straight into, not one
+/// hovering a staircase above the floor. Doors with nothing underneath stay
+/// where they were written (bashers and diggers exist).
+fn settle_doors(doc: &mut LevelDoc, mask: &[bool], w: i32) {
+    let settle = |d: &mut [i32; 2]| {
+        let x = d[0].clamp(0, w - 1);
+        // The sill is the door's bottom edge, five cells under its center.
+        for y in (d[1] + 5).max(0)..GH {
+            if mask[(y * w + x) as usize] {
+                d[1] = (y - 6).clamp(6, GH - 12);
+                return;
+            }
+        }
+    };
+    settle(&mut doc.e1);
+    settle(&mut doc.x1);
+    if let Some(e2) = doc.e2.as_mut() {
+        settle(e2);
+    }
+    if let Some(x2) = doc.x2.as_mut() {
+        settle(x2);
+    }
+}
+
 /// Four house levels; TWO TOWERS is double-wide to show off the camera.
 pub fn builtin(n: usize) -> LevelDoc {
     let base = |w: i32, rects: Vec<[i32; 4]>, e1: [i32; 2], x1: [i32; 2], skills: [u32; 7]| LevelDoc {
@@ -153,16 +178,20 @@ pub fn builtin(n: usize) -> LevelDoc {
         skills,
     };
     let mut l = match n {
+        // ORIENTATION DAY: a flat stroll with one wall in the way. Doors on
+        // the ground, one skill to learn (bash through it — or climb over,
+        // it's low enough to survive the hop down). A first day, not a test.
         1 => {
             let mut l = base(
                 360,
-                vec![[10, 200, 150, 12], [210, 200, 140, 12], [0, 260, 360, 10]],
-                [30, 180],
-                [320, 190],
-                [2, 2, 2, 12, 2, 2, 2],
+                vec![[0, 260, 360, 10], [176, 236, 8, 24]],
+                [40, 240],
+                [320, 240],
+                [4, 2, 2, 4, 8, 2, 2],
             );
-            l.e2 = Some([330, 180]);
-            l.x2 = Some([40, 190]);
+            l.need = 10;
+            l.e2 = Some([335, 240]);
+            l.x2 = Some([25, 240]);
             l
         }
         2 => {
@@ -484,7 +513,16 @@ struct Hud;
 struct HudLine2;
 
 #[derive(Component)]
-struct SkillBar(u8);
+struct SkillBtn {
+    player: u8,
+    idx: usize,
+}
+
+#[derive(Component)]
+struct SkillCountText {
+    player: u8,
+    idx: usize,
+}
 
 // ---- editor ----
 
@@ -589,6 +627,7 @@ impl Plugin for InternsPlugin {
                     position_terrain,
                     draw,
                     hud_update,
+                    skill_buttons,
                     endgame,
                 )
                     .chain()
@@ -619,6 +658,8 @@ fn setup(
     net: Res<NetMode>,
     mut cam: ResMut<Cam>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     existing_editor: Option<ResMut<Editor>>,
 ) {
     let editor_mode = crate::shell::take_editor_pending();
@@ -658,7 +699,7 @@ fn setup(
         commands.insert_resource(e);
     }
 
-    let doc = if editor_active {
+    let mut doc = if editor_active {
         // The site shows the editor canvas; game doc is irrelevant until G.
         page_level().unwrap_or_else(|| builtin(1))
     } else if is_guest {
@@ -671,6 +712,7 @@ fn setup(
     let w = doc.w;
     let mut mask = vec![false; (w * GH) as usize];
     build_mask(&doc, w, &mut mask);
+    settle_doors(&mut doc, &mask, w);
 
     let image = images.add(terrain_image(w, &mask));
     commands.spawn((
@@ -733,14 +775,213 @@ fn setup(
         }
     }
 
-    let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, -276.0, 8.0));
+    let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, -230.0, 8.0));
     commands.entity(hud).insert((Hud, GameTag));
-    let hud2 = text(&mut commands, "", 14.0, AMBER, Vec3::new(0.0, -258.0, 8.0));
+    let hud2 = text(&mut commands, "", 13.0, AMBER, Vec3::new(0.0, -247.0, 8.0));
     commands.entity(hud2).insert((HudLine2, GameTag));
-    let bar1 = text(&mut commands, "", 15.0, GREEN, Vec3::new(0.0, -298.0, 8.0));
-    commands.entity(bar1).insert((SkillBar(0), GameTag));
-    let bar2 = text(&mut commands, "", 15.0, MAGENTA, Vec3::new(0.0, -316.0, 8.0));
-    commands.entity(bar2).insert((SkillBar(1), GameTag));
+
+    // The job bar: one button per skill — icon on top, the word underneath,
+    // the remaining count in the corner. The selected job glows amber.
+    let fx = SkillFx {
+        canopy: meshes.add(Triangle2d::new(
+            Vec2::new(-10.0, 4.0),
+            Vec2::new(10.0, 4.0),
+            Vec2::new(0.0, -4.0),
+        )),
+        tri_right: meshes.add(Triangle2d::new(
+            Vec2::new(-3.0, -5.0),
+            Vec2::new(-3.0, 5.0),
+            Vec2::new(6.0, 0.0),
+        )),
+        tri_down: meshes.add(Triangle2d::new(
+            Vec2::new(-5.0, 4.0),
+            Vec2::new(5.0, 4.0),
+            Vec2::new(0.0, -5.0),
+        )),
+        dot: meshes.add(Circle::new(3.2)),
+        mats: [materials.add(GREEN), materials.add(MAGENTA)],
+    };
+    let strip_color = [GREEN, MAGENTA];
+    for p in 0..players as usize {
+        let base = if p == 0 { -333.0 } else { 45.0 };
+        let who = match (net.0.as_ref(), players, p) {
+            (Some(cfg), _, _) if cfg.seat as usize == p => format!("P{} (YOU)", p + 1),
+            (Some(_), _, _) => format!("P{} (THEM)", p + 1),
+            (None, 2, 0) => "P1 - 1-7 OR CLICK".into(),
+            (None, 2, 1) => "P2 - [ ] TO PICK".into(),
+            _ => "1-7 OR CLICK".into(),
+        };
+        for i in 0..7 {
+            commands
+                .spawn((
+                    Sprite {
+                        color: Color::srgb(0.16, 0.20, 0.30),
+                        custom_size: Some(Vec2::new(50.0, 54.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(base + i as f32 * 48.0, -292.0, 8.0),
+                    SkillBtn { player: p as u8, idx: i },
+                    GameTag,
+                ))
+                .with_children(|kid| {
+                    kid.spawn((
+                        Sprite {
+                            color: Color::srgb(0.05, 0.07, 0.11),
+                            custom_size: Some(Vec2::new(46.0, 50.0)),
+                            ..default()
+                        },
+                        Transform::from_xyz(0.0, 0.0, 0.1),
+                    ));
+                    spawn_skill_icon(kid, &fx, p, strip_color[p], i);
+                    kid.spawn((
+                        Text2d::new(SKILL_NAMES[i]),
+                        TextFont { font_size: 9.5, ..default() },
+                        TextColor(strip_color[p]),
+                        Transform::from_xyz(0.0, -16.0, 0.3),
+                    ));
+                    kid.spawn((
+                        Text2d::new(""),
+                        TextFont { font_size: 11.0, ..default() },
+                        TextColor(AMBER),
+                        Transform::from_xyz(15.0, 17.0, 0.3),
+                        SkillCountText { player: p as u8, idx: i },
+                    ));
+                    // The strip's owner tag rides the middle button.
+                    if i == 3 {
+                        kid.spawn((
+                            Text2d::new(who.clone()),
+                            TextFont { font_size: 10.0, ..default() },
+                            TextColor(DIM),
+                            Transform::from_xyz(0.0, 34.0, 0.3),
+                        ));
+                    }
+                });
+        }
+    }
+}
+
+/// Shared mesh handles for the job icons (the cart font is ASCII-only, so
+/// icons are drawn from primitives like everything else in the arcade).
+struct SkillFx {
+    canopy: Handle<Mesh>,
+    tri_right: Handle<Mesh>,
+    tri_down: Handle<Mesh>,
+    dot: Handle<Mesh>,
+    mats: [Handle<ColorMaterial>; 2],
+}
+
+/// One job icon in the button's local frame (center (0,0), icon up top).
+fn spawn_skill_icon(
+    kid: &mut ChildSpawnerCommands,
+    fx: &SkillFx,
+    player: usize,
+    color: Color,
+    idx: usize,
+) {
+    let rect = |kid: &mut ChildSpawnerCommands, x: f32, y: f32, w: f32, h: f32, rot: f32| {
+        kid.spawn((
+            Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
+            Transform::from_xyz(x, y, 0.2).with_rotation(Quat::from_rotation_z(rot)),
+        ));
+    };
+    let blob = |kid: &mut ChildSpawnerCommands, mesh: &Handle<Mesh>, x: f32, y: f32| {
+        kid.spawn((
+            Mesh2d(mesh.clone()),
+            MeshMaterial2d(fx.mats[player].clone()),
+            Transform::from_xyz(x, y, 0.2),
+        ));
+    };
+    match idx {
+        0 => {
+            // CLIMB: a ladder.
+            rect(kid, -5.0, 6.0, 2.5, 20.0, 0.0);
+            rect(kid, 5.0, 6.0, 2.5, 20.0, 0.0);
+            for y in [-1.0, 6.0, 13.0] {
+                rect(kid, 0.0, y, 12.0, 2.5, 0.0);
+            }
+        }
+        1 => {
+            // CHUTE: canopy, cords, dangling intern.
+            blob(kid, &fx.canopy, 0.0, 11.0);
+            rect(kid, -4.0, 2.0, 1.5, 10.0, 0.5);
+            rect(kid, 4.0, 2.0, 1.5, 10.0, -0.5);
+            blob(kid, &fx.dot, 0.0, -4.0);
+        }
+        2 => {
+            // SUPER: arms out, nobody gets past.
+            blob(kid, &fx.dot, 0.0, 13.0);
+            rect(kid, 0.0, 3.0, 4.0, 12.0, 0.0);
+            rect(kid, 0.0, 7.0, 18.0, 3.0, 0.0);
+            rect(kid, -3.0, -5.0, 3.0, 8.0, 0.25);
+            rect(kid, 3.0, -5.0, 3.0, 8.0, -0.25);
+        }
+        3 => {
+            // BUILD: rising steps.
+            rect(kid, -7.0, 0.0, 8.0, 3.0, 0.0);
+            rect(kid, 0.0, 6.0, 8.0, 3.0, 0.0);
+            rect(kid, 7.0, 12.0, 8.0, 3.0, 0.0);
+        }
+        4 => {
+            // BASH: an arrow into a wall.
+            rect(kid, 9.5, 6.0, 3.0, 20.0, 0.0);
+            rect(kid, -6.0, 6.0, 12.0, 3.0, 0.0);
+            blob(kid, &fx.tri_right, 2.0, 6.0);
+        }
+        5 => {
+            // DIG: an arrow into the floor.
+            rect(kid, 0.0, -4.0, 20.0, 3.0, 0.0);
+            rect(kid, 0.0, 11.0, 3.0, 12.0, 0.0);
+            blob(kid, &fx.tri_down, 0.0, 2.0);
+        }
+        _ => {
+            // QUIT: the loud way out.
+            blob(kid, &fx.dot, 0.0, 6.0);
+            rect(kid, 0.0, 6.0, 3.0, 16.0, 0.0);
+            rect(kid, 0.0, 6.0, 16.0, 3.0, 0.0);
+            rect(kid, 0.0, 6.0, 2.5, 14.0, std::f32::consts::FRAC_PI_4);
+            rect(kid, 0.0, 6.0, 2.5, 14.0, -std::f32::consts::FRAC_PI_4);
+        }
+    }
+}
+
+/// Keeps the job bar honest: amber outline on the selected button (rows this
+/// machine controls), live counts that go red at zero, and the whole strip
+/// ducks out of the way while the editor owns the bottom of the screen.
+fn skill_buttons(
+    game: Res<Game>,
+    editor: Res<Editor>,
+    net: Res<NetMode>,
+    mut btns: Query<(&SkillBtn, &mut Sprite, &mut Visibility)>,
+    mut counts: Query<(&SkillCountText, &mut Text2d, &mut TextColor)>,
+) {
+    let me: usize = match &net.0 {
+        Some(cfg) => cfg.seat as usize,
+        None => 0,
+    };
+    for (btn, mut sp, mut vis) in &mut btns {
+        let want = if editor.active { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+        let p = btn.player as usize;
+        let controls_row = if net.0.is_some() { p == me } else { true };
+        let selected = controls_row && game.selected[p] == btn.idx;
+        let c = if selected { AMBER } else { Color::srgb(0.16, 0.20, 0.30) };
+        if sp.color != c {
+            sp.color = c;
+        }
+    }
+    for (ct, mut t, mut tc) in &mut counts {
+        let n = game.skills[ct.player as usize][ct.idx as usize];
+        let s = n.to_string();
+        if t.0 != s {
+            t.0 = s;
+        }
+        let c = if n == 0 { RED } else { AMBER };
+        if tc.0 != c {
+            tc.0 = c;
+        }
+    }
 }
 
 // ---- wire formats ----
@@ -1167,10 +1408,11 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
 
         // The exit takes walkers at its base — same surface, feet near the
         // door sill, and standing on something. No rescues through floors.
+        // (+5 reaches the ground line a settled door stands on.)
         let exit = if w.owner == 0 { doc_x1 } else { doc_x2 };
         if (w.x - exit[0]).abs() <= 3
             && w.y >= exit[1] - 1
-            && w.y <= exit[1] + 3
+            && w.y <= exit[1] + 5
             && site.solid(w.x, w.y + 1)
             && !matches!(w.job, Job::Exiting { .. } | Job::Splat { .. })
         {
@@ -1451,6 +1693,17 @@ fn input_p1(
         game.hover[me.min(1)] = None;
         return;
     };
+    // Click a job button: pick that skill (your own strip only; P2's local
+    // strip is keyboard-driven and online you can't touch the other seat's).
+    if buttons.just_pressed(MouseButton::Left) && (world.y + 292.0).abs() <= 27.0 {
+        let base = if me.min(1) == 0 { -333.0 } else { 45.0 };
+        let rel = world.x - base + 24.0;
+        if (0.0..7.0 * 48.0).contains(&rel) {
+            game.selected[me.min(1)] = ((rel / 48.0) as usize).min(6);
+            sfx("tick");
+        }
+        return;
+    }
     // Click-to-jump on the minimap: teleport the camera window there.
     let site_px = cam.max + VIEW_W;
     if site_px > VIEW_W
@@ -1751,9 +2004,11 @@ fn apply_level(
     images: &mut Assets<Image>,
     terrain: &mut Query<(&mut Sprite, &mut Transform), With<TerrainSprite>>,
 ) {
+    let mut doc = doc;
     let w = doc.w;
     site.w = w;
     build_mask(&doc, w, &mut site.mask);
+    settle_doors(&mut doc, &site.mask, w);
     site.image = images.add(terrain_image(w, &site.mask));
     site.dirty.clear();
     if let Ok((mut sprite, _)) = terrain.single_mut() {
@@ -1969,9 +2224,8 @@ fn hud_update(
     game: Res<Game>,
     editor: Res<Editor>,
     net: Res<NetMode>,
-    mut hud: Query<&mut Text2d, (With<Hud>, Without<HudLine2>, Without<SkillBar>)>,
-    mut hud2: Query<&mut Text2d, (With<HudLine2>, Without<Hud>, Without<SkillBar>)>,
-    mut bars: Query<(&SkillBar, &mut Text2d), (Without<Hud>, Without<HudLine2>)>,
+    mut hud: Query<&mut Text2d, (With<Hud>, Without<HudLine2>)>,
+    mut hud2: Query<&mut Text2d, (With<HudLine2>, Without<Hud>)>,
 ) {
     let Ok(mut t) = hud.single_mut() else { return };
     let Ok(mut t2) = hud2.single_mut() else { return };
@@ -2001,11 +2255,6 @@ fn hud_update(
         }
         if t2.0 != s2 {
             t2.0 = s2;
-        }
-        for (_, mut bt) in &mut bars {
-            if !bt.0.is_empty() {
-                bt.0 = String::new();
-            }
         }
         return;
     }
@@ -2046,10 +2295,6 @@ fn hud_update(
         t.0 = s;
     }
     // Second line: what the hovered walker is doing.
-    let me: usize = match &net.0 {
-        Some(cfg) => cfg.seat as usize,
-        None => 0,
-    };
     let mut s2 = String::new();
     for (pl, hover) in game.hover.iter().enumerate() {
         if let Some(id) = hover {
@@ -2065,36 +2310,6 @@ fn hud_update(
     }
     if t2.0 != s2 {
         t2.0 = s2;
-    }
-    for (bar, mut bt) in &mut bars {
-        let p = bar.0 as usize;
-        if p >= game.players as usize {
-            if !bt.0.is_empty() {
-                bt.0 = String::new();
-            }
-            continue;
-        }
-        // Selection marker only on rows this machine controls.
-        let controls_row = if net.0.is_some() { p == me } else { true };
-        let marker = |i: usize| {
-            if controls_row && game.selected[p] == i {
-                ">"
-            } else {
-                " "
-            }
-        };
-        let s: String = (0..7)
-            .map(|i| format!("{}{} {} ", marker(i), SKILL_NAMES[i], game.skills[p][i]))
-            .collect();
-        let who = if net.0.is_some() && p == me {
-            format!("P{} (YOU) ", p + 1)
-        } else {
-            format!("P{} ", p + 1)
-        };
-        let s = who + &s;
-        if bt.0 != s {
-            bt.0 = s;
-        }
     }
 }
 
@@ -2278,6 +2493,9 @@ fn editor_update(
         game.time_left = (game.doc.time * TICKS_PER_SEC as u32) as i32;
         game.guest_ready = true;
         build_mask(&game.doc, site.w, &mut site.mask);
+        let (mut doc, w) = (game.doc.clone(), site.w);
+        settle_doors(&mut doc, &site.mask, w);
+        game.doc = doc;
         site.all_dirty();
         editor.testing = true;
         editor.active = false;

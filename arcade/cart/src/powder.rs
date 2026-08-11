@@ -12,9 +12,9 @@ use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "LAST ONE STANDING KEEPS THE CELLAR.",
+    "PICK PLAYERS + HUMANS BELOW, THEN INSERT CREDIT.",
     "P1: WASD + SPACE   P2: ARROWS + ENTER",
-    "CRATES HIDE UPGRADES. WALLS CLOSE IN.",
-    "THE EDITOR BUILDS CELLARS OF YOUR OWN.",
+    "CRATES HIDE PERKS. WALLS CLOSE IN.",
 ];
 
 // ---- cellar documents (the level editor's format) ----
@@ -227,21 +227,170 @@ fn tile_color(t: Tile) -> Color {
     }
 }
 
-fn perk_color(p: Perk) -> Color {
-    match p {
-        Perk::Range => RED,
-        Perk::Bombs => Color::srgb(0.3, 0.6, 1.0),
-        Perk::Speed => Color::srgb(0.55, 1.0, 0.3),
-        Perk::Kick => WHITE,
-    }
-}
-
 fn perk_color_by_kind(kind: u8) -> Color {
     match kind {
         0 => RED,
         1 => Color::srgb(0.3, 0.6, 1.0),
         2 => Color::srgb(0.55, 1.0, 0.3),
         _ => WHITE,
+    }
+}
+
+fn perk_kind(p: Perk) -> u8 {
+    match p {
+        Perk::Range => 0,
+        Perk::Bombs => 1,
+        Perk::Speed => 2,
+        Perk::Kick => 3,
+    }
+}
+
+/// Shared meshes and materials: the round keg body (normal and about-to-blow
+/// red), plus small circles for the perk icons.
+#[derive(Resource)]
+struct PowderFx {
+    keg: Handle<Mesh>,
+    puck: Handle<Mesh>,
+    keg_mat: Handle<ColorMaterial>,
+    keg_hot: Handle<ColorMaterial>,
+    icon_mats: [Handle<ColorMaterial>; 4],
+}
+
+/// A round keg with a lit fuse — spawned identically on host and guest.
+fn spawn_keg(commands: &mut Commands, fx: &PowderFx, p: Vec2) -> Entity {
+    commands
+        .spawn((
+            Mesh2d(fx.keg.clone()),
+            MeshMaterial2d(fx.keg_mat.clone()),
+            Transform::from_xyz(p.x, p.y, 4.0),
+            BombSprite,
+            GameTag,
+        ))
+        .with_children(|kid| {
+            // Barrel band, fuse cord, and the spark on top.
+            kid.spawn((
+                Sprite { color: Color::srgb(0.42, 0.42, 0.52), custom_size: Some(Vec2::new(18.0, 3.0)), ..default() },
+                Transform::from_xyz(0.0, 1.0, 0.1),
+            ));
+            kid.spawn((
+                Sprite { color: Color::srgb(0.55, 0.45, 0.30), custom_size: Some(Vec2::new(2.5, 7.0)), ..default() },
+                Transform::from_xyz(2.0, 13.0, 0.1).with_rotation(Quat::from_rotation_z(-0.4)),
+            ));
+            kid.spawn((
+                Sprite { color: AMBER, custom_size: Some(Vec2::splat(4.5)), ..default() },
+                Transform::from_xyz(4.5, 16.0, 0.2)
+                    .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+            ));
+        })
+        .id()
+}
+
+/// Perk pickups drawn as icons instead of mystery squares: a framed tile
+/// with a symbol — arrows for RANGE, a keg-plus for BOMBS, chevrons for
+/// SPEED, a boot for KICK. Same builder on host and guest.
+fn spawn_perk_sprite(commands: &mut Commands, fx: &PowderFx, kind: u8, p: Vec2) -> Entity {
+    let color = perk_color_by_kind(kind);
+    commands
+        .spawn((
+            Sprite { color, custom_size: Some(Vec2::splat(CELL * 0.74)), ..default() },
+            Transform::from_xyz(p.x, p.y, 3.0),
+            GameTag,
+        ))
+        .with_children(|kid| {
+            kid.spawn((
+                Sprite {
+                    color: Color::srgb(0.08, 0.08, 0.14),
+                    custom_size: Some(Vec2::splat(CELL * 0.74 - 4.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.0, 0.05),
+            ));
+            let rect = |kid: &mut ChildSpawnerCommands, x: f32, y: f32, w: f32, h: f32, rot: f32| {
+                kid.spawn((
+                    Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
+                    Transform::from_xyz(x, y, 0.1).with_rotation(Quat::from_rotation_z(rot)),
+                ));
+            };
+            let dot = |kid: &mut ChildSpawnerCommands, x: f32, y: f32| {
+                kid.spawn((
+                    Mesh2d(fx.puck.clone()),
+                    MeshMaterial2d(fx.icon_mats[kind as usize].clone()),
+                    Transform::from_xyz(x, y, 0.1),
+                ));
+            };
+            match kind {
+                0 => {
+                    // RANGE: a blast reaching both ways.
+                    rect(kid, 0.0, 0.0, 15.0, 3.0, 0.0);
+                    rect(kid, -7.5, 0.0, 6.5, 6.5, std::f32::consts::FRAC_PI_4);
+                    rect(kid, 7.5, 0.0, 6.5, 6.5, std::f32::consts::FRAC_PI_4);
+                }
+                1 => {
+                    // BOMBS: one more keg (+).
+                    dot(kid, -2.5, -2.5);
+                    rect(kid, 6.0, 6.0, 8.0, 2.5, 0.0);
+                    rect(kid, 6.0, 6.0, 2.5, 8.0, 0.0);
+                }
+                2 => {
+                    // SPEED: double chevron.
+                    rect(kid, -4.5, 2.4, 8.0, 2.5, -0.65);
+                    rect(kid, -4.5, -2.4, 8.0, 2.5, 0.65);
+                    rect(kid, 4.5, 2.4, 8.0, 2.5, -0.65);
+                    rect(kid, 4.5, -2.4, 8.0, 2.5, 0.65);
+                }
+                _ => {
+                    // KICK: a boot and the keg it just sent flying.
+                    rect(kid, -4.0, 2.0, 4.5, 10.0, 0.0);
+                    rect(kid, -2.0, -4.0, 9.0, 4.0, 0.0);
+                    dot(kid, 6.5, -1.0);
+                }
+            }
+        })
+        .id()
+}
+
+/// Falling ticker-tape for the winner banner.
+#[derive(Component)]
+struct Confetti {
+    vel: Vec2,
+    spin: f32,
+}
+
+fn confetti_fall(time: Res<Time>, mut bits: Query<(&Confetti, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (c, mut tf) in &mut bits {
+        tf.translation.x += c.vel.x * dt;
+        tf.translation.y += c.vel.y * dt;
+        tf.rotate_z(c.spin * dt);
+    }
+}
+
+/// The winner gets a show, not a shrug: their color on the marquee and a
+/// rain of ticker-tape. Banner-tagged so a test round sweeps it all away.
+fn celebrate(commands: &mut Commands, rng: &mut Rng, seat: usize) {
+    let color = PLAYER_COLORS[seat % 12];
+    sfx("win");
+    let line1 = text(commands, &format!("SEAT {} WINS!", seat + 1), 46.0, color, Vec3::new(0.0, 30.0, 20.0));
+    commands.entity(line1).insert((GameTag, Banner));
+    let line2 = text(commands, "THE CELLAR IS THEIRS", 24.0, WHITE, Vec3::new(0.0, -12.0, 20.0));
+    commands.entity(line2).insert((GameTag, Banner));
+    for i in 0..70 {
+        let x = rng.range(720) as f32 - 360.0;
+        let c = match i % 3 {
+            0 => color,
+            1 => AMBER,
+            _ => WHITE,
+        };
+        commands.spawn((
+            Sprite { color: c, custom_size: Some(Vec2::new(5.0, 9.0)), ..default() },
+            Transform::from_xyz(x, 330.0 + rng.range(220) as f32, 19.0),
+            Confetti {
+                vel: Vec2::new(rng.range(80) as f32 - 40.0, -(100.0 + rng.range(160) as f32)),
+                spin: (rng.range(600) as f32 - 300.0) / 100.0,
+            },
+            Banner,
+            GameTag,
+        ));
     }
 }
 
@@ -393,6 +542,7 @@ impl Plugin for PowderPlugin {
                     guest_apply,
                     guest_smooth,
                     bomb_telegraph,
+                    confetti_fall,
                     wall_warning,
                     hud,
                 )
@@ -439,8 +589,17 @@ fn setup(
     mut rng: ResMut<Rng>,
     config: Res<CabinetConfig>,
     net: Res<NetMode>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     existing_editor: Option<ResMut<CellarEditor>>,
 ) {
+    commands.insert_resource(PowderFx {
+        keg: meshes.add(Circle::new((CELL - 8.0) / 2.0)),
+        puck: meshes.add(Circle::new(5.0)),
+        keg_mat: materials.add(Color::srgb(0.22, 0.22, 0.28)),
+        keg_hot: materials.add(Color::srgb(0.75, 0.22, 0.18)),
+        icon_mats: [0u8, 1, 2, 3].map(|k| materials.add(perk_color_by_kind(k))),
+    });
     let editor_mode = crate::shell::take_editor_pending();
     let players = config.players.clamp(2, 12) as usize;
     let humans = if net.0.is_some() { 1 } else { config.humans.clamp(1, 2.min(players as u32)) as usize };
@@ -550,7 +709,7 @@ fn setup(
         spiral_next: 0,
         spiral_timer: Timer::from_seconds(0.32, TimerMode::Repeating),
         finished: false,
-        finish_timer: Timer::from_seconds(2.0, TimerMode::Once),
+        finish_timer: Timer::from_seconds(3.5, TimerMode::Once),
         p1_score: 0,
         death_groups: Vec::new(),
         net_timer: Timer::from_seconds(0.05, TimerMode::Repeating),
@@ -923,7 +1082,10 @@ fn movement(
                 let turn_ok = f.want != IVec2::ZERO && arena.open(f.tile.x + f.want.x, f.tile.y + f.want.y);
                 if turn_ok {
                     f.dir = f.want;
-                } else if !arena.open(f.tile.x + f.dir.x, f.tile.y + f.dir.y) {
+                } else if f.want == IVec2::ZERO || !arena.open(f.tile.x + f.dir.x, f.tile.y + f.dir.y) {
+                    // No key held: stop at this tile center. (Holding a
+                    // blocked direction keeps you sliding the way you were
+                    // going — classic corner forgiveness.)
                     f.dir = IVec2::ZERO;
                 }
             }
@@ -945,6 +1107,7 @@ fn bombs_and_flames(
     mut commands: Commands,
     mut arena: ResMut<Arena>,
     net: Res<NetMode>,
+    fx: Res<PowderFx>,
     mut rng: ResMut<Rng>,
     mut fighters: Query<(&mut Fighter, &mut Sprite), (Without<TileSprite>, Without<FlameSprite>)>,
     mut tiles_q: Query<(&TileSprite, &mut Sprite), Without<FlameSprite>>,
@@ -969,14 +1132,7 @@ fn bombs_and_flames(
                 stat("bombs_laid", 1);
             }
             let p = world(f.tile.x, f.tile.y);
-            let e = commands
-                .spawn((
-                    Sprite { color: Color::srgb(0.25, 0.25, 0.3), custom_size: Some(Vec2::splat(CELL - 8.0)), ..default() },
-                    Transform::from_xyz(p.x, p.y, 4.0),
-                    BombSprite,
-                    GameTag,
-                ))
-                .id();
+            let e = spawn_keg(&mut commands, &fx, p);
             arena.bombs[i] = Some((e, FUSE, f.range, f.seat));
             f.live_bombs += 1;
             sfx("place");
@@ -1061,13 +1217,7 @@ fn bombs_and_flames(
                         _ => Perk::Kick,
                     };
                     let p = world(c, r);
-                    let e = commands
-                        .spawn((
-                            Sprite { color: perk_color(perk), custom_size: Some(Vec2::splat(CELL * 0.45)), ..default() },
-                            Transform::from_xyz(p.x, p.y, 3.0),
-                            GameTag,
-                        ))
-                        .id();
+                    let e = spawn_perk_sprite(&mut commands, &fx, perk_kind(perk), p);
                     arena.perks[j] = Some((perk, e));
                 }
             }
@@ -1271,6 +1421,7 @@ fn finish(
     mut arena: ResMut<Arena>,
     net: Res<NetMode>,
     editor: Option<ResMut<CellarEditor>>,
+    mut rng: ResMut<Rng>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
     fighters: Query<&Fighter>,
@@ -1320,12 +1471,13 @@ fn finish(
             None => stat("settle_draws", 1),
             _ => {}
         }
-        let banner = match alive.first() {
-            Some(w) => format!("SEAT {} TAKES THE CELLAR", w.seat + 1),
-            None => "MUTUAL DESTRUCTION".to_string(),
-        };
-        let e = text(&mut commands, &banner, 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
-        commands.entity(e).insert((GameTag, Banner));
+        match alive.first() {
+            Some(w) => celebrate(&mut commands, &mut rng, w.seat),
+            None => {
+                let e = text(&mut commands, "MUTUAL DESTRUCTION", 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
+                commands.entity(e).insert((GameTag, Banner));
+            }
+        }
     }
     if arena.finished && arena.finish_timer.tick(time.delta()).finished() {
         // A finished TEST round returns to the editor's canvas — no score,
@@ -1531,6 +1683,8 @@ fn guest_apply(
     net: Res<NetMode>,
     mut commands: Commands,
     mut arena: ResMut<Arena>,
+    pfx: Res<PowderFx>,
+    mut rng: ResMut<Rng>,
     mut fx: ResMut<GuestFx>,
     mut fighters: Query<(&mut Fighter, &mut Sprite, &mut Transform), Without<TileSprite>>,
     mut tiles_q: Query<(&TileSprite, &mut Sprite), Without<Fighter>>,
@@ -1592,12 +1746,13 @@ fn guest_apply(
                     arena.finished = true;
                     arena.finish_timer.reset();
                     arena.p1_score = placement_score(total, rank, kills, alive);
-                    let banner = match end.alive.first() {
-                        Some(&w) => format!("SEAT {} TAKES THE CELLAR", w + 1),
-                        None => "MUTUAL DESTRUCTION".to_string(),
-                    };
-                    let e = text(&mut commands, &banner, 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
-                    commands.entity(e).insert((GameTag, Banner));
+                    match end.alive.first() {
+                        Some(&w) => celebrate(&mut commands, &mut rng, w as usize),
+                        None => {
+                            let e = text(&mut commands, "MUTUAL DESTRUCTION", 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
+                            commands.entity(e).insert((GameTag, Banner));
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1676,14 +1831,7 @@ fn guest_apply(
         }
         fx.bombs.entry(cell).or_insert_with(|| {
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
-            commands
-                .spawn((
-                    Sprite { color: Color::srgb(0.25, 0.25, 0.3), custom_size: Some(Vec2::splat(CELL - 8.0)), ..default() },
-                    Transform::from_xyz(p.x, p.y, 4.0),
-                    BombSprite,
-                    GameTag,
-                ))
-                .id()
+            spawn_keg(&mut commands, &pfx, p)
         });
     }
     let want_flames: std::collections::HashSet<usize> = st.fl.iter().map(|&c| c as usize).collect();
@@ -1727,15 +1875,8 @@ fn guest_apply(
     for &(cell, kind) in &st.p {
         let cell = cell as usize;
         fx.perks.entry(cell).or_insert_with(|| {
-            let color = perk_color_by_kind(kind);
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
-            commands
-                .spawn((
-                    Sprite { color, custom_size: Some(Vec2::splat(CELL * 0.45)), ..default() },
-                    Transform::from_xyz(p.x, p.y, 3.0),
-                    GameTag,
-                ))
-                .id()
+            spawn_perk_sprite(&mut commands, &pfx, kind, p)
         });
     }
 }
@@ -1776,12 +1917,16 @@ fn guest_smooth(
 /// Kegs telegraph their fuse everywhere: a slow gray blink that reddens and
 /// accelerates as the boom approaches. The wire already carried the fuse;
 /// now somebody reads it.
+/// Kegs breathe from the moment they land — a gentle swell that grows and
+/// quickens as the fuse burns, with the body flashing red in the last
+/// stretch (the flash swaps between two shared materials, so it's free).
 fn bomb_telegraph(
     time: Res<Time>,
     net: Res<NetMode>,
     arena: Res<Arena>,
     fx: Res<GuestFx>,
-    mut bombs: Query<(Entity, &mut Sprite, &mut Transform), With<BombSprite>>,
+    pfx: Res<PowderFx>,
+    mut bombs: Query<(Entity, &mut MeshMaterial2d<ColorMaterial>, &mut Transform), With<BombSprite>>,
 ) {
     let mut fuses: std::collections::HashMap<Entity, f32> = std::collections::HashMap::new();
     if net_guest(&net) {
@@ -1795,17 +1940,16 @@ fn bomb_telegraph(
             fuses.insert(b.0, b.1);
         }
     }
-    for (e, mut sprite, mut tf) in &mut bombs {
+    for (e, mut mat, mut tf) in &mut bombs {
         let Some(&fuse) = fuses.get(&e) else { continue };
         let urgency = ((FUSE - fuse) / FUSE).clamp(0.0, 1.0);
-        let hz = 2.0 + urgency * 9.0;
-        let on = (time.elapsed_secs() * hz) as i32 % 2 == 0;
-        sprite.color = if on && fuse < 1.2 {
-            Color::srgb(0.75, 0.22, 0.18)
-        } else {
-            Color::srgb(0.25, 0.25, 0.3)
-        };
-        tf.scale = Vec3::splat(if on { 1.0 + 0.12 * urgency } else { 1.0 });
+        let swell = (time.elapsed_secs() * (5.0 + 7.0 * urgency)).sin();
+        tf.scale = Vec3::splat(1.0 + (0.05 + 0.09 * urgency) * swell);
+        let hot = fuse < 1.2 && (time.elapsed_secs() * (2.0 + urgency * 9.0)) as i32 % 2 == 0;
+        let want = if hot { &pfx.keg_hot } else { &pfx.keg_mat };
+        if mat.0 != *want {
+            mat.0 = want.clone();
+        }
     }
 }
 
@@ -1861,7 +2005,7 @@ fn editor_update(
     bombs: Query<Entity, With<BombSprite>>,
     flames: Query<Entity, With<FlameSprite>>,
     banners: Query<Entity, With<Banner>>,
-    mut hud: Query<&mut Text2d, With<Hud>>,
+    mut hud: Query<(&mut Text2d, &mut TextFont), With<Hud>>,
 ) {
     let Some(mut editor) = editor else { return };
     let Some(mut arena) = arena else { return };
@@ -1894,17 +2038,20 @@ fn editor_update(
     for (i, &(sc, sr)) in SPAWNS.iter().enumerate() {
         gizmos.circle_2d(world(sc, sr), CELL * 0.42, PLAYER_COLORS[i % 12].with_alpha(0.6));
     }
-    if let Ok(mut t) = hud.single_mut() {
+    if let Ok((mut t, mut tfnt)) = hud.single_mut() {
         let b = match editor.brush {
             Tile::Crate => "CRATE",
             Tile::Solid => "WALL",
             Tile::Empty => "ERASE",
         };
         let s = format!(
-            "EDITOR  BRUSH {b} (1/2/3)  CLICK PAINTS, R-CLICK ERASES  RINGS = SPAWNS  S SAVE  G TEST"
+            "CELLAR EDITOR - BRUSH: {b}\nPICK A BRUSH: 1 CRATE / 2 WALL / 3 ERASE - LEFT-CLICK PAINTS - RIGHT-CLICK ALWAYS ERASES\nRINGS = WHERE FIGHTERS SPAWN - S SAVES TO THE SHELF - G TEST-PLAYS IT - X RETURNS HERE"
         );
         if t.0 != s {
             t.0 = s;
+        }
+        if tfnt.font_size != 13.0 {
+            tfnt.font_size = 13.0;
         }
     }
 
@@ -1946,6 +2093,10 @@ fn editor_update(
     if keys.just_pressed(KeyCode::KeyG) {
         editor.active = false;
         editor.testing = true;
+        // The game HUD takes the line back at its own size.
+        if let Ok((_, mut tfnt)) = hud.single_mut() {
+            tfnt.font_size = 22.0;
+        }
         let mut tiles = editor.tiles.clone();
         enforce_shell(&mut tiles);
         clear_spawn_pockets(&mut tiles, fighters.iter().count());

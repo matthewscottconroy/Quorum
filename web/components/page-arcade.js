@@ -45,7 +45,7 @@ const CABINETS = [
   },
   {
     id: 'powder-keg', name: 'POWDER KEG', tag: 'Kegs, fuses, and up to a dozen rivals in the cellar.',
-    players: 'up to 12 — local + bots, or online', controls: 'P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). White perk kicks kegs.',
+    players: 'up to 12 — local + bots, or online', controls: 'TO START: pick PLAYERS (bots fill the rest) and HUMANS, then INSERT CREDIT. P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). Perks from crates — RED longer blast · BLUE extra keg · GREEN faster · WHITE kicks kegs.',
   },
   {
     id: 'hexfection', name: 'HEXFECTION', tag: 'Spread across the hex dish. Convert your neighbours.',
@@ -126,16 +126,22 @@ function _tone(f0, f1, dur, delay = 0, vol = 0.08, type = 'square') {
   osc.start(t0);
   osc.stop(t0 + dur + 0.02);
 }
+// One shared noise buffer, built once: allocating a fresh ~50KB AudioBuffer
+// per explosion was steady garbage that surfaced as occasional frame hitches
+// (most visible in COMET BUSTER's smooth drift).
+let _noiseBuf = null;
 function _noise(dur, delay = 0, vol = 0.1) {
   const ctx = _ctx();
   if (!ctx) return;
   const t0 = ctx.currentTime + delay;
-  const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
-  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  if (!_noiseBuf) {
+    const len = Math.floor(ctx.sampleRate * 0.6);
+    _noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = _noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  }
   const src = ctx.createBufferSource();
-  src.buffer = buf;
+  src.buffer = _noiseBuf;
   const filt = ctx.createBiquadFilter();
   filt.type = 'lowpass';
   filt.frequency.value = 900;
@@ -144,6 +150,29 @@ function _noise(dur, delay = 0, vol = 0.1) {
   gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
   src.connect(filt).connect(gain).connect(ctx.destination);
   src.start(t0);
+  src.stop(t0 + dur + 0.02);
+}
+// The thrust rumble reuses ONE always-running oscillator whose gain is
+// re-fired on every tick — thrusting is continuous, and spawning fresh
+// nodes seven times a second built up garbage the collector paid for later.
+let _thrustOsc = null;
+let _thrustGain = null;
+function _thrust() {
+  const ctx = _ctx();
+  if (!ctx) return;
+  if (!_thrustOsc) {
+    _thrustOsc = ctx.createOscillator();
+    _thrustOsc.type = 'square';
+    _thrustOsc.frequency.value = 85;
+    _thrustGain = ctx.createGain();
+    _thrustGain.gain.value = 0;
+    _thrustOsc.connect(_thrustGain).connect(ctx.destination);
+    _thrustOsc.start();
+  }
+  const t = ctx.currentTime;
+  _thrustGain.gain.cancelScheduledValues(t);
+  _thrustGain.gain.setValueAtTime(0.035, t);
+  _thrustGain.gain.exponentialRampToValueAtTime(0.0008, t + 0.2);
 }
 const SFX = {
   coin:    () => { _tone(880, 880, 0.06); _tone(1320, 1320, 0.09, 0.07); },
@@ -162,7 +191,7 @@ const SFX = {
   extra:   () => { for (let i = 0; i < 4; i++) _tone(523 * (1 + i * 0.25), 523 * (1 + i * 0.25), 0.08, i * 0.09); },
   over:    () => { _tone(523, 523, 0.12); _tone(392, 392, 0.12, 0.13); _tone(311, 311, 0.12, 0.26); _tone(262, 131, 0.4, 0.39); },
   pause:   () => _tone(440, 440, 0.05, 0, 0.05),
-  thrust:  () => _tone(95, 75, 0.1, 0, 0.03),
+  thrust:  () => _thrust(),
   rotate:  () => _tone(540, 620, 0.03, 0, 0.035),
   levelup: () => { _tone(523, 523, 0.07); _tone(659, 659, 0.07, 0.08); _tone(784, 784, 0.07, 0.16); _tone(1047, 1047, 0.12, 0.24); },
   buzz:    () => _tone(140, 110, 0.12, 0, 0.06, 'sawtooth'),

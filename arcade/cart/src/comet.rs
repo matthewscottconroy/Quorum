@@ -542,6 +542,9 @@ fn draw(
     saucers: Query<(&Saucer, &Transform)>,
     enemy_bullets: Query<&Transform, With<EnemyBullet>>,
     mut hud: Query<&mut Text2d, With<Hud>>,
+    // Scratch outline buffer, reused across frames: allocating a Vec per
+    // rock per frame was garbage the collector eventually charged us for.
+    mut pts: Local<Vec<Vec2>>,
 ) {
     // Ship: a classic three-line dart, blinking while invulnerable.
     if let Ok((ship, tf)) = ships.single() {
@@ -565,16 +568,14 @@ fn draw(
     for (rock, tf) in &rocks {
         let p = tf.translation.truncate();
         let (s, c) = tf.rotation.to_euler(EulerRot::ZYX).0.sin_cos();
-        let pts: Vec<Vec2> = rock
-            .shape
-            .iter()
-            .map(|v| Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c) + p)
-            .chain(std::iter::once({
-                let v = rock.shape[0];
-                Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c) + p
-            }))
-            .collect();
-        gizmos.linestrip_2d(pts, WHITE);
+        pts.clear();
+        pts.extend(
+            rock.shape
+                .iter()
+                .chain(std::iter::once(&rock.shape[0]))
+                .map(|v| Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c) + p),
+        );
+        gizmos.linestrip_2d(pts.iter().copied(), WHITE);
     }
     for tf in &bullets {
         let p = tf.translation.truncate();
