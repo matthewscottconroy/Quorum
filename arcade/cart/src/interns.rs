@@ -1,7 +1,7 @@
 //! INTERNS — a walkers-and-jobs cabinet. A stream of clueless new hires
-//! marches out of the door; you hand out seven jobs (climb, parachute,
-//! supervise, build, bash, dig, quit-loudly) to steer enough of them to the
-//! exit. Original name, art, and levels; the genre's mechanics only.
+//! marches out of the door; you hand out eight jobs (climb, parachute,
+//! supervise, build, bash, dig, mine, quit-loudly) to steer enough of them
+//! to the exit. Original name, art, and levels; the genre's mechanics only.
 //!
 //! Modes: 1P, 2P local (P1 mouse + P2 keyboard cursor), 2P online (host
 //! authoritative — guests send assignments, the host streams id-stable
@@ -41,7 +41,12 @@ const VIEW_W: f32 = 720.0; // the camera window, in px
 const TICKS_PER_SEC: f32 = 10.0;
 const MAX_FALL: i32 = 32; // survivable fall, in cells, without a chute
 const MAX_COUNT: u32 = 100; // walkers per player: sim comfort + sane rounds
-const SKILL_NAMES: [&str; 7] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "QUIT"];
+const SKILL_NAMES: [&str; 8] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "QUIT", "MINE"];
+/// Button/keyboard display order. MINE (index 7) was appended to the skill
+/// array so seven-skill community documents keep their meaning, but on the
+/// bar it sits beside DIG where it belongs — and QUIT stays last, farthest
+/// from every innocent finger.
+const SKILL_ORDER: [usize; 8] = [0, 1, 2, 3, 4, 5, 7, 6];
 
 /// The scrolling window: a pixel offset into the level, camera itself fixed.
 #[derive(Resource, Default)]
@@ -67,7 +72,18 @@ fn d_count() -> u32 { 30 }
 fn d_rate() -> u32 { 45 }
 fn d_need() -> u32 { 15 }
 fn d_time() -> u32 { 300 }
-fn d_skills() -> [u32; 7] { [5, 5, 5, 10, 5, 5, 5] }
+fn d_skills() -> Vec<u32> { vec![5, 5, 5, 10, 5, 5, 5, 5] }
+
+/// The doc's skill pool as the fixed-size array the sim uses. Documents may
+/// carry seven entries (pre-MINE saves) or eight; short lists pad with a
+/// modest miner allowance.
+fn skills8(v: &[u32]) -> [u32; 8] {
+    let mut a = [3u32; 8];
+    for (i, s) in v.iter().take(8).enumerate() {
+        a[i] = *s;
+    }
+    a
+}
 fn d_width() -> i32 { MIN_W }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -98,7 +114,7 @@ pub struct LevelDoc {
     #[serde(default = "d_time")]
     pub time: u32,
     #[serde(default = "d_skills")]
-    pub skills: [u32; 7],
+    pub skills: Vec<u32>,
 }
 
 /// Community levels are opaque JSON to the server, so the cartridge is the
@@ -115,6 +131,8 @@ fn sanitize_doc(doc: &mut LevelDoc) {
     doc.rate = doc.rate.clamp(10, 120);
     doc.need = doc.need.clamp(1, doc.count);
     doc.time = doc.time.clamp(60, 900);
+    // Pre-MINE documents carry seven entries; pad to eight (a few miners).
+    doc.skills.resize(8, 3);
     for s in doc.skills.iter_mut() {
         *s = (*s).min(99);
     }
@@ -160,7 +178,7 @@ fn settle_doors(doc: &mut LevelDoc, mask: &[bool], w: i32) {
 
 /// Four house levels; TWO TOWERS is double-wide to show off the camera.
 pub fn builtin(n: usize) -> LevelDoc {
-    let base = |w: i32, rects: Vec<[i32; 4]>, e1: [i32; 2], x1: [i32; 2], skills: [u32; 7]| LevelDoc {
+    let base = |w: i32, rects: Vec<[i32; 4]>, e1: [i32; 2], x1: [i32; 2], skills: [u32; 8]| LevelDoc {
         v: 1,
         name: String::new(),
         w,
@@ -175,7 +193,7 @@ pub fn builtin(n: usize) -> LevelDoc {
         rate: 45,
         need: 15,
         time: 300,
-        skills,
+        skills: skills.to_vec(),
     };
     let mut l = match n {
         // ORIENTATION DAY: a flat stroll with one wall in the way. Doors on
@@ -187,7 +205,7 @@ pub fn builtin(n: usize) -> LevelDoc {
                 vec![[0, 260, 360, 10], [176, 236, 8, 24]],
                 [40, 240],
                 [320, 240],
-                [4, 2, 2, 4, 8, 2, 2],
+                [4, 2, 2, 4, 8, 2, 2, 2],
             );
             l.need = 10;
             l.e2 = Some([335, 240]);
@@ -200,7 +218,7 @@ pub fn builtin(n: usize) -> LevelDoc {
                 vec![[40, 90, 280, 14], [80, 150, 280, 14], [40, 210, 280, 14], [0, 260, 360, 10]],
                 [60, 70],
                 [300, 240],
-                [2, 4, 2, 4, 2, 14, 2],
+                [2, 4, 2, 4, 2, 14, 2, 4],
             );
             l.e2 = Some([300, 70]);
             l.x2 = Some([60, 240]);
@@ -218,7 +236,7 @@ pub fn builtin(n: usize) -> LevelDoc {
                 ],
                 [30, 190],
                 [330, 190],
-                [2, 2, 4, 4, 14, 2, 4],
+                [2, 2, 4, 4, 14, 2, 4, 4],
             );
             l.e2 = Some([330, 100]);
             l.x2 = Some([30, 100]);
@@ -239,7 +257,7 @@ pub fn builtin(n: usize) -> LevelDoc {
                 ],
                 [60, 80],
                 [660, 220],
-                [4, 4, 2, 10, 4, 6, 2],
+                [4, 4, 2, 10, 4, 6, 2, 4],
             );
             l.e2 = Some([660, 80]);
             l.x2 = Some([60, 220]);
@@ -440,6 +458,7 @@ enum Job {
     Build { steps: i32, cooldown: i32 },
     Bash { cooldown: i32 },
     Dig { cooldown: i32 },
+    Mine { cooldown: i32 },
     Splat { ticks: i32 },
     Exiting { ticks: i32 },
 }
@@ -471,7 +490,7 @@ struct Game {
     spawned: [u32; 2],
     saved: [u32; 2],
     dead: [u32; 2],
-    skills: [[u32; 7]; 2],
+    skills: [[u32; 8]; 2],
     selected: [usize; 2],
     /// Per-player spawn tempo: your T/R only throttles YOUR stream.
     rate: [u32; 2],
@@ -523,6 +542,12 @@ struct SkillCountText {
     player: u8,
     idx: usize,
 }
+
+#[derive(Component)]
+struct NukeBtn;
+
+#[derive(Component)]
+struct NukeText;
 
 // ---- editor ----
 
@@ -742,7 +767,7 @@ fn setup(
         spawned: [0; 2],
         saved: [0; 2],
         dead: [0; 2],
-        skills: [doc.skills, doc.skills],
+        skills: [skills8(&doc.skills); 2],
         selected: [3, 3],
         rate: [doc.rate; 2],
         time_left: (doc.time * TICKS_PER_SEC as u32) as i32,
@@ -803,38 +828,38 @@ fn setup(
     };
     let strip_color = [GREEN, MAGENTA];
     for p in 0..players as usize {
-        let base = if p == 0 { -333.0 } else { 45.0 };
+        let base = if p == 0 { -338.0 } else { 30.0 };
         let who = match (net.0.as_ref(), players, p) {
             (Some(cfg), _, _) if cfg.seat as usize == p => format!("P{} (YOU)", p + 1),
             (Some(_), _, _) => format!("P{} (THEM)", p + 1),
-            (None, 2, 0) => "P1 - 1-7 OR CLICK".into(),
-            (None, 2, 1) => "P2 - [ ] TO PICK".into(),
-            _ => "1-7 OR CLICK".into(),
+            (None, 2, 0) => "P1 - 1-8 OR CLICK".into(),
+            (None, 2, 1) => "P2 - Q/E TO PICK".into(),
+            _ => "1-8 OR CLICK".into(),
         };
-        for i in 0..7 {
+        for (d, &idx) in SKILL_ORDER.iter().enumerate() {
             commands
                 .spawn((
                     Sprite {
                         color: Color::srgb(0.16, 0.20, 0.30),
-                        custom_size: Some(Vec2::new(50.0, 54.0)),
+                        custom_size: Some(Vec2::new(42.0, 54.0)),
                         ..default()
                     },
-                    Transform::from_xyz(base + i as f32 * 48.0, -292.0, 8.0),
-                    SkillBtn { player: p as u8, idx: i },
+                    Transform::from_xyz(base + d as f32 * 44.0, -292.0, 8.0),
+                    SkillBtn { player: p as u8, idx },
                     GameTag,
                 ))
                 .with_children(|kid| {
                     kid.spawn((
                         Sprite {
                             color: Color::srgb(0.05, 0.07, 0.11),
-                            custom_size: Some(Vec2::new(46.0, 50.0)),
+                            custom_size: Some(Vec2::new(38.0, 50.0)),
                             ..default()
                         },
                         Transform::from_xyz(0.0, 0.0, 0.1),
                     ));
-                    spawn_skill_icon(kid, &fx, p, strip_color[p], i);
+                    spawn_skill_icon(kid, &fx, p, strip_color[p], idx);
                     kid.spawn((
-                        Text2d::new(SKILL_NAMES[i]),
+                        Text2d::new(SKILL_NAMES[idx]),
                         TextFont { font_size: 9.5, ..default() },
                         TextColor(strip_color[p]),
                         Transform::from_xyz(0.0, -16.0, 0.3),
@@ -843,21 +868,52 @@ fn setup(
                         Text2d::new(""),
                         TextFont { font_size: 11.0, ..default() },
                         TextColor(AMBER),
-                        Transform::from_xyz(15.0, 17.0, 0.3),
-                        SkillCountText { player: p as u8, idx: i },
+                        Transform::from_xyz(13.0, 17.0, 0.3),
+                        SkillCountText { player: p as u8, idx },
                     ));
-                    // The strip's owner tag rides the middle button.
-                    if i == 3 {
+                    // The strip's owner tag rides a middle button.
+                    if d == 3 {
                         kid.spawn((
                             Text2d::new(who.clone()),
                             TextFont { font_size: 10.0, ..default() },
                             TextColor(DIM),
-                            Transform::from_xyz(0.0, 34.0, 0.3),
+                            Transform::from_xyz(22.0, 34.0, 0.3),
                         ));
                     }
                 });
         }
     }
+    // The big red button, top-left where nothing walks: click once to arm
+    // ("SURE?"), click again and your whole crew quits loudly. N-N still
+    // works for the keyboard-committed.
+    commands
+        .spawn((
+            Sprite {
+                color: RED.with_alpha(0.45),
+                custom_size: Some(Vec2::new(68.0, 30.0)),
+                ..default()
+            },
+            Transform::from_xyz(-318.0, 292.0, 8.0),
+            NukeBtn,
+            GameTag,
+        ))
+        .with_children(|kid| {
+            kid.spawn((
+                Sprite {
+                    color: Color::srgb(0.10, 0.04, 0.05),
+                    custom_size: Some(Vec2::new(64.0, 26.0)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.0, 0.05),
+            ));
+            kid.spawn((
+                Text2d::new("NUKE"),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(RED),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+                NukeText,
+            ));
+        });
 }
 
 /// Shared mesh handles for the job icons (the cart font is ASCII-only, so
@@ -884,11 +940,11 @@ fn spawn_skill_icon(
             Transform::from_xyz(x, y, 0.2).with_rotation(Quat::from_rotation_z(rot)),
         ));
     };
-    let blob = |kid: &mut ChildSpawnerCommands, mesh: &Handle<Mesh>, x: f32, y: f32| {
+    let blob = |kid: &mut ChildSpawnerCommands, mesh: &Handle<Mesh>, x: f32, y: f32, rot: f32| {
         kid.spawn((
             Mesh2d(mesh.clone()),
             MeshMaterial2d(fx.mats[player].clone()),
-            Transform::from_xyz(x, y, 0.2),
+            Transform::from_xyz(x, y, 0.2).with_rotation(Quat::from_rotation_z(rot)),
         ));
     };
     match idx {
@@ -902,14 +958,14 @@ fn spawn_skill_icon(
         }
         1 => {
             // CHUTE: canopy, cords, dangling intern.
-            blob(kid, &fx.canopy, 0.0, 11.0);
+            blob(kid, &fx.canopy, 0.0, 11.0, 0.0);
             rect(kid, -4.0, 2.0, 1.5, 10.0, 0.5);
             rect(kid, 4.0, 2.0, 1.5, 10.0, -0.5);
-            blob(kid, &fx.dot, 0.0, -4.0);
+            blob(kid, &fx.dot, 0.0, -4.0, 0.0);
         }
         2 => {
             // SUPER: arms out, nobody gets past.
-            blob(kid, &fx.dot, 0.0, 13.0);
+            blob(kid, &fx.dot, 0.0, 13.0, 0.0);
             rect(kid, 0.0, 3.0, 4.0, 12.0, 0.0);
             rect(kid, 0.0, 7.0, 18.0, 3.0, 0.0);
             rect(kid, -3.0, -5.0, 3.0, 8.0, 0.25);
@@ -925,21 +981,27 @@ fn spawn_skill_icon(
             // BASH: an arrow into a wall.
             rect(kid, 9.5, 6.0, 3.0, 20.0, 0.0);
             rect(kid, -6.0, 6.0, 12.0, 3.0, 0.0);
-            blob(kid, &fx.tri_right, 2.0, 6.0);
+            blob(kid, &fx.tri_right, 2.0, 6.0, 0.0);
         }
         5 => {
             // DIG: an arrow into the floor.
             rect(kid, 0.0, -4.0, 20.0, 3.0, 0.0);
             rect(kid, 0.0, 11.0, 3.0, 12.0, 0.0);
-            blob(kid, &fx.tri_down, 0.0, 2.0);
+            blob(kid, &fx.tri_down, 0.0, 2.0, 0.0);
         }
-        _ => {
+        6 => {
             // QUIT: the loud way out.
-            blob(kid, &fx.dot, 0.0, 6.0);
+            blob(kid, &fx.dot, 0.0, 6.0, 0.0);
             rect(kid, 0.0, 6.0, 3.0, 16.0, 0.0);
             rect(kid, 0.0, 6.0, 16.0, 3.0, 0.0);
             rect(kid, 0.0, 6.0, 2.5, 14.0, std::f32::consts::FRAC_PI_4);
             rect(kid, 0.0, 6.0, 2.5, 14.0, -std::f32::consts::FRAC_PI_4);
+        }
+        _ => {
+            // MINE: an arrow driving diagonally into the rock face.
+            rect(kid, 5.0, -3.0, 16.0, 3.0, std::f32::consts::FRAC_PI_4);
+            rect(kid, -4.0, 9.0, 12.0, 3.0, -std::f32::consts::FRAC_PI_4);
+            blob(kid, &fx.tri_right, 0.5, 4.0, -std::f32::consts::FRAC_PI_4);
         }
     }
 }
@@ -953,6 +1015,8 @@ fn skill_buttons(
     net: Res<NetMode>,
     mut btns: Query<(&SkillBtn, &mut Sprite, &mut Visibility)>,
     mut counts: Query<(&SkillCountText, &mut Text2d, &mut TextColor)>,
+    mut nuke_btn: Query<(&mut Sprite, &mut Visibility), (With<NukeBtn>, Without<SkillBtn>)>,
+    mut nuke_text: Query<&mut Text2d, (With<NukeText>, Without<SkillCountText>)>,
 ) {
     let me: usize = match &net.0 {
         Some(cfg) => cfg.seat as usize,
@@ -980,6 +1044,22 @@ fn skill_buttons(
         let c = if n == 0 { RED } else { AMBER };
         if tc.0 != c {
             tc.0 = c;
+        }
+    }
+    if let Ok((mut sp, mut vis)) = nuke_btn.single_mut() {
+        let want = if editor.active { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+        let c = if game.nuke_armed { RED } else { RED.with_alpha(0.45) };
+        if sp.color != c {
+            sp.color = c;
+        }
+    }
+    if let Ok(mut t) = nuke_text.single_mut() {
+        let s = if game.nuke_armed { "SURE?" } else { "NUKE" };
+        if t.0 != s {
+            t.0 = s.into();
         }
     }
 }
@@ -1070,7 +1150,7 @@ struct WireState {
     saved: [u32; 2],
     dead: [u32; 2],
     spawned: [u32; 2],
-    skills: [[u32; 7]; 2],
+    skills: [[u32; 8]; 2],
     tl: i32,
 }
 
@@ -1097,6 +1177,7 @@ fn job_code(j: Job) -> i32 {
         Job::Build { .. } => 5,
         Job::Bash { .. } => 6,
         Job::Dig { .. } => 7,
+        Job::Mine { .. } => 8,
         Job::Splat { .. } => 9,
         Job::Exiting { .. } => 10,
     }
@@ -1115,6 +1196,7 @@ fn job_name(j: Job, quit: i32) -> &'static str {
         Job::Build { .. } => "BUILDING",
         Job::Bash { .. } => "BASHING",
         Job::Dig { .. } => "DIGGING",
+        Job::Mine { .. } => "MINING",
         Job::Splat { .. } => "DOWN",
         Job::Exiting { .. } => "CLOCKING OUT",
     }
@@ -1403,6 +1485,37 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                     w.job = Job::Dig { cooldown };
                 }
             }
+            Job::Mine { mut cooldown } => {
+                cooldown -= 1;
+                if cooldown <= 0 {
+                    // One diagonal stroke: carve a walker-tall pocket ahead
+                    // and below, then step down into it. The two-down-two-
+                    // forward stride leaves a ramp others can stroll back up
+                    // (the walk step clears up to four cells).
+                    let mut any = false;
+                    for k in 0..=4i32 {
+                        for dy in -5..=2i32 {
+                            let x = w.x + w.dir * k;
+                            let y = w.y + dy;
+                            // Like the basher: only in-bounds rock counts as
+                            // work, or the border would be mined forever.
+                            if x >= 0 && x < site.w && y >= 1 && site.solid(x, y) {
+                                any = true;
+                            }
+                            site.set(x, y, false);
+                        }
+                    }
+                    if any {
+                        w.x += w.dir * 2;
+                        w.y += 2;
+                        w.job = Job::Mine { cooldown: 8 };
+                    } else {
+                        w.job = Job::Fall { dist: 0, chute: false };
+                    }
+                } else {
+                    w.job = Job::Mine { cooldown };
+                }
+            }
             _ => {}
         }
 
@@ -1497,14 +1610,15 @@ fn candidate(game: &Game, player: usize, gx: i32, gy: i32) -> Option<usize> {
 /// dig, bash → supervise, …) the way the genre expects; only airborne,
 /// exiting, and downed walkers refuse.
 fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize, mine: bool) -> bool {
-    if game.skills[player][skill] == 0 {
+    // A relayed index is untrusted input; out of range is a no, not a panic.
+    if skill >= SKILL_NAMES.len() || game.skills[player][skill] == 0 {
         return false;
     }
     let Some(i) = candidate(game, player, gx, gy) else { return false };
     let w = &mut game.walkers[i];
     let on_feet = matches!(
         w.job,
-        Job::Walk | Job::Block | Job::Build { .. } | Job::Bash { .. } | Job::Dig { .. }
+        Job::Walk | Job::Block | Job::Build { .. } | Job::Bash { .. } | Job::Dig { .. } | Job::Mine { .. }
     );
     let applied = match skill {
         0 if !w.can_climb => {
@@ -1535,6 +1649,10 @@ fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize, mi
             w.quit = 60;
             true
         }
+        7 if on_feet && !matches!(w.job, Job::Mine { .. }) => {
+            w.job = Job::Mine { cooldown: 1 };
+            true
+        }
         _ => false,
     };
     if applied {
@@ -1549,6 +1667,7 @@ fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize, mi
                     3 => "bridges_ordered",
                     4 => "bashers_unleashed",
                     5 => "diggers_deployed",
+                    7 => "miners_deployed",
                     _ => "quits_ordered",
                 },
                 1,
@@ -1641,12 +1760,14 @@ fn input_p1(
         KeyCode::Digit5,
         KeyCode::Digit6,
         KeyCode::Digit7,
+        KeyCode::Digit8,
     ]
     .iter()
     .enumerate()
     {
         if keys.just_pressed(*key) {
-            game.selected[me] = i;
+            // Keys follow the bar's display order, not the array's.
+            game.selected[me] = SKILL_ORDER[i];
             sfx("tick");
         }
     }
@@ -1696,10 +1817,33 @@ fn input_p1(
     // Click a job button: pick that skill (your own strip only; P2's local
     // strip is keyboard-driven and online you can't touch the other seat's).
     if buttons.just_pressed(MouseButton::Left) && (world.y + 292.0).abs() <= 27.0 {
-        let base = if me.min(1) == 0 { -333.0 } else { 45.0 };
-        let rel = world.x - base + 24.0;
-        if (0.0..7.0 * 48.0).contains(&rel) {
-            game.selected[me.min(1)] = ((rel / 48.0) as usize).min(6);
+        let base = if me.min(1) == 0 { -338.0 } else { 30.0 };
+        let rel = world.x - base + 22.0;
+        if (0.0..8.0 * 44.0).contains(&rel) {
+            game.selected[me.min(1)] = SKILL_ORDER[((rel / 44.0) as usize).min(7)];
+            sfx("tick");
+        }
+        return;
+    }
+    // The big red button: one click arms, the next confirms — same deal as
+    // the N-N chord, same owner scoping.
+    if buttons.just_pressed(MouseButton::Left)
+        && (world.x + 318.0).abs() <= 36.0
+        && (world.y - 292.0).abs() <= 17.0
+    {
+        if game.nuke_armed {
+            game.nuke_armed = false;
+            if guest {
+                if let Ok(msg) = serde_json::to_string(&WireNuke { t: "nk".into() }) {
+                    net_send(&msg);
+                    stat("nukes_ordered", 1);
+                }
+            } else {
+                nuke_own(&mut game, me.min(1) as u8);
+                stat("nukes_ordered", 1);
+            }
+        } else {
+            game.nuke_armed = true;
             sfx("tick");
         }
         return;
@@ -1775,11 +1919,13 @@ fn input_p2(
     game.p2cursor.x = game.p2cursor.x.clamp(0.0, site.w as f32 * CELL);
     game.p2cursor.y = game.p2cursor.y.clamp(-220.0, 320.0);
     if keys.just_pressed(KeyCode::KeyQ) {
-        game.selected[1] = (game.selected[1] + 6) % 7;
+        let pos = SKILL_ORDER.iter().position(|&s| s == game.selected[1]).unwrap_or(0);
+        game.selected[1] = SKILL_ORDER[(pos + 7) % 8];
         sfx("tick");
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        game.selected[1] = (game.selected[1] + 1) % 7;
+        let pos = SKILL_ORDER.iter().position(|&s| s == game.selected[1]).unwrap_or(0);
+        game.selected[1] = SKILL_ORDER[(pos + 1) % 8];
         sfx("tick");
     }
     let gx = (game.p2cursor.x / CELL) as i32;
@@ -1969,6 +2115,7 @@ fn net_apply(
                                     5 => Job::Build { steps: 1, cooldown: 99 },
                                     6 => Job::Bash { cooldown: 99 },
                                     7 => Job::Dig { cooldown: 99 },
+                                    8 => Job::Mine { cooldown: 99 },
                                     9 => Job::Splat { ticks: 99 },
                                     10 => Job::Exiting { ticks: 99 },
                                     _ => Job::Walk,
@@ -2017,7 +2164,7 @@ fn apply_level(
     }
     cam.x = 0.0;
     cam.max = (w as f32 * CELL - VIEW_W).max(0.0);
-    game.skills = [doc.skills, doc.skills];
+    game.skills = [skills8(&doc.skills); 2];
     game.time_left = (doc.time * TICKS_PER_SEC as u32) as i32;
     game.doc = doc;
     game.guest_ready = true;
@@ -2048,7 +2195,7 @@ fn job_color(w: &Walker) -> Color {
     match w.job {
         Job::Block => AMBER,
         Job::Build { .. } => CYAN,
-        Job::Bash { .. } | Job::Dig { .. } => WHITE,
+        Job::Bash { .. } | Job::Dig { .. } | Job::Mine { .. } => WHITE,
         Job::Splat { .. } => RED,
         _ => base,
     }
@@ -2088,6 +2235,7 @@ fn minimap_pos(site_w: i32, gx: f32, gy: f32) -> Vec2 {
 #[allow(clippy::too_many_arguments)]
 fn draw(
     mut gizmos: Gizmos,
+    time: Res<Time>,
     game: Res<Game>,
     editor: Res<Editor>,
     net: Res<NetMode>,
@@ -2130,8 +2278,46 @@ fn draw(
             continue; // off the camera window
         }
         let color = job_color(w);
-        gizmos.rect_2d(p, Vec2::new(4.0, 12.0), color);
-        gizmos.rect_2d(p + Vec2::new(w.dir as f32, 7.0), Vec2::new(4.0, 3.0), color);
+        // The waddle: four chunky frames at sim tempo, offset per walker so
+        // the crowd never marches in lockstep. Feet stay planted; the body
+        // bobs and the head over-bounces — deliberately a bit much.
+        let ph = (((time.elapsed_secs() * TICKS_PER_SEC) as i64 + w.id as i64 * 3).rem_euclid(4))
+            as usize;
+        let d = w.dir as f32;
+        match w.job {
+            Job::Walk | Job::Exiting { .. } => {
+                let bounce = [0.0, 1.2, 2.2, 1.2][ph];
+                let feet = [3.0, 0.8, 3.0, 0.8][ph];
+                let hip = p + Vec2::new(0.0, -2.0 + bounce);
+                gizmos.line_2d(hip, p + Vec2::new(feet * d, -7.0), color);
+                gizmos.line_2d(hip, p + Vec2::new(-feet * d, -7.0), color);
+                gizmos.rect_2d(p + Vec2::new(0.0, 0.5 + bounce), Vec2::new(4.0, 9.0), color);
+                let head = p + Vec2::new(d * 1.5, 7.0 + bounce * 1.7);
+                gizmos.rect_2d(head, Vec2::new(4.5, 3.5), color);
+                gizmos.rect_2d(head + Vec2::new(d * 1.4, 0.4), Vec2::new(1.2, 1.2), WHITE);
+            }
+            Job::Bash { .. } | Job::Mine { .. } => {
+                // Work lunge, in the direction of the rock.
+                let lunge = [0.0, 2.0, 0.5, 1.0][ph] * d;
+                gizmos.rect_2d(p + Vec2::new(lunge * 0.4, 0.0), Vec2::new(4.0, 12.0), color);
+                gizmos.rect_2d(p + Vec2::new(d + lunge, 7.0), Vec2::new(4.0, 3.0), color);
+            }
+            Job::Dig { .. } => {
+                let jig = [0.0, 1.5, 0.0, 1.5][ph];
+                gizmos.rect_2d(p + Vec2::new(0.0, -jig), Vec2::new(4.0, 12.0), color);
+                gizmos.rect_2d(p + Vec2::new(d, 7.0 - jig), Vec2::new(4.0, 3.0), color);
+            }
+            Job::Block => {
+                gizmos.rect_2d(p, Vec2::new(4.0, 12.0), color);
+                gizmos.rect_2d(p + Vec2::new(d, 7.0), Vec2::new(4.0, 3.0), color);
+                // Arms out: the entire job description.
+                gizmos.line_2d(p + Vec2::new(-7.0, 3.0), p + Vec2::new(7.0, 3.0), color);
+            }
+            _ => {
+                gizmos.rect_2d(p, Vec2::new(4.0, 12.0), color);
+                gizmos.rect_2d(p + Vec2::new(d, 7.0), Vec2::new(4.0, 3.0), color);
+            }
+        }
         if matches!(w.job, Job::Fall { chute: true, .. }) {
             gizmos.circle_2d(p + Vec2::new(0.0, 12.0), 6.0, CYAN);
         }
@@ -2488,7 +2674,7 @@ fn editor_update(
         game.doc = doc;
         game.players = 1;
         reset_round(&mut game);
-        game.skills = [game.doc.skills, game.doc.skills];
+        game.skills = [skills8(&game.doc.skills); 2];
         game.rate = [game.doc.rate; 2];
         game.time_left = (game.doc.time * TICKS_PER_SEC as u32) as i32;
         game.guest_ready = true;
@@ -2545,7 +2731,7 @@ fn editor_update(
         sfx("tick");
     }
     if keys.just_pressed(KeyCode::Tab) {
-        editor.skill_sel = (editor.skill_sel + 1) % 7;
+        editor.skill_sel = (editor.skill_sel + 1) % 8;
     }
     if keys.just_pressed(KeyCode::BracketLeft) {
         editor.brush = (editor.brush - 2).max(2);
@@ -2563,7 +2749,7 @@ fn editor_update(
     }
     if keys.just_pressed(KeyCode::Digit0) {
         let v = editor.doc.skills[editor.skill_sel];
-        editor.doc.skills = [v; 7];
+        editor.doc.skills = vec![v; 8];
     }
     if keys.just_pressed(KeyCode::KeyC) {
         editor.doc.count = editor.doc.count.saturating_sub(5).max(5);

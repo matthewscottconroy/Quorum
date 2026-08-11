@@ -57,7 +57,7 @@ const CABINETS = [
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
-    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-7 jobs, T/R your flow, A/D or screen edge scrolls, click the minimap to jump, N-N your crew quits, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) quits your whole crew, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
 ];
 
@@ -254,6 +254,7 @@ const STAT_LABELS = {
   interns_saved: 'INTERNS RESCUED', interns_lost: 'INTERNS LOST (REGRETTABLE)',
   gravity_lessons: 'GRAVITY LESSONS TAUGHT', quits_ordered: 'LOUD QUITS ARRANGED',
   nukes_ordered: 'MASS RESIGNATIONS FILED', climbers_hired: 'CLIMBERS CERTIFIED',
+  miners_deployed: 'MINERS SENT DIAGONAL',
   chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
   bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
   diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
@@ -385,6 +386,7 @@ class PageArcade extends HTMLElement {
         .tsc-bezel::after { content:''; position:absolute; inset:14px; pointer-events:none; border-radius:4px;
                     background:repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); }
         #arcade-canvas { display:block; width:720px; max-width:100%; height:auto; background:#000; border-radius:4px; outline:none; }
+        @keyframes tsc-blink { 50% { opacity: 0; } }
         .tsc-slot { margin-top:.8rem; display:flex; gap:.7rem; align-items:center; flex-wrap:wrap; }
         .tsc-coin { background:#101020; color:#ffd166; border:2px solid #ffd166; border-radius:6px; padding:.55rem 1.2rem;
                     font-family:inherit; font-size:.9rem; letter-spacing:.15em; cursor:pointer; text-shadow:0 0 6px rgba(255,209,102,.6); }
@@ -419,6 +421,9 @@ class PageArcade extends HTMLElement {
           <div>
             <div class="tsc-bezel" style="position:relative">
               <canvas id="arcade-canvas" width="720" height="640"></canvas>
+              <div id="boot-veil" style="position:absolute;inset:14px;display:flex;pointer-events:none;z-index:4;
+                   color:#7CFC9A;font-size:1.1rem;letter-spacing:.25em;align-items:center;justify-content:center;
+                   text-shadow:0 0 8px rgba(124,252,154,.7);animation:tsc-blink 1s steps(1) infinite">LOADING...</div>
               <div id="focus-veil" style="display:none;position:absolute;inset:14px;background:rgba(0,0,0,.55);
                    color:#ffd166;font-size:.95rem;letter-spacing:.15em;cursor:pointer;z-index:5;
                    align-items:center;justify-content:center;text-align:center">CLICK TO RESUME CONTROL</div>
@@ -600,6 +605,7 @@ class PageArcade extends HTMLElement {
       // that one means SUCCESS. Anything else is a real boot failure.
       if (!String(err).includes('control flow')) {
         if (note) note.textContent = 'CARTRIDGE FAULT — see console';
+        this.querySelector('#boot-veil')?.remove();
         console.error('arcade boot:', err);
         return;
       }
@@ -607,6 +613,7 @@ class PageArcade extends HTMLElement {
     this._wasmStarted = true;
     this._mod = mod;
     if (note) note.textContent = '';
+    this.querySelector('#boot-veil')?.remove();
     if (LEVELS[cab.id]) this.wireLevels(cab, mod);
     // Keyboard cabinets: when the canvas loses focus the keys go dead — say
     // so instead of letting the player mash a silent keyboard.

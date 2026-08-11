@@ -70,6 +70,7 @@ var arcadeStatNames = map[string][]string{
 		"interns_saved", "interns_lost", "gravity_lessons", "quits_ordered",
 		"nukes_ordered", "climbers_hired", "chutes_issued", "supervisors_promoted",
 		"bridges_ordered", "bashers_unleashed", "diggers_deployed", "floor_wins",
+		"miners_deployed",
 	},
 	"texas-holdem": {
 		"hands_played", "hands_won", "chips_won", "folds", "raises", "all_ins",
