@@ -41,7 +41,11 @@ const VIEW_W: f32 = 720.0; // the camera window, in px
 const TICKS_PER_SEC: f32 = 10.0;
 const MAX_FALL: i32 = 32; // survivable fall, in cells, without a chute
 const MAX_COUNT: u32 = 100; // walkers per player: sim comfort + sane rounds
-const SKILL_NAMES: [&str; 8] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "QUIT", "MINE"];
+// Index 6 is the single-intern self-destruct (the classic bomber): a six-
+// second fuse, then a terrain-cratering blast. Labeled BOOM on the bar
+// because nobody recognized "QUIT" as an explosive — the lore keeps the
+// name everywhere else (QUITTING, quits_ordered, the nuke's mass version).
+const SKILL_NAMES: [&str; 8] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "BOOM", "MINE"];
 /// Button/keyboard display order. MINE (index 7) was appended to the skill
 /// array so seven-skill community documents keep their meaning, but on the
 /// bar it sits beside DIG where it belongs — and QUIT stays last, farthest

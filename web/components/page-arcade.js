@@ -57,7 +57,7 @@ const CABINETS = [
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
-    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) quits your whole crew, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally · BOOM self-destructs ONE intern after a 6s fuse, cratering terrain), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) is BOOM for your whole crew, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
 ];
 
