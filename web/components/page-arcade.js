@@ -91,6 +91,11 @@ const LEVELS = {
     toast: 'Editor: 1-6 picks a piece, C flips its color, click places, right-click clears, T sets who moves, G test-plays, S saves, X returns',
   },
 };
+// Clock-capable cabinets: per-side game clock choices, in seconds. Online,
+// the host's pick travels with the board setup so both chairs agree.
+const CLOCKS = {
+  chess: [[0, 'NO CLOCK'], [180, 'BLITZ · 3 MIN'], [300, 'BLITZ · 5 MIN'], [600, 'RAPID · 10 MIN'], [1800, 'CLASSICAL · 30 MIN']],
+};
 
 /**
  * A tiny WebAudio chip synth for the cartridges (window.__arcadeSfx).
@@ -193,6 +198,7 @@ const STAT_LABELS = {
   draws: 'PEACE TREATIES', wins_online: 'ONLINE WINS', losses_online: 'ONLINE LOSSES',
   resignations: 'TABLES FLIPPED (RESIGNED)', hotseat_rounds: 'HOTSEAT ROUNDS',
   fischer_deals: 'FISCHER DEALS TAKEN', puzzles_tested: 'PUZZLES TESTED',
+  time_forfeits: 'FLAGS FALLEN (CLOCK RAN OUT)', wins_on_time: 'WINS ON TIME',
   // Go
   stones_placed: 'STONES PLACED', stones_captured: 'PRISONERS TAKEN',
   stones_lost: 'STONES SURRENDERED', passes: 'POLITE PASSES',
@@ -411,6 +417,12 @@ class PageArcade extends HTMLElement {
                 </label>
                 <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>
                 <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
+              ${CLOCKS[cab.id] ? `
+                <label class="tsc-note">CLOCK
+                  <select id="sel-clock" class="tsc-sel">
+                    ${CLOCKS[cab.id].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
+                  </select>
+                </label>` : ''}
               <button class="tsc-coin" id="coin" disabled>◉ INSERT CREDIT</button>
               <span class="tsc-note" id="boot-note">booting cartridge…</span>
             </div>
@@ -595,6 +607,7 @@ class PageArcade extends HTMLElement {
           : Math.min(players, Number(this.querySelector('#sel-humans')?.value ?? 1));
         try {
           await this.resolveLevel(cab);
+          this.resolveClock();
           const res = await api('POST', `/arcade/${cab.id}/credit`);
           toast(`Credit ${res.credits} logged. Go!`, 'success');
           mod.arcade_insert_credit(players, humans);
@@ -640,6 +653,14 @@ class PageArcade extends HTMLElement {
     }
     const lvl = await api('GET', `/arcade/levels/${v}`);
     window.__ARCADE_LEVEL = lvl.data;
+  }
+
+  /** Sets window.__ARCADE_TIME (seconds per side) from the clock picker.
+      The cartridge treats absent or zero as an unclocked game. */
+  resolveClock() {
+    const secs = Number(this.querySelector('#sel-clock')?.value ?? 0);
+    if (secs > 0) window.__ARCADE_TIME = secs;
+    else delete window.__ARCADE_TIME;
   }
 
   async wireLevels(cab, mod) {
@@ -740,7 +761,7 @@ class PageArcade extends HTMLElement {
       busy(true);
       lobby.textContent = 'CONNECTING…';
       try {
-        if (mode === 'host') await this.resolveLevel(cab);
+        if (mode === 'host') { await this.resolveLevel(cab); this.resolveClock(); }
         await api('POST', `/arcade/${cab.id}/credit`); // online play still costs a credit
       } catch (err) {
         toast(err.error ?? 'Coin jammed', 'error');

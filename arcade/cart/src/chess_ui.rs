@@ -184,6 +184,19 @@ fn page_start() -> StartSpec {
     StartSpec::Standard
 }
 
+/// Seconds per side from the page's CLOCK picker. Absent, zero, or anything
+/// under half a minute means an unclocked game.
+fn page_time() -> Option<f32> {
+    #[cfg(target_arch = "wasm32")]
+    let t = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_TIME".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    let t = 0.0f64;
+    (t >= 30.0).then(|| t as f32)
+}
+
 const CELL: f32 = 64.0;
 const X0: f32 = -320.0; // left edge of a1 (unflipped)
 const Y0: f32 = -256.0; // bottom edge of a1 (unflipped)
@@ -233,6 +246,9 @@ struct WireSetup {
     t: String, // "st8"
     board: String,
     turn: String,
+    /// Seconds per side on the host's game clock; 0 means no clock.
+    #[serde(default)]
+    time: u32,
 }
 
 fn promo_str(p: Option<Piece>) -> Option<String> {
@@ -288,6 +304,9 @@ struct Table {
     hotseat: bool,
     /// Online per-turn clock: stall past it and you forfeit.
     turn_clock: Timer,
+    /// Optional game clock, seconds remaining [White, Black]. The side to
+    /// move burns time; a flag fall forfeits. Replaces the stall-breaker.
+    clock: Option<[f32; 2]>,
     result: String,
 }
 
@@ -424,15 +443,19 @@ fn setup(
             _ => (Board::start(), false),
         }
     };
-    // Host with a non-standard start: relay it before anyone moves.
+    // The game clock, if the page asked for one. Guests start unclocked and
+    // take the host's setting from "st8", so both chairs run the same clock.
+    let clock = if editor_mode || is_guest { None } else { page_time().map(|t| [t, t]) };
+    // Host with a non-standard start or a clock: relay it before anyone moves.
     if let Some(cfg) = &net.0 {
         if cfg.is_host() && !editor_mode {
             let is_custom = !matches!(&spec, StartSpec::Standard | StartSpec::Blank);
-            if is_custom {
+            if is_custom || clock.is_some() {
                 if let Ok(w) = serde_json::to_string(&WireSetup {
                     t: "st8".into(),
                     board: cells_to_string(&board.cells),
                     turn: if board.turn == Side::White { "w".into() } else { "b".into() },
+                    time: clock.map(|c| c[0] as u32).unwrap_or(0),
                 }) {
                     net_send(&w);
                 }
@@ -485,6 +508,7 @@ fn setup(
         search: None,
         hotseat: net.0.is_none() && config.humans >= 2,
         turn_clock: Timer::from_seconds(TURN_SECS, TimerMode::Once),
+        clock,
         result: String::new(),
     });
     if fischer {
@@ -633,6 +657,11 @@ fn spawn_piece(kid: &mut ChildSpawnerCommands, fx: &ChessFx, mat: usize, color: 
             rect(kid, 0.0, 13.0, 8.5, 3.5, 0.0);
         }
     }
+}
+
+fn mmss(secs: f32) -> String {
+    let s = secs.ceil() as u32;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 fn side_color(side: Side) -> Color {
@@ -1099,12 +1128,19 @@ fn clicks(
                 -1 => format!("\n\nMATERIAL\nBLACK +{}", -mat),
                 _ => String::new(),
             };
-            // Online stall-breaker countdown, surfaced for the last minute.
-            let clock = match &net.0 {
-                Some(_) if table.turn_clock.remaining_secs() < 60.0 => {
-                    format!("\n\nCLOCK 0:{:02}", table.turn_clock.remaining_secs() as u32)
+            // Game clock, both sides always visible; otherwise the online
+            // stall-breaker countdown, surfaced for the last minute.
+            let clock = if let Some(c) = &table.clock {
+                let w = if table.board.turn == Side::White { ">" } else { " " };
+                let b = if table.board.turn == Side::Black { ">" } else { " " };
+                format!("\n\n{w}W {}\n{b}B {}", mmss(c[0]), mmss(c[1]))
+            } else {
+                match &net.0 {
+                    Some(_) if table.turn_clock.remaining_secs() < 60.0 => {
+                        format!("\n\nCLOCK 0:{:02}", table.turn_clock.remaining_secs() as u32)
+                    }
+                    _ => String::new(),
                 }
-                _ => String::new(),
             };
             format!("{turn}\nTO MOVE{check}{whose}{mat_line}{clock}{resign}")
         };
@@ -1232,6 +1268,7 @@ fn net_apply(
                         table.last_move = None;
                         table.selected = None;
                         table.turn_clock.reset();
+                        table.clock = (su.time > 0).then(|| [su.time as f32; 2]);
                         table.dirty = true;
                     }
                 }
@@ -1322,20 +1359,47 @@ fn check_end(table: &mut Table) {
     }
 }
 
-/// Online stall-breaker: the side that lets its turn clock lapse forfeits.
-/// Both clients run the clock independently; they agree on whose turn it is,
-/// so they agree on the verdict (frame-drift of a second is harmless — the
-/// result is the same either way).
+/// The clocks. With a game clock the side to move burns time and forfeits
+/// on a flag fall — any mode. Unclocked online games keep the generous
+/// per-turn stall-breaker instead. Peers tick independently; they agree on
+/// whose turn it is, so they agree on the verdict (frame-drift of a second
+/// is harmless — the result is the same either way).
 fn turn_clock_run(time: Res<Time>, net: Res<NetMode>, mut table: ResMut<Table>) {
-    let Some(cfg) = &net.0 else { return };
     if table.over_wait.is_some() {
         return;
     }
+    if let Some(mut remain) = table.clock {
+        let i = if table.board.turn == Side::White { 0 } else { 1 };
+        remain[i] = (remain[i] - time.delta().as_secs_f32()).max(0.0);
+        table.clock = Some(remain);
+        if remain[i] <= 0.0 {
+            let slow = table.board.turn;
+            table.result = format!(
+                "OUT OF TIME\n{}\nFORFEITS",
+                if slow == Side::White { "WHITE" } else { "BLACK" }
+            );
+            // Did the credited account flag? Online: their seat. Local vs
+            // machine: the human's side. Hotseat: they sat both chairs.
+            let i_flagged = match &net.0 {
+                Some(cfg) => seat_side(cfg.seat) == slow,
+                None => !(table.bot && slow == table.bot_side),
+            };
+            table.final_score = if i_flagged { 100 } else { 700 };
+            stat(if i_flagged { "time_forfeits" } else { "wins_on_time" }, 1);
+            if net.0.is_some() {
+                stat(if i_flagged { "losses_online" } else { "wins_online" }, 1);
+            }
+            table.over_wait = Some(Timer::from_seconds(2.5, TimerMode::Once));
+            table.dirty = true;
+        }
+        return;
+    }
+    let Some(cfg) = &net.0 else { return };
     table.turn_clock.tick(time.delta());
     if table.turn_clock.finished() {
         let slow = table.board.turn;
         table.result = format!(
-            "OUT OF TIME\n{} FORFEITS",
+            "OUT OF TIME\n{}\nFORFEITS",
             if slow == Side::White { "WHITE" } else { "BLACK" }
         );
         table.final_score = if seat_side(cfg.seat) == slow { 100 } else { 700 };

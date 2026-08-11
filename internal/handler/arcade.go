@@ -50,7 +50,7 @@ var arcadeStatNames = map[string][]string{
 		"moves_played", "captures_made", "pieces_lost", "checks_given",
 		"pawns_promoted", "knight_promotions", "machine_beaten", "beaten_by_machine",
 		"draws", "wins_online", "losses_online", "resignations", "hotseat_rounds",
-		"fischer_deals", "puzzles_tested",
+		"fischer_deals", "puzzles_tested", "time_forfeits", "wins_on_time",
 	},
 	"go": {
 		"stones_placed", "stones_captured", "stones_lost", "passes", "takebacks",
