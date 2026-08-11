@@ -389,8 +389,11 @@ fn setup(
     config: Res<CabinetConfig>,
     net: Res<NetMode>,
     mut rng: ResMut<Rng>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
     existing_editor: Option<ResMut<PosEditor>>,
 ) {
+    commands.insert_resource(ChessFx::build(&mut meshes, &mut materials));
     let editor_mode = crate::shell::take_editor_pending();
     let flip = matches!(&net.0, Some(cfg) if cfg.seat == 1);
     let spec = page_start();
@@ -521,14 +524,114 @@ fn setup(
     commands.entity(help).insert(GameTag);
 }
 
-fn glyph(p: Piece) -> &'static str {
-    match p {
-        Piece::Pawn => "P",
-        Piece::Knight => "N",
-        Piece::Bishop => "B",
-        Piece::Rook => "R",
-        Piece::Queen => "Q",
-        Piece::King => "K",
+/// Shared mesh handles for the drawn piece silhouettes. The cart font is
+/// ASCII-only, so like the card pips the pieces are built from primitives:
+/// circles for heads and finials, triangles for tapered bodies, sprites for
+/// bases, walls and crowns.
+#[derive(Resource)]
+struct ChessFx {
+    head: Handle<Mesh>,
+    ball: Handle<Mesh>,
+    pawn_body: Handle<Mesh>,
+    bishop_body: Handle<Mesh>,
+    royal_body: Handle<Mesh>,
+    spike: Handle<Mesh>,
+    /// White, black, promo-picker amber.
+    mats: [Handle<ColorMaterial>; 3],
+}
+
+impl ChessFx {
+    fn build(meshes: &mut Assets<Mesh>, materials: &mut Assets<ColorMaterial>) -> Self {
+        let tri = |meshes: &mut Assets<Mesh>, a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+            meshes.add(Triangle2d::new(
+                Vec2::new(a.0, a.1),
+                Vec2::new(b.0, b.1),
+                Vec2::new(c.0, c.1),
+            ))
+        };
+        ChessFx {
+            head: meshes.add(Circle::new(6.0)),
+            ball: meshes.add(Circle::new(2.6)),
+            pawn_body: tri(meshes, (-8.0, -8.0), (8.0, -8.0), (0.0, 10.0)),
+            bishop_body: tri(meshes, (-7.5, -10.5), (7.5, -10.5), (0.0, 10.5)),
+            royal_body: tri(meshes, (-9.5, -9.5), (9.5, -9.5), (0.0, 9.5)),
+            spike: tri(meshes, (-3.0, -4.5), (3.0, -4.5), (0.0, 4.5)),
+            mats: [
+                materials.add(GREEN),
+                materials.add(MAGENTA),
+                materials.add(AMBER),
+            ],
+        }
+    }
+}
+
+/// One staunton-ish silhouette, ~40px tall, centered in the piece tile.
+/// `mat` indexes ChessFx::mats and must agree with `color` (sprites tint
+/// directly, meshes go through the material).
+fn spawn_piece(kid: &mut ChildSpawnerCommands, fx: &ChessFx, mat: usize, color: Color, piece: Piece) {
+    let material = fx.mats[mat].clone();
+    // Parts get stacking z offsets so overlapping sprites never shimmer.
+    let layer = std::cell::Cell::new(0.0f32);
+    let bump = || {
+        layer.set(layer.get() + 0.01);
+        0.1 + layer.get()
+    };
+    let rect = |kid: &mut ChildSpawnerCommands, x: f32, y: f32, w: f32, h: f32, rot: f32| {
+        kid.spawn((
+            Sprite { color, custom_size: Some(Vec2::new(w, h)), ..default() },
+            Transform::from_xyz(x, y, bump()).with_rotation(Quat::from_rotation_z(rot)),
+        ));
+    };
+    let blob = |kid: &mut ChildSpawnerCommands, mesh: &Handle<Mesh>, x: f32, y: f32| {
+        kid.spawn((
+            Mesh2d(mesh.clone()),
+            MeshMaterial2d(material.clone()),
+            Transform::from_xyz(x, y, bump()),
+        ));
+    };
+    // Every piece stands on the same plinth.
+    rect(kid, 0.0, -15.0, 24.0, 4.5, 0.0);
+    match piece {
+        Piece::Pawn => {
+            blob(kid, &fx.pawn_body, 0.0, -4.0);
+            blob(kid, &fx.head, 0.0, 8.0);
+        }
+        Piece::Rook => {
+            rect(kid, 0.0, -3.0, 16.0, 18.0, 0.0);
+            rect(kid, 0.0, 8.0, 22.0, 4.0, 0.0);
+            for x in [-8.0, 0.0, 8.0] {
+                rect(kid, x, 13.5, 5.5, 6.0, 0.0);
+            }
+        }
+        Piece::Knight => {
+            // Horse profile facing left: chest, leaning neck, head, muzzle, ear.
+            rect(kid, 3.5, -6.0, 13.0, 14.0, 0.0);
+            rect(kid, 0.0, 2.0, 11.0, 18.0, 0.45);
+            rect(kid, -4.5, 10.0, 14.0, 8.5, 0.0);
+            rect(kid, -11.5, 8.5, 7.0, 5.5, 0.0);
+            blob(kid, &fx.spike, 1.0, 17.0);
+        }
+        Piece::Bishop => {
+            blob(kid, &fx.bishop_body, 0.0, -1.5);
+            blob(kid, &fx.head, 0.0, 8.0);
+            blob(kid, &fx.ball, 0.0, 15.5);
+        }
+        Piece::Queen => {
+            blob(kid, &fx.royal_body, 0.0, -2.5);
+            rect(kid, 0.0, 6.5, 19.0, 3.5, 0.0);
+            for (x, y) in [(-6.5, 11.5), (0.0, 12.5), (6.5, 11.5)] {
+                blob(kid, &fx.spike, x, y);
+            }
+            for (x, y) in [(-6.5, 16.5), (0.0, 17.5), (6.5, 16.5)] {
+                blob(kid, &fx.ball, x, y);
+            }
+        }
+        Piece::King => {
+            blob(kid, &fx.royal_body, 0.0, -3.0);
+            rect(kid, 0.0, 5.5, 19.0, 3.5, 0.0);
+            rect(kid, 0.0, 12.5, 3.5, 10.0, 0.0);
+            rect(kid, 0.0, 13.0, 8.5, 3.5, 0.0);
+        }
     }
 }
 
@@ -578,6 +681,7 @@ fn commit_move(table: &mut Table, m: Move, mine: bool) {
 fn repaint(
     commands: &mut Commands,
     table: &Table,
+    fx: &ChessFx,
     pieces: &Query<Entity, With<PieceSprite>>,
     highlights: &Query<Entity, With<Highlight>>,
 ) {
@@ -614,12 +718,8 @@ fn repaint(
                     GameTag,
                 ))
                 .with_children(|kid| {
-                    kid.spawn((
-                        Text2d::new(glyph(piece)),
-                        TextFont { font_size: 34.0, ..default() },
-                        TextColor(side_color(side)),
-                        Transform::from_xyz(0.0, 0.0, 0.1),
-                    ));
+                    let mat = if side == Side::White { 0 } else { 1 };
+                    spawn_piece(kid, fx, mat, side_color(side), piece);
                 });
         }
     }
@@ -659,12 +759,7 @@ fn repaint(
                     GameTag,
                 ))
                 .with_children(|kid| {
-                    kid.spawn((
-                        Text2d::new(glyph(*piece)),
-                        TextFont { font_size: 30.0, ..default() },
-                        TextColor(AMBER),
-                        Transform::from_xyz(0.0, 0.0, 0.1),
-                    ));
+                    spawn_piece(kid, fx, 2, AMBER, *piece);
                 });
         }
     }
@@ -903,6 +998,7 @@ fn clicks(
     mut table: ResMut<Table>,
     net: Res<NetMode>,
     editor: Res<PosEditor>,
+    fx: Res<ChessFx>,
     pieces: Query<Entity, With<PieceSprite>>,
     highlights: Query<Entity, With<Highlight>>,
     promo_buttons: Query<(&PromoButton, &Transform)>,
@@ -910,7 +1006,7 @@ fn clicks(
 ) {
     if table.dirty {
         table.dirty = false;
-        repaint(&mut commands, &table, &pieces, &highlights);
+        repaint(&mut commands, &table, &fx, &pieces, &highlights);
     }
     // The position editor owns input while active; keep its HUD current.
     if editor.active {
@@ -1050,7 +1146,7 @@ fn clicks(
                 }
                 table.promo = None;
                 commit_move(&mut table, m, true);
-                repaint(&mut commands, &table, &pieces, &highlights);
+                repaint(&mut commands, &table, &fx, &pieces, &highlights);
                 return;
             }
         }
@@ -1081,7 +1177,7 @@ fn clicks(
                 }
                 commit_move(&mut table, candidates[0], true);
             }
-            repaint(&mut commands, &table, &pieces, &highlights);
+            repaint(&mut commands, &table, &fx, &pieces, &highlights);
             return;
         }
         table.selected = None;
@@ -1092,7 +1188,7 @@ fn clicks(
         table.legal = table.board.legal_moves();
         sfx("tick");
     }
-    repaint(&mut commands, &table, &pieces, &highlights);
+    repaint(&mut commands, &table, &fx, &pieces, &highlights);
 }
 
 /// Applies relayed opponent moves; handles resignation and departure.
