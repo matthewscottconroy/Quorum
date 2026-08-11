@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -176,11 +177,13 @@ func (r *GovernanceRepo) ListMotions(ctx context.Context, meetingID string) ([]m
 		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
 		       mo.mover_id::text, mv.display_name,
 		       mo.seconder_id::text, sc.display_name,
-		       mo.threshold, mo.business, mo.status, mo.created_by::text,
+		       mo.threshold, mo.business, mo.status, mo.plan_id::text, pl.title,
+		       mo.created_by::text,
 		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
 		FROM motions mo
 		LEFT JOIN members mv ON mv.id = mo.mover_id
 		LEFT JOIN members sc ON sc.id = mo.seconder_id
+		LEFT JOIN plans pl ON pl.id = mo.plan_id
 		WHERE mo.meeting_id = $1::uuid
 		ORDER BY mo.created_at
 		LIMIT 500`, meetingID)
@@ -290,11 +293,13 @@ func (r *GovernanceRepo) GetMotion(ctx context.Context, id string) (*model.Motio
 		SELECT mo.id::text, mo.meeting_id::text, mo.title, mo.detail,
 		       mo.mover_id::text, mv.display_name,
 		       mo.seconder_id::text, sc.display_name,
-		       mo.threshold, mo.business, mo.status, mo.created_by::text,
+		       mo.threshold, mo.business, mo.status, mo.plan_id::text, pl.title,
+		       mo.created_by::text,
 		       mo.opened_at, mo.closed_at, mo.created_at, mo.updated_at
 		FROM motions mo
 		LEFT JOIN members mv ON mv.id = mo.mover_id
 		LEFT JOIN members sc ON sc.id = mo.seconder_id
+		LEFT JOIN plans pl ON pl.id = mo.plan_id
 		WHERE mo.id = $1::uuid`, id)
 	m, err := scanMotion(row)
 	if err != nil {
@@ -328,10 +333,10 @@ func (r *GovernanceRepo) CreateMotion(ctx context.Context, m *model.Motion, crea
 	}
 	var id string
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO motions (meeting_id, title, detail, mover_id, seconder_id, threshold, business, status, created_by)
-		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid)
+		INSERT INTO motions (meeting_id, title, detail, mover_id, seconder_id, threshold, business, status, plan_id, created_by)
+		VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10::uuid)
 		RETURNING id::text`,
-		m.MeetingID, m.Title, m.Detail, m.MoverID, m.SeconderID, m.Threshold, m.Business, m.Status, createdBy).Scan(&id)
+		m.MeetingID, m.Title, m.Detail, m.MoverID, m.SeconderID, m.Threshold, m.Business, m.Status, m.PlanID, createdBy).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +345,7 @@ func (r *GovernanceRepo) CreateMotion(ctx context.Context, m *model.Motion, crea
 
 // UpdateMotion edits an editable motion's fields (title/detail/threshold/mover/
 // seconder). Callers gate this to non-terminal motions.
-func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error) {
+func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE motions SET
 			title       = coalesce($1, title),
@@ -349,9 +354,10 @@ func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, det
 			seconder_id = coalesce($4::uuid, seconder_id),
 			threshold   = coalesce($5, threshold),
 			business    = coalesce($6, business),
+			plan_id     = CASE WHEN $7::text IS NULL THEN plan_id ELSE nullif($7::text, '')::uuid END,
 			updated_at  = now()
-		WHERE id = $7::uuid`,
-		title, detail, moverID, seconderID, threshold, business, id)
+		WHERE id = $8::uuid`,
+		title, detail, moverID, seconderID, threshold, business, planID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -619,11 +625,84 @@ func (r *GovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice 
 }
 
 // scanMotion scans a motion row (without tally/votes, which are filled by callers).
+// MyVotes returns the given member's ballot choice per motion for a meeting,
+// so the UI can show a voter what they already chose.
+func (r *GovernanceRepo) MyVotes(ctx context.Context, meetingID, memberID string) (map[string]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT v.motion_id::text, v.choice
+		FROM motion_votes v
+		JOIN motions mo ON mo.id = v.motion_id
+		WHERE mo.meeting_id = $1::uuid AND v.member_id = $2::uuid`, meetingID, memberID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var motionID, choice string
+		if err := rows.Scan(&motionID, &choice); err != nil {
+			return nil, err
+		}
+		out[motionID] = choice
+	}
+	return out, rows.Err()
+}
+
+// NoteMinutes appends a system-written journal line (best-effort caller side:
+// once the minutes are finalized the database trigger refuses the insert, and
+// that refusal is the correct outcome — the record is closed).
+func (r *GovernanceRepo) NoteMinutes(ctx context.Context, meetingID, body string, motionID *string, recordedBy string) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO meeting_minutes_entries (meeting_id, kind, body, motion_id, recorded_by)
+		VALUES ($1::uuid, 'note', $2, $3::uuid, $4::uuid)`,
+		meetingID, body, motionID, recordedBy)
+	return err
+}
+
+// RecordMotionOutcome writes the paper trail for a decided motion: a meeting
+// decision-log row linked back to the motion (inserted at most once per
+// motion), a minutes journal line, and — when the motion is tied to a plan
+// and carried — that plan's decision log. Each write is independent and the
+// caller treats failures as best-effort: a closed motion stands regardless.
+func (r *GovernanceRepo) RecordMotionOutcome(ctx context.Context, m *model.Motion, final string, actorUserID string) error {
+	outcome := "failed"
+	if final == "carried" {
+		outcome = "passed"
+	}
+	var firstErr error
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO meeting_decisions (meeting_id, summary, detail, outcome, vote_for, vote_against, vote_abstain, motion_id)
+		SELECT $1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid
+		WHERE NOT EXISTS (SELECT 1 FROM meeting_decisions WHERE motion_id = $8::uuid)`,
+		m.MeetingID, m.Title, m.Detail, outcome,
+		m.Tally.For, m.Tally.Against, m.Tally.Abstain, m.ID)
+	if err != nil {
+		firstErr = err
+	}
+	body := fmt.Sprintf("Motion %q %s %d–%d–%d (%s required).",
+		m.Title, final, m.Tally.For, m.Tally.Against, m.Tally.Abstain, m.Threshold)
+	if err := r.NoteMinutes(ctx, m.MeetingID, body, &m.ID, actorUserID); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if m.PlanID != nil && final == "carried" {
+		rationale := fmt.Sprintf("Motion carried %d–%d–%d in the meeting record.",
+			m.Tally.For, m.Tally.Against, m.Tally.Abstain)
+		if _, err := r.db.Exec(ctx, `
+			INSERT INTO plan_decisions (plan_id, summary, rationale, decided_by)
+			VALUES ($1::uuid, $2, $3, $4::uuid)`,
+			*m.PlanID, "Approved: "+m.Title, rationale, actorUserID); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func scanMotion(row scannable) (model.Motion, error) {
 	var m model.Motion
 	err := row.Scan(&m.ID, &m.MeetingID, &m.Title, &m.Detail,
 		&m.MoverID, &m.MoverName, &m.SeconderID, &m.SeconderName,
-		&m.Threshold, &m.Business, &m.Status, &m.CreatedBy,
+		&m.Threshold, &m.Business, &m.Status, &m.PlanID, &m.PlanTitle,
+		&m.CreatedBy,
 		&m.OpenedAt, &m.ClosedAt, &m.CreatedAt, &m.UpdatedAt)
 	return m, err
 }

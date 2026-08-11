@@ -255,7 +255,7 @@ func (r *MeetingsRepo) SetAttendees(ctx context.Context, meetingID string, atten
 func (r *MeetingsRepo) GetDecisions(ctx context.Context, meetingID string) ([]model.MeetingDecision, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, meeting_id::text, summary, detail,
-		       vote_for, vote_against, vote_abstain, outcome, recorded_at
+		       vote_for, vote_against, vote_abstain, outcome, motion_id::text, recorded_at
 		FROM meeting_decisions WHERE meeting_id = $1::uuid
 		ORDER BY recorded_at`, meetingID)
 	if err != nil {
@@ -267,7 +267,7 @@ func (r *MeetingsRepo) GetDecisions(ctx context.Context, meetingID string) ([]mo
 	for rows.Next() {
 		var d model.MeetingDecision
 		if err := rows.Scan(&d.ID, &d.MeetingID, &d.Summary, &d.Detail,
-			&d.VoteFor, &d.VoteAgainst, &d.VoteAbstain, &d.Outcome, &d.RecordedAt); err != nil {
+			&d.VoteFor, &d.VoteAgainst, &d.VoteAbstain, &d.Outcome, &d.MotionID, &d.RecordedAt); err != nil {
 			return nil, err
 		}
 		decisions = append(decisions, d)

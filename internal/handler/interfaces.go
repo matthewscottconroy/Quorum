@@ -195,11 +195,14 @@ type governanceRepo interface {
 	ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error)
 	GetMotion(ctx context.Context, id string) (*model.Motion, error)
 	CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
-	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error)
+	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error)
 	SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
 	DeleteMotion(ctx context.Context, id string) error
 	MotionStatus(ctx context.Context, id string) (status, meetingID string, err error)
 	CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error
+	MyVotes(ctx context.Context, meetingID, memberID string) (map[string]string, error)
+	NoteMinutes(ctx context.Context, meetingID, body string, motionID *string, recordedBy string) error
+	RecordMotionOutcome(ctx context.Context, m *model.Motion, final string, actorUserID string) error
 	MemberIsActive(ctx context.Context, memberID string) (bool, error)
 	GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error)
 	ListProxies(ctx context.Context, meetingID string) ([]model.MeetingProxy, error)

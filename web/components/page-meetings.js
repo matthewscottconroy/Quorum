@@ -24,6 +24,11 @@ class PageMeetings extends HTMLElement {
   connectedCallback() {
     this.render();
     this.load();
+    // Deep link: #/meetings?open=<id> lands straight in that meeting's
+    // editor — where ballot and decision notifications point.
+    const q = (location.hash.split('?')[1] ?? '');
+    const openID = new URLSearchParams(q).get('open');
+    if (openID) setTimeout(() => { if (this.isConnected) this.openEditor(openID); }, 50);
   }
 
   /** Renders the static page shell once; load() only touches #meeting-list. */
@@ -191,14 +196,15 @@ class PageMeetings extends HTMLElement {
             </div>
             <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" value="${esc(mt.location??'')}"></div>
             <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="5">${esc(mt.agenda??'')}</textarea></div>
-            <div class="form-group"><label for="f-notes">Minutes / notes</label><textarea id="f-notes" rows="7">${esc(mt.notes??'')}</textarea></div>
+            <div class="form-group"><label for="f-notes">Prep notes (informal — the journal below is the official minutes)</label><textarea id="f-notes" rows="7">${esc(mt.notes??'')}</textarea></div>
           </div>
           <div>
-            <h3 style="margin-bottom:.75rem;font-size:.95rem">Decisions</h3>
+            <h3 style="margin-bottom:.25rem;font-size:.95rem">Decisions</h3>
+            <p style="font-size:.75rem;color:var(--color-text-muted);margin-bottom:.5rem">Decided motions land here automatically. Add entries by hand only for quick decisions made without a formal vote.</p>
             <div id="decisions-list"></div>
             ${canWrite()?`
               <div style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.75rem;margin-top:.5rem">
-                <div class="form-group"><label for="new-decision">Decision summary</label><input id="new-decision" placeholder="What was decided?"></div>
+                <div class="form-group"><label for="new-decision">Quick decision (no formal motion)</label><input id="new-decision" placeholder="What was decided?"></div>
                 <div class="form-row">
                   <div class="form-group"><label for="new-outcome">Outcome</label>
                     <select id="new-outcome">
@@ -238,7 +244,8 @@ class PageMeetings extends HTMLElement {
       const listEl = dialog.querySelector('#decisions-list');
       listEl.innerHTML = (decisions ?? []).map(d => `
         <div class="decision-item" style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.65rem .8rem;margin-bottom:.5rem">
-          <div style="font-weight:600">${esc(d.summary)}</div>
+          <div style="font-weight:600">${esc(d.summary)}
+            ${d.motion_id ? '<span class="badge" style="background:var(--color-bg);color:var(--color-text-muted);font-size:.62rem" title="Written automatically when the motion was decided — the tally is the official count">from motion</span>' : ''}</div>
           <div style="font-size:.8rem;color:var(--color-text-muted)">${esc(d.outcome)} ${d.vote_for!=null?`· ${esc(d.vote_for)}/${esc(d.vote_against)}/${esc(d.vote_abstain)}`:''}</div>
           ${canWrite()?`<button class="btn-ghost del-decision" data-id="${esc(d.id)}" style="font-size:.75rem;color:var(--color-danger)">Remove</button>`:''}
         </div>`).join('');
@@ -266,6 +273,12 @@ class PageMeetings extends HTMLElement {
     this.renderAttendance(dialog, id, mt);
     this.renderGovernance(dialog, id);
     this.renderMinutes(dialog, id, mt);
+    // Deciding a motion writes the decision log and the minutes journal on
+    // the server — those panels must follow along, not wait for a reopen.
+    dialog.addEventListener('gov-changed', () => {
+      refreshDecisions();
+      this.renderMinutes(dialog, id, mt);
+    });
 
     // Reload the list whenever the editor closes (close button, Cancel, or Escape),
     // but only while still mounted and authenticated so a logout-triggered close
@@ -509,20 +522,27 @@ class PageMeetings extends HTMLElement {
     const myMember = currentMemberId();
 
     const reload = async () => {
-      let quorum, motions, proxies, members = [];
+      let quorum, motions, proxies, members = [], plans = [];
       try {
         [quorum, motions, proxies] = await Promise.all([
           api('GET', `/meetings/${meetingId}/quorum`),
           api('GET', `/meetings/${meetingId}/motions`),
           api('GET', `/meetings/${meetingId}/proxies`),
         ]);
-        if (officer) { const mp = await api('GET', '/members?limit=200'); members = mp?.data ?? mp ?? []; }
+        if (officer) {
+          const mp = await api('GET', '/members?limit=500&status=active');
+          members = mp?.data ?? mp ?? [];
+          try {
+            const pp = await api('GET', '/plans?limit=100');
+            plans = (pp?.data ?? pp ?? []).filter(p => p.status === 'draft' || p.status === 'active');
+          } catch { /* plan linking stays optional */ }
+        }
       } catch {
         host.innerHTML = '<p class="empty-state">Failed to load governance data.</p>';
         return;
       }
       if (!dialog.isConnected) return;
-      host.innerHTML = this.govMarkup(quorum, motions, proxies, members, officer, myMember);
+      host.innerHTML = this.govMarkup(quorum, motions, proxies, members, plans, officer, myMember);
     };
     // Attach the delegated click handler ONCE — reload() only swaps innerHTML,
     // so re-wiring on every reload would stack duplicate listeners.
@@ -530,9 +550,21 @@ class PageMeetings extends HTMLElement {
     await reload();
   }
 
-  govMarkup(quorum, motions, proxies, members, officer, myMember) {
-    const memberOpts = ph => `<option value="">${ph}</option>` +
-      members.map(m => `<option value="${esc(m.id)}">${esc(m.display_name)}</option>`).join('');
+  govMarkup(quorum, motions, proxies, members, plans, officer, myMember) {
+    const memberOpts = (ph, excludeId) => `<option value="">${ph}</option>` +
+      members.filter(m => m.id !== excludeId)
+        .map(m => `<option value="${esc(m.id)}">${esc(m.display_name)}</option>`).join('');
+
+    // A four-step map of the Robert's Rules lifecycle, so nobody has to
+    // already know the ritual to run it.
+    const stepper = status => {
+      const terminal = ['carried','failed','tabled','withdrawn'].includes(status);
+      const at = terminal ? 3 : { draft: 0, seconded: 1, open: 2 }[status] ?? 0;
+      return `<div style="display:flex;gap:.3rem;font-size:.62rem;letter-spacing:.05em;color:var(--color-text-muted);margin-top:.35rem" aria-label="Motion lifecycle, step ${at + 1} of 4">
+        ${['MOVED','SECONDED','VOTING','DECIDED'].map((s, i) => `
+          <span style="padding:.08rem .4rem;border-radius:99px;border:1px solid ${i === at ? 'var(--color-primary)' : 'var(--color-border)'};${i === at ? 'color:var(--color-primary);font-weight:700' : ''}${i < at ? 'opacity:.75' : ''}">${i < at ? '✓ ' : ''}${s}</span>`).join('')}
+      </div>`;
+    };
 
     const pct = quorum.required ? Math.min(100, (quorum.effective_present / quorum.required) * 100) : 100;
     const meterColor = quorum.met ? 'var(--color-success)' : 'var(--color-warning)';
@@ -551,32 +583,42 @@ class PageMeetings extends HTMLElement {
       </div>`;
 
     const motionCards = (motions ?? []).map(m => {
-      const tally = m.tally ?? { for: 0, against: 0, abstain: 0 };
+      const tally = m.tally ?? { for: 0, against: 0, abstain: 0, total: 0, carried: false };
       const terminal = ['carried','failed','tabled','withdrawn'].includes(m.status);
+      const shelve = `
+        <button class="btn-ghost gov-act" data-act="table" style="font-size:.78rem" title="Set the motion aside without deciding it">Table</button>
+        <button class="btn-ghost gov-act" data-act="withdraw" style="font-size:.78rem" title="The mover takes it back — closed without a decision">Withdraw</button>`;
       let controls = '';
       if (m.status === 'draft' && officer) {
         controls = `
           <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem">
-            <select class="second-sel" style="flex:1;min-width:140px;padding:.25rem .4rem;font-size:.8rem">${memberOpts('Seconded by…')}</select>
+            <select class="second-sel" style="flex:1;min-width:140px;padding:.25rem .4rem;font-size:.8rem">${memberOpts('Seconded by…', m.mover_id)}</select>
             <button class="btn-secondary gov-act" data-act="second" style="font-size:.78rem;padding:.25rem .7rem">Record second</button>
+            ${shelve}
             <button class="btn-ghost gov-act" data-act="delete" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
           </div>`;
       } else if (m.status === 'seconded' && officer) {
         controls = `
-          <div style="display:flex;gap:.4rem;margin-top:.5rem">
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem">
             <button class="btn-primary gov-act" data-act="open" style="font-size:.78rem;padding:.25rem .8rem">Open voting</button>
+            ${shelve}
             <button class="btn-ghost gov-act" data-act="delete" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
           </div>`;
       } else if (m.status === 'open') {
+        // The buttons remember your ballot — voting again just changes it.
+        const mineBtn = (val, label) => `<button class="btn-secondary gov-act" data-act="vote" data-choice="${val}"
+            style="font-size:.78rem;flex:1;${m.my_vote === val ? 'background:var(--color-primary);color:#fff' : ''}">${label}</button>`;
         const selfVote = myMember ? `
           <div style="margin-top:.5rem">
-            <div style="font-size:.75rem;color:var(--color-text-muted);margin-bottom:.25rem">Your vote:</div>
+            <div style="font-size:.75rem;color:var(--color-text-muted);margin-bottom:.25rem">Your vote${m.my_vote ? `: <strong>${esc(m.my_vote)}</strong> (tap another to change it)` : ':'}</div>
             <div style="display:flex;gap:.4rem">
-              <button class="btn-secondary gov-act" data-act="vote" data-choice="for" style="font-size:.78rem;flex:1">✓ For</button>
-              <button class="btn-secondary gov-act" data-act="vote" data-choice="against" style="font-size:.78rem;flex:1">✗ Against</button>
-              <button class="btn-secondary gov-act" data-act="vote" data-choice="abstain" style="font-size:.78rem;flex:1">– Abstain</button>
+              ${mineBtn('for', '✓ For')}${mineBtn('against', '✗ Against')}${mineBtn('abstain', '– Abstain')}
             </div>
           </div>` : '';
+        const participation = `
+          <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.4rem">
+            ${tally.total} of ${quorum.active_members} active member${quorum.active_members === 1 ? '' : 's'} ${tally.total === 1 ? 'has' : 'have'} voted.
+          </div>`;
         const officerTally = officer ? `
           <div style="margin-top:.5rem;border-top:1px dashed var(--color-border);padding-top:.5rem">
             <div style="font-size:.75rem;color:var(--color-text-muted);margin-bottom:.25rem">Record a ballot on behalf of a member:</div>
@@ -587,30 +629,40 @@ class PageMeetings extends HTMLElement {
               <button class="btn-ghost gov-act" data-act="record" data-choice="against" style="font-size:.78rem;color:var(--color-danger)">Against</button>
               <button class="btn-ghost gov-act" data-act="record" data-choice="abstain" style="font-size:.78rem">Abstain</button>
             </div>
-            <div style="display:flex;gap:.4rem;margin-top:.5rem">
+            <div style="font-size:.75rem;margin-top:.5rem;color:${tally.carried ? 'var(--color-success)' : 'var(--color-danger)'}">
+              Closing now would record this motion as <strong>${tally.carried ? 'CARRIED' : 'FAILED'}</strong>
+              (${tally.for}–${tally.against}–${tally.abstain}, ${THRESHOLD_LABEL[m.threshold] || esc(m.threshold)}).
+            </div>
+            <div style="display:flex;gap:.4rem;margin-top:.4rem;flex-wrap:wrap">
               <button class="btn-primary gov-act" data-act="close" style="font-size:.78rem">Close &amp; decide</button>
               <button class="btn-secondary gov-act" data-act="ballots" style="font-size:.78rem" title="Email a single-use ballot link to members who haven't voted">Email ballots</button>
+              ${shelve}
             </div>
           </div>` : '';
-        controls = selfVote + officerTally;
+        controls = selfVote + participation + officerTally;
       } else if (terminal) {
         const label = { carried: 'Carried ✓', failed: 'Failed ✗', tabled: 'Tabled', withdrawn: 'Withdrawn' }[m.status];
-        controls = `<div style="margin-top:.4rem;font-size:.82rem;font-weight:600;color:${m.status==='carried'?'var(--color-success)':m.status==='failed'?'var(--color-danger)':'var(--color-text-muted)'}">${label}</div>`;
+        controls = `
+          <div style="display:flex;gap:.6rem;align-items:center;margin-top:.4rem">
+            <span style="font-size:.82rem;font-weight:600;color:${m.status==='carried'?'var(--color-success)':m.status==='failed'?'var(--color-danger)':'var(--color-text-muted)'}">${label}</span>
+            ${m.status === 'carried' && officer ? `<button class="btn-secondary gov-act" data-act="mkaction" style="font-size:.75rem" title="Create a Board card so the carried motion becomes work someone owns">→ Action item</button>` : ''}
+          </div>`;
       }
       return `
-        <div class="motion-card" data-id="${esc(m.id)}" style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.75rem .9rem;margin-bottom:.6rem">
+        <div class="motion-card" data-id="${esc(m.id)}" data-title="${esc(m.title)}" style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.75rem .9rem;margin-bottom:.6rem">
           <div style="display:flex;justify-content:space-between;gap:.5rem;align-items:flex-start">
             <div style="flex:1">
               <div style="font-weight:600">${esc(m.title)}</div>
               <div style="font-size:.76rem;color:var(--color-text-muted)">
-                ${m.mover_name ? 'Moved by ' + esc(m.mover_name) : 'No mover'}${m.seconder_name ? ' · seconded by ' + esc(m.seconder_name) : ''} · ${THRESHOLD_LABEL[m.threshold] || esc(m.threshold)}
+                ${m.mover_name ? 'Moved by ' + esc(m.mover_name) : 'No mover'}${m.seconder_name ? ' · seconded by ' + esc(m.seconder_name) : ''} · ${THRESHOLD_LABEL[m.threshold] || esc(m.threshold)}${m.plan_title ? ' · plan: ' + esc(m.plan_title) : ''}
               </div>
+              ${stepper(m.status)}
             </div>
             ${m.business === 'old' ? '<span class="badge" style="background:var(--color-bg);color:var(--color-text-muted)">old business</span>' : ''}
             <span class="badge badge-${MOTION_BADGE[m.status] || 'none'}">${esc(m.status)}</span>
           </div>
           ${m.detail ? `<div style="font-size:.82rem;margin:.4rem 0">${esc(m.detail)}</div>` : ''}
-          <div style="margin:.5rem 0"><vote-tally for="${tally.for}" against="${tally.against}" abstain="${tally.abstain}"></vote-tally></div>
+          <div style="margin:.5rem 0"><vote-tally for="${tally.for}" against="${tally.against}" abstain="${tally.abstain}" threshold="${esc(m.threshold)}"></vote-tally></div>
           ${(m.recusals?.length) ? `<div style="font-size:.75rem;color:var(--color-text-muted);margin:.25rem 0">Recused: ${m.recusals.map(x => esc(x.member_name)).join(', ')}</div>` : ''}
           ${myMember && !terminal ? `<button class="btn-ghost gov-act" data-act="recuse" style="font-size:.75rem">Recuse myself</button>` : ''}
           ${controls}
@@ -632,9 +684,22 @@ class PageMeetings extends HTMLElement {
             <option value="new">New business</option>
             <option value="old">Old business</option>
           </select>
+          ${plans.length ? `
+          <select id="nm-plan" style="padding:.3rem .4rem;font-size:.85rem" title="A carried motion writes the linked plan's decision log automatically">
+            <option value="">— no plan —</option>
+            ${plans.map(p => `<option value="${esc(p.id)}">${esc(p.title)}</option>`).join('')}
+          </select>` : ''}
           <button class="btn-primary gov-act" data-act="create" style="font-size:.82rem">Add motion</button>
         </div>
-      </div>` : '';
+      </div>` : (myMember ? `
+      <div style="border:1px dashed var(--color-border);border-radius:var(--radius);padding:.75rem;margin-top:.5rem">
+        <div class="form-group"><label for="pm-title">Propose a motion</label>
+          <input id="pm-title" placeholder="What do you move? It arrives as a draft for the chair to take up."></div>
+        <div style="display:flex;gap:.4rem">
+          <input id="pm-detail" placeholder="Context (optional)" style="flex:1;padding:.3rem .4rem;font-size:.85rem">
+          <button class="btn-secondary gov-act" data-act="propose" style="font-size:.82rem">Propose</button>
+        </div>
+      </div>` : '');
 
     const proxyBlock = officer ? `
       <details style="margin-top:1rem">
@@ -709,14 +774,16 @@ class PageMeetings extends HTMLElement {
       </div>
       <div id="min-list" style="margin-top:.75rem">
         ${entries.length ? entries.map(e => `
-          <div style="display:flex;gap:.6rem;align-items:flex-start;padding:.45rem 0;border-bottom:1px solid var(--color-border,#eee)" data-eid="${esc(e.id)}">
+          <div class="min-entry" style="display:flex;gap:.6rem;align-items:flex-start;padding:.45rem 0;border-bottom:1px solid var(--color-border,#eee)" data-eid="${esc(e.id)}" data-kind="${esc(e.kind)}">
             <span class="badge" style="background:var(--color-bg);color:var(--color-text-muted);white-space:nowrap">${esc(kindLabel(e.kind))}</span>
             <div style="flex:1;font-size:.88rem">
-              ${esc(e.body)}
+              <span class="min-body-text">${esc(e.body)}</span>
               ${e.motion_title ? `<div style="font-size:.75rem;color:var(--color-text-muted)">re: motion “${esc(e.motion_title)}”</div>` : ''}
               <div style="font-size:.72rem;color:var(--color-text-muted)">${esc(fmtDateTime(e.recorded_at))}${e.recorded_by_name ? ' · ' + esc(e.recorded_by_name) : ''}</div>
             </div>
-            ${canEdit ? `<button class="btn-ghost min-del" data-eid="${esc(e.id)}" style="font-size:.75rem;color:var(--color-danger)">Remove</button>` : ''}
+            ${canEdit ? `
+              <button class="btn-ghost min-edit" data-eid="${esc(e.id)}" style="font-size:.75rem">Edit</button>
+              <button class="btn-ghost min-del" data-eid="${esc(e.id)}" style="font-size:.75rem;color:var(--color-danger)">Remove</button>` : ''}
           </div>`).join('')
         : '<p style="font-size:.85rem;color:var(--color-text-muted)">No journal entries yet.</p>'}
       </div>
@@ -764,6 +831,43 @@ class PageMeetings extends HTMLElement {
         } catch (err) { toast(err.error ?? 'Failed to remove', 'error'); }
       });
     });
+    // Edit in place: live minute-taking is typo territory, and remove-and-
+    // retype was the only correction tool the journal offered.
+    host.querySelectorAll('.min-edit').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('.min-entry');
+        if (row.querySelector('.min-editing')) return;
+        const entry = entries.find(x => x.id === row.dataset.eid);
+        const bodyEl = row.querySelector('.min-body-text');
+        bodyEl.innerHTML = `
+          <span class="min-editing" style="display:flex;flex-direction:column;gap:.35rem">
+            <span style="display:flex;gap:.4rem">
+              <select class="mine-kind" style="padding:.2rem .3rem;font-size:.8rem">
+                ${KINDS.map(([v,l]) => `<option value="${v}" ${entry?.kind === v ? 'selected' : ''}>${l}</option>`).join('')}
+              </select>
+            </span>
+            <textarea class="mine-body" rows="2" style="width:100%;font-size:.85rem">${esc(entry?.body ?? '')}</textarea>
+            <span style="display:flex;gap:.4rem">
+              <button class="btn-primary mine-save" style="font-size:.75rem">Save</button>
+              <button class="btn-secondary mine-cancel" style="font-size:.75rem">Cancel</button>
+            </span>
+          </span>`;
+        bodyEl.querySelector('.mine-cancel').addEventListener('click', () => reload());
+        const save = bodyEl.querySelector('.mine-save');
+        save.addEventListener('click', guardButton(save, async () => {
+          const text = bodyEl.querySelector('.mine-body').value.trim();
+          if (!text) { toast('Entry text is required', 'error'); return; }
+          try {
+            await api('PATCH', `/meetings/${meetingId}/minutes/${row.dataset.eid}`, {
+              kind: bodyEl.querySelector('.mine-kind').value,
+              body: text,
+              motion_id: entry?.motion_id ?? null,
+            });
+            await reload();
+          } catch (err) { toast(err.error ?? 'Failed to save', 'error'); }
+        }));
+      });
+    });
     host.querySelector('#min-finalize')?.addEventListener('click', () => {
       confirmDelete({
         noun: 'minutes (finalize — this is permanent)',
@@ -798,8 +902,23 @@ class PageMeetings extends HTMLElement {
             mover_id: mover || null,
             threshold: host.querySelector('#nm-threshold').value,
             business: host.querySelector('#nm-business').value,
+            plan_id: host.querySelector('#nm-plan')?.value || null,
           });
           toast('Motion added','success');
+        } else if (act === 'propose') {
+          const title = host.querySelector('#pm-title').value.trim();
+          if (!title) { toast('Say what you move','error'); return; }
+          await api('POST', `/meetings/${meetingId}/motions`, {
+            title,
+            detail: host.querySelector('#pm-detail').value.trim() || null,
+          });
+          toast('Proposed — it arrives as a draft for the chair','success');
+        } else if (act === 'table' || act === 'withdraw') {
+          await api('POST', `/motions/${motionId}/close`, { status: act === 'table' ? 'tabled' : 'withdrawn' });
+          toast(act === 'table' ? 'Motion tabled' : 'Motion withdrawn','success');
+        } else if (act === 'mkaction') {
+          this.openActionItemModal(card?.dataset.title ?? 'Carried motion', meetingId, reload);
+          return; // the modal reloads on save
         } else if (act === 'second') {
           const sec = card.querySelector('.second-sel').value;
           if (!sec) { toast('Choose who seconded','error'); return; }
@@ -836,15 +955,83 @@ class PageMeetings extends HTMLElement {
           await api('DELETE', `/proxies/${btn.dataset.proxy}`);
           toast('Proxy removed','success');
         } else if (act === 'recuse') {
-          const reason = (prompt('Reason for recusing (optional, recorded in the minutes):') ?? '').trim();
-          await api('POST', `/recusals/${motionId}`, { type: 'motion', reason });
-          toast('Recusal recorded','success');
+          this.openRecuseModal(motionId, reload);
+          return; // the modal reloads on save
         }
         await reload();
+        // Motion lifecycle actions write the decision log and the minutes
+        // journal server-side; tell the editor's other panels to catch up.
+        if (['open','close','table','withdraw'].includes(act)) {
+          host.dispatchEvent(new CustomEvent('gov-changed', { bubbles: true }));
+        }
       } catch (err) {
         toast(err.error ?? 'Action failed','error');
       }
     });
+  }
+
+  /** Conflict-of-interest recusal, with the reason captured in a real modal
+   *  (the old prompt() was the only raw browser dialog left in governance). */
+  openRecuseModal(motionId, reload) {
+    const { dialog, close } = openModal({
+      title: 'Recuse myself',
+      maxWidth: '420px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted)">You'll sit this motion out. The recusal (and reason, if given) is recorded with the motion.</p>
+          <div class="form-group"><label for="rc-reason">Reason (optional)</label><input id="rc-reason" placeholder="e.g. the contract is with my employer"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="rc-cancel">Cancel</button>
+          <button class="btn-primary" id="rc-save">Recuse me</button>
+        </div>`,
+    });
+    dialog.querySelector('#rc-cancel').addEventListener('click', close);
+    const saveBtn = dialog.querySelector('#rc-save');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      try {
+        await api('POST', `/recusals/${motionId}`, { type: 'motion', reason: dialog.querySelector('#rc-reason').value.trim() });
+        toast('Recusal recorded','success');
+        close();
+        await reload();
+      } catch (err) { toast(err.error ?? 'Failed','error'); }
+    }));
+  }
+
+  /** A carried motion becomes work someone owns: spins up a Board card
+   *  pre-linked to this meeting, title editable before it lands. */
+  openActionItemModal(motionTitle, meetingId, reload) {
+    const { dialog, close } = openModal({
+      title: 'Create action item',
+      maxWidth: '460px',
+      body: `
+        <div class="modal-body">
+          <div class="form-group"><label for="ai-title">Title</label><input id="ai-title" value="${esc(motionTitle)}"></div>
+          <div class="form-group"><label for="ai-due">Due date (optional)</label><input id="ai-due" type="date"></div>
+          <p style="font-size:.78rem;color:var(--color-text-muted)">The card lands on the Board, linked to this meeting — assign and schedule it there.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" id="ai-cancel">Cancel</button>
+          <button class="btn-primary" id="ai-save">Create card</button>
+        </div>`,
+    });
+    dialog.querySelector('#ai-cancel').addEventListener('click', close);
+    const saveBtn = dialog.querySelector('#ai-save');
+    saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
+      const title = dialog.querySelector('#ai-title').value.trim();
+      if (!title) { toast('Title required','error'); return; }
+      try {
+        await api('POST', '/action-items', {
+          title,
+          description: 'From a motion carried in the meeting record.',
+          meeting_id: meetingId,
+          due_date: dialog.querySelector('#ai-due').value || null,
+        });
+        toast('Action item created — find it on the Board','success');
+        close();
+        await reload();
+      } catch (err) { toast(err.error ?? 'Failed','error'); }
+    }));
   }
 }
 customElements.define('page-meetings', PageMeetings);

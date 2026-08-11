@@ -143,6 +143,17 @@ func (h *GovernanceHandler) ListMotions(w http.ResponseWriter, r *http.Request) 
 	if motions == nil {
 		motions = []model.Motion{}
 	}
+	// Show each voter their own ballot: the buttons should remember.
+	if memberID := memberIDFromCtx(r); memberID != "" && len(motions) > 0 {
+		if mine, err := h.repo.MyVotes(r.Context(), id, memberID); err == nil {
+			for i := range motions {
+				if choice, ok := mine[motions[i].ID]; ok {
+					c := choice
+					motions[i].MyVote = &c
+				}
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, motions)
 }
 
@@ -173,6 +184,7 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		SeconderID *string `json:"seconder_id"`
 		Threshold  string  `json:"threshold"`
 		Business   string  `json:"business"`
+		PlanID     *string `json:"plan_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
@@ -194,8 +206,8 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
 		return
 	}
-	if !validOptionalUUID(body.MoverID) || !validOptionalUUID(body.SeconderID) {
-		writeError(w, http.StatusBadRequest, "mover_id/seconder_id must be UUIDs", "bad_request")
+	if !validOptionalUUID(body.MoverID) || !validOptionalUUID(body.SeconderID) || !validOptionalUUID(body.PlanID) {
+		writeError(w, http.StatusBadRequest, "mover_id/seconder_id/plan_id must be UUIDs", "bad_request")
 		return
 	}
 	if body.Business == "" {
@@ -204,6 +216,19 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 	if body.Business != "new" && body.Business != "old" {
 		writeError(w, http.StatusBadRequest, "business must be new or old", "bad_request")
 		return
+	}
+	// Members may PROPOSE: the motion arrives as their own draft for the
+	// chair to take up. Only officers name movers, seconders, or a starting
+	// status — proposals always enter the queue as drafts moved by yourself.
+	if !roleAtLeast(roleFromCtx(r), "officer") {
+		memberID := memberIDFromCtx(r)
+		if memberID == "" {
+			writeError(w, http.StatusForbidden,
+				"link your login to a member record to propose a motion", "forbidden")
+			return
+		}
+		body.MoverID = &memberID
+		body.SeconderID = nil
 	}
 	status := "draft"
 	if body.SeconderID != nil {
@@ -217,6 +242,7 @@ func (h *GovernanceHandler) CreateMotion(w http.ResponseWriter, r *http.Request)
 		SeconderID: body.SeconderID,
 		Threshold:  body.Threshold,
 		Business:   body.Business,
+		PlanID:     body.PlanID,
 		Status:     status,
 	}, userIDFromCtx(r))
 	if err != nil {
@@ -252,6 +278,7 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		SeconderID *string `json:"seconder_id"`
 		Threshold  *string `json:"threshold"`
 		Business   *string `json:"business"`
+		PlanID     *string `json:"plan_id"` // "" clears the link
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
@@ -277,7 +304,11 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "business must be new or old", "bad_request")
 		return
 	}
-	m, err := h.repo.UpdateMotion(r.Context(), id, body.Title, body.Detail, body.MoverID, body.SeconderID, body.Threshold, body.Business)
+	if body.PlanID != nil && *body.PlanID != "" && !isValidUUID(*body.PlanID) {
+		writeError(w, http.StatusBadRequest, "plan_id must be a UUID or empty", "bad_request")
+		return
+	}
+	m, err := h.repo.UpdateMotion(r.Context(), id, body.Title, body.Detail, body.MoverID, body.SeconderID, body.Threshold, body.Business, body.PlanID)
 	if err != nil {
 		if isFKViolation(err) {
 			writeError(w, http.StatusBadRequest, "mover or seconder does not exist", "bad_request")
@@ -362,7 +393,11 @@ func (h *GovernanceHandler) OpenMotion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
 	}
-	link := "#/meetings"
+	// The secretary shouldn't have to journal what the system just watched
+	// happen. Best-effort: finalized minutes refuse the line, and rightly so.
+	_ = h.repo.NoteMinutes(r.Context(), out.MeetingID,
+		fmt.Sprintf("Voting opened on %q.", out.Title), &out.ID, userIDFromCtx(r))
+	link := "#/meetings?open=" + out.MeetingID
 	body := "Voting is now open. Cast your ballot in Quorum."
 	h.notify("motion.opened", "Motion open for voting: "+out.Title, &body, &link)
 	writeJSON(w, http.StatusOK, out)
@@ -416,10 +451,21 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
 	}
-	// Notify members only of an actual decision, not a table/withdraw.
 	if final == "carried" || final == "failed" {
-		link := "#/meetings"
+		// The paper trail writes itself: the meeting's decision log (linked
+		// back to this motion, at most once), a minutes journal line, and a
+		// carried motion's plan decision. Best-effort by design — the decided
+		// motion stands even if a side record is refused (e.g. finalized
+		// minutes), so surface trouble in the audit detail instead of a 500.
+		m.Status = final
+		if err := h.repo.RecordMotionOutcome(r.Context(), m, final, userIDFromCtx(r)); err != nil {
+			setAuditDetail(r, map[string]any{"outcome_records": "partial: " + err.Error()})
+		}
+		link := "#/meetings?open=" + out.MeetingID
 		h.notify("motion."+final, "Motion "+final+": "+out.Title, nil, &link)
+	} else {
+		_ = h.repo.NoteMinutes(r.Context(), out.MeetingID,
+			fmt.Sprintf("Motion %q %s.", out.Title, final), &out.ID, userIDFromCtx(r))
 	}
 	writeJSON(w, http.StatusOK, out)
 }

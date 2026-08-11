@@ -119,15 +119,18 @@ type MeetingAttendee struct {
 // MeetingDecision records a formal decision made during a meeting, including vote counts.
 // Outcome values: "passed", "failed", "tabled", "noted".
 type MeetingDecision struct {
-	ID          string    `json:"id"`
-	MeetingID   string    `json:"meeting_id"`
-	Summary     string    `json:"summary"`
-	Detail      *string   `json:"detail,omitempty"`
-	VoteFor     *int      `json:"vote_for,omitempty"`
-	VoteAgainst *int      `json:"vote_against,omitempty"`
-	VoteAbstain *int      `json:"vote_abstain,omitempty"`
-	Outcome     string    `json:"outcome"`
-	RecordedAt  time.Time `json:"recorded_at"`
+	ID          string  `json:"id"`
+	MeetingID   string  `json:"meeting_id"`
+	Summary     string  `json:"summary"`
+	Detail      *string `json:"detail,omitempty"`
+	VoteFor     *int    `json:"vote_for,omitempty"`
+	VoteAgainst *int    `json:"vote_against,omitempty"`
+	VoteAbstain *int    `json:"vote_abstain,omitempty"`
+	Outcome     string  `json:"outcome"`
+	// MotionID marks a decision that was written automatically when a formal
+	// motion was decided — the log entry's provenance.
+	MotionID   *string   `json:"motion_id,omitempty"`
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 // ActionItem is a task assigned to a member, optionally linked to a meeting or plan.
@@ -206,6 +209,10 @@ type Plan struct {
 	CostCurrency       *string        `json:"cost_currency,omitempty"`
 	Decisions          []PlanDecision `json:"decisions,omitempty"`
 	ActionItems        []ActionItem   `json:"action_items,omitempty"`
+	// Linked-work progress, populated on list and get so the plans page can
+	// show how far along each plan is without loading every card.
+	TotalItems int `json:"total_items"`
+	DoneItems  int `json:"done_items"`
 }
 
 // PlanDecision logs a key decision made in the context of a Plan.
@@ -425,25 +432,32 @@ type QuorumStatus struct {
 // "majority", "two_thirds", or "unanimous". Tally is computed from ballots and
 // populated when a motion is fetched or listed.
 type Motion struct {
-	ID           string       `json:"id"`
-	MeetingID    string       `json:"meeting_id"`
-	Title        string       `json:"title"`
-	Detail       *string      `json:"detail,omitempty"`
-	MoverID      *string      `json:"mover_id,omitempty"`
-	MoverName    *string      `json:"mover_name,omitempty"`
-	SeconderID   *string      `json:"seconder_id,omitempty"`
-	SeconderName *string      `json:"seconder_name,omitempty"`
-	Threshold    string       `json:"threshold"`
-	Business     string       `json:"business"` // "new" or "old" (Robert's Rules agenda split)
-	Status       string       `json:"status"`
-	CreatedBy    *string      `json:"created_by,omitempty"`
-	OpenedAt     *time.Time   `json:"opened_at,omitempty"`
-	ClosedAt     *time.Time   `json:"closed_at,omitempty"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	Tally        MotionTally  `json:"tally"`
-	Votes        []MotionVote `json:"votes,omitempty"`
-	Recusals     []Recusal    `json:"recusals,omitempty"`
+	ID           string  `json:"id"`
+	MeetingID    string  `json:"meeting_id"`
+	Title        string  `json:"title"`
+	Detail       *string `json:"detail,omitempty"`
+	MoverID      *string `json:"mover_id,omitempty"`
+	MoverName    *string `json:"mover_name,omitempty"`
+	SeconderID   *string `json:"seconder_id,omitempty"`
+	SeconderName *string `json:"seconder_name,omitempty"`
+	Threshold    string  `json:"threshold"`
+	Business     string  `json:"business"` // "new" or "old" (Robert's Rules agenda split)
+	Status       string  `json:"status"`
+	// PlanID ties the motion to the plan it affects: a carried motion then
+	// writes that plan's decision log automatically.
+	PlanID    *string `json:"plan_id,omitempty"`
+	PlanTitle *string `json:"plan_title,omitempty"`
+	// MyVote is the requesting member's own ballot ("for"/"against"/
+	// "abstain"), populated on list so the UI can show what you chose.
+	MyVote    *string      `json:"my_vote,omitempty"`
+	CreatedBy *string      `json:"created_by,omitempty"`
+	OpenedAt  *time.Time   `json:"opened_at,omitempty"`
+	ClosedAt  *time.Time   `json:"closed_at,omitempty"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
+	Tally     MotionTally  `json:"tally"`
+	Votes     []MotionVote `json:"votes,omitempty"`
+	Recusals  []Recusal    `json:"recusals,omitempty"`
 }
 
 // MotionTally aggregates the ballots on a motion. Carried is set relative to the

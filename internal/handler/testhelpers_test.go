@@ -634,7 +634,7 @@ func (m *mockGovernanceRepo) GetMotion(ctx context.Context, id string) (*model.M
 func (m *mockGovernanceRepo) CreateMotion(ctx context.Context, mo *model.Motion, createdBy string) (*model.Motion, error) {
 	return m.CreateMotionFn(ctx, mo, createdBy)
 }
-func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business *string) (*model.Motion, error) {
+func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error) {
 	return m.UpdateMotionFn(ctx, id, title, detail, moverID, seconderID, threshold, business)
 }
 func (m *mockGovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
@@ -646,6 +646,18 @@ func (m *mockGovernanceRepo) DeleteMotion(ctx context.Context, id string) error 
 func (m *mockGovernanceRepo) MotionStatus(ctx context.Context, id string) (string, string, error) {
 	return m.MotionStatusFn(ctx, id)
 }
+func (m *mockGovernanceRepo) MyVotes(ctx context.Context, meetingID, memberID string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+func (m *mockGovernanceRepo) NoteMinutes(ctx context.Context, meetingID, body string, motionID *string, recordedBy string) error {
+	return nil
+}
+
+func (m *mockGovernanceRepo) RecordMotionOutcome(ctx context.Context, mo *model.Motion, final string, actorUserID string) error {
+	return nil
+}
+
 func (m *mockGovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error {
 	return m.CastVoteFn(ctx, motionID, memberID, choice, isProxy, castBy)
 }

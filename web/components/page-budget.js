@@ -1,7 +1,15 @@
-import { api } from '../app.js';
+import { api, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney, moneyExponent } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, moneyExponent, confirmDelete } from '../utils.js';
+
+/** A quiet "that stuck" pulse on the element a commit just saved. */
+function flashSaved(el) {
+  if (!el) return;
+  el.style.transition = 'background-color .15s';
+  el.style.backgroundColor = 'color-mix(in srgb, var(--color-success, #137333) 18%, transparent)';
+  setTimeout(() => { el.style.backgroundColor = ''; }, 650);
+}
 
 const STATUSES = ['draft', 'active', 'archived'];
 
@@ -61,7 +69,7 @@ class PageBudget extends HTMLElement {
         <h1>Budget planning</h1>
         <div style="display:flex;gap:.5rem">
           <button class="btn-secondary" id="compare-btn">Compare selected</button>
-          <button class="btn-primary" id="new-btn">+ New scenario</button>
+          ${canWrite() ? '<button class="btn-primary" id="new-btn">+ New scenario</button>' : ''}
         </div>
       </div>
       <p style="font-size:.85rem;color:var(--color-text-muted);margin:-.5rem 0 1rem">
@@ -73,7 +81,7 @@ class PageBudget extends HTMLElement {
         <div id="b-detail"><div class="empty-state" style="padding:2rem"><p>Select a scenario, or create one to begin.</p></div></div>
       </div>
     `;
-    this.querySelector('#new-btn').addEventListener('click', () => this.openCreate());
+    this.querySelector('#new-btn')?.addEventListener('click', () => this.openCreate());
     this.querySelector('#compare-btn').addEventListener('click', () => this.openCompare());
   }
 
@@ -148,7 +156,7 @@ class PageBudget extends HTMLElement {
           <button class="btn-ghost l-up" title="Move up" aria-label="Move line up" style="font-size:.7rem;padding:0 .2rem">▲</button><button class="btn-ghost l-down" title="Move down" aria-label="Move line down" style="font-size:.7rem;padding:0 .2rem">▼</button>
         </td>
         <td><input class="l-label" value="${esc(l.label)}" style="width:100%;padding:.2rem .35rem;font-size:.85rem"></td>
-        <td><input class="l-cat" value="${esc(l.category ?? '')}" placeholder="—" style="width:80px;padding:.2rem .35rem;font-size:.8rem"></td>
+        <td><input class="l-cat" list="cat-options" value="${esc(l.category ?? '')}" placeholder="—" style="width:80px;padding:.2rem .35rem;font-size:.8rem"></td>
         <td><select class="l-acct" title="Link to a GL account for budget-vs-actual" style="width:120px;padding:.2rem;font-size:.75rem">${accountOpts(kind, l.account_id)}</select></td>
         <td><input class="l-qty" type="number" min="0" value="${l.quantity}" style="width:60px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
         <td><input class="l-unit" value="${plainAmount(l.unit_amount_minor, cur)}" style="width:84px;padding:.2rem .35rem;font-size:.85rem;text-align:right"></td>
@@ -165,6 +173,7 @@ class PageBudget extends HTMLElement {
           </tr></thead>
           <tbody data-kind="${kind}">${lineRows(kind)}</tbody>
         </table>
+        <div class="cat-subtotals" data-kind="${kind}" style="font-size:.72rem;color:var(--color-text-muted);margin-top:.25rem"></div>
         <button class="btn-ghost add-line" data-kind="${kind}" style="font-size:.78rem;margin-top:.25rem">+ Add ${kind} line</button>
       </div>`;
 
@@ -189,23 +198,51 @@ class PageBudget extends HTMLElement {
           </div>
         </div>
 
+        ${!(s.lines ?? []).length && canWrite() ? `
+        <div style="border:1px dashed var(--color-border);border-radius:var(--radius);padding:.75rem 1rem;margin-bottom:1rem;display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap">
+          <span style="font-size:.85rem;color:var(--color-text-muted)">This scenario is empty. The fastest start: project dues income straight from your roster.</span>
+          <button class="btn-primary" id="empty-seed-btn" style="font-size:.8rem">Seed dues from roster</button>
+        </div>` : ''}
+
         ${section('income', 'Income', 'var(--color-success)')}
         ${section('expense', 'Expenses', 'var(--color-danger)')}
+        <datalist id="cat-options">
+          ${[...new Set((s.lines ?? []).map(l => l.category).filter(Boolean))].map(c => `<option value="${esc(c)}"></option>`).join('')}
+        </datalist>
 
         <div id="b-totals" style="border-top:2px solid var(--color-border);padding-top:.75rem"></div>
       </div>`;
 
     this.wireDetail(s);
     this.renderTotals(s.currency);
+    // Read-only members see the numbers, not the levers: the server would
+    // refuse the writes anyway, so don't render working-looking controls.
+    if (!canWrite()) {
+      const detail = this.querySelector('#b-detail');
+      detail.querySelectorAll('input, select').forEach(i => { i.disabled = true; });
+      detail.querySelectorAll('.add-line, .l-del, .l-up, .l-down, #seed-btn, #clone-btn, #del-btn').forEach(b => b.remove());
+    }
   }
 
   /** Recomputes and renders the income/expense/net footer from current inputs. */
   renderTotals(currency) {
     let income = 0, expense = 0;
+    const cats = { income: new Map(), expense: new Map() };
     this.querySelectorAll('.b-line').forEach(row => {
       const amt = this.lineAmountMinor(row, currency);
       row.querySelector('.l-amount').textContent = formatMoney(amt, currency);
-      if (row.closest('tbody').dataset.kind === 'income') income += amt; else expense += amt;
+      const kind = row.closest('tbody').dataset.kind;
+      if (kind === 'income') income += amt; else expense += amt;
+      const cat = row.querySelector('.l-cat').value.trim();
+      if (cat) cats[kind].set(cat, (cats[kind].get(cat) ?? 0) + amt);
+    });
+    // Category subtotals appear once a section actually uses categories.
+    this.querySelectorAll('.cat-subtotals').forEach(el => {
+      const m = cats[el.dataset.kind];
+      el.innerHTML = m.size >= 2
+        ? 'By category: ' + [...m.entries()].sort((a, b) => b[1] - a[1])
+            .map(([c, v]) => `<strong>${esc(c)}</strong> ${formatMoney(v, currency)}`).join(' · ')
+        : '';
     });
     const net = income - expense;
     // Proportional income-vs-expense bar (share of the larger of the two).
@@ -341,6 +378,7 @@ class PageBudget extends HTMLElement {
             unit_amount_minor: unitMinor,
             account_id: row.querySelector('.l-acct').value, // '' unlinks
           });
+          flashSaved(row); // edits commit silently otherwise — show they stuck
         } catch (err) { toast(err.error ?? 'Save failed','error'); }
       };
       row.querySelectorAll('input, select').forEach(inp => inp.addEventListener('change', commit));
@@ -387,12 +425,14 @@ class PageBudget extends HTMLElement {
       if (ends) body.ends_on = ends;
       try {
         await api('PATCH', `/budgets/${id}`, body);
+        flashSaved(detail.querySelector('#s-name'));
         this.loadList();
       } catch (err) { toast(err.error ?? 'Save failed','error'); }
     };
     ['#s-name','#s-period','#s-status','#s-starts','#s-ends'].forEach(sel => detail.querySelector(sel).addEventListener('change', saveMeta));
 
     detail.querySelector('#vsactual-btn').addEventListener('click', () => this.openVsActual(s));
+    detail.querySelector('#empty-seed-btn')?.addEventListener('click', () => detail.querySelector('#seed-btn')?.click());
 
     detail.querySelector('#seed-btn').addEventListener('click', async () => {
       if (!await confirm('Seeding replaces every line in the “Dues” category (including hand-edited ones) with a fresh projection from the roster. Continue?', 'Seed dues income')) return;
@@ -419,16 +459,20 @@ class PageBudget extends HTMLElement {
       } catch { toast('Clone failed','error'); }
     });
 
-    detail.querySelector('#del-btn').addEventListener('click', async () => {
-      const typed = prompt(`Deleting a budget is permanent (admin only). Type the scenario name to confirm:\n${s.name}`);
-      if (typed == null) return;
-      try {
-        await api('DELETE', `/budgets/${id}?confirm=${encodeURIComponent(typed.trim())}`);
-        toast('Scenario deleted','success');
-        this._selectedId = null;
-        this.querySelector('#b-detail').innerHTML = '<div class="empty-state" style="padding:2rem"><p>Select a scenario.</p></div>';
-        this.loadList();
-      } catch { toast('Delete failed','error'); }
+    detail.querySelector('#del-btn')?.addEventListener('click', () => {
+      confirmDelete({
+        noun: 'budget scenario',
+        name: s.name,
+        onConfirm: async (confirmVal) => {
+          try {
+            await api('DELETE', `/budgets/${id}?confirm=${encodeURIComponent(confirmVal)}`);
+            toast('Scenario deleted','success');
+            this._selectedId = null;
+            this.querySelector('#b-detail').innerHTML = '<div class="empty-state" style="padding:2rem"><p>Select a scenario.</p></div>';
+            this.loadList();
+          } catch (err) { toast(err.error ?? 'Delete failed','error'); throw err; }
+        },
+      });
     });
   }
 
@@ -490,10 +534,50 @@ class PageBudget extends HTMLElement {
                 <div style="flex:1;height:11px;background:var(--color-border);border-radius:5px;overflow:hidden"><div style="height:100%;width:${s.totals.expense_minor/max*100}%;background:var(--color-danger)"></div></div>
                 <span style="width:90px;text-align:right;font-size:.78rem;font-variant-numeric:tabular-nums">${formatMoney(s.totals.expense_minor, s.totals.currency)}</span></div>
             </div>`).join('')}
+          <div id="cmp-delta"></div>
         </div>
         <div class="modal-footer"><button class="btn-primary" id="close-btn">Close</button></div>`,
     });
     dialog.querySelector('#close-btn').addEventListener('click', close);
+
+    // Two same-currency scenarios get the question actually being asked —
+    // "what changed?" — as a per-category delta table.
+    if (ids.length === 2 && currencies.length === 1) {
+      try {
+        const [a, b] = await Promise.all(ids.map(x => api('GET', `/budgets/${x}`)));
+        if (!dialog.isConnected) return;
+        const cur = currencies[0];
+        const sums = s => {
+          const m = new Map();
+          (s.lines ?? []).forEach(l => {
+            const key = `${l.kind}:${l.category?.trim() || '(uncategorized)'}`;
+            const sign = l.kind === 'income' ? 1 : -1;
+            m.set(key, (m.get(key) ?? 0) + sign * l.amount_minor);
+          });
+          return m;
+        };
+        const ma = sums(a), mb = sums(b);
+        const keys = [...new Set([...ma.keys(), ...mb.keys()])].sort();
+        const rows = keys.map(k => {
+          const [kind, cat] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+          const va = ma.get(k) ?? 0, vb = mb.get(k) ?? 0, d = vb - va;
+          const fmt = v => formatMoney(Math.abs(v), cur);
+          return `<tr${d === 0 ? ' style="color:var(--color-text-muted)"' : ''}>
+            <td>${esc(cat)}</td><td style="font-size:.7rem;color:var(--color-text-muted)">${esc(kind)}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">${fmt(va)}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">${fmt(vb)}</td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums;color:${d > 0 ? 'var(--color-success)' : d < 0 ? 'var(--color-danger)' : 'inherit'}">${d === 0 ? '—' : (d > 0 ? '+' : '−') + fmt(d)}</td>
+          </tr>`;
+        }).join('');
+        if (rows) {
+          dialog.querySelector('#cmp-delta').innerHTML = `
+            <div style="font-weight:700;font-size:.8rem;margin:.5rem 0 .3rem">What changed (net effect by category)</div>
+            <table><thead><tr><th>Category</th><th></th>
+              <th style="text-align:right">${esc(a.name)}</th><th style="text-align:right">${esc(b.name)}</th>
+              <th style="text-align:right">Δ</th></tr></thead><tbody>${rows}</tbody></table>`;
+        }
+      } catch { /* the bars above still answer the broad question */ }
+    }
   }
 }
 customElements.define('page-budget', PageBudget);

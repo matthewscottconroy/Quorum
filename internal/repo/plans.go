@@ -48,7 +48,9 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 		SELECT COUNT(*) OVER() AS total_count,
 		       p.id::text, p.title, p.description, p.status, p.owner_id::text,
 		       p.target_date, p.created_by::text, p.created_at, p.updated_at,
-		       m.display_name, p.estimated_cost_minor, p.cost_currency
+		       m.display_name, p.estimated_cost_minor, p.cost_currency,
+		       (SELECT count(*) FROM action_items ai WHERE ai.plan_id = p.id) AS total_items,
+		       (SELECT count(*) FROM action_items ai WHERE ai.plan_id = p.id AND ai.status = 'done') AS done_items
 		FROM plans p
 		LEFT JOIN members m ON m.id = p.owner_id
 		%s
@@ -67,7 +69,7 @@ func (r *PlansRepo) List(ctx context.Context, f PlanFilter) ([]model.Plan, int, 
 		if err := rows.Scan(&total,
 			&p.ID, &p.Title, &p.Description, &p.Status, &p.OwnerID,
 			&p.TargetDate, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.OwnerName,
-			&p.EstimatedCostMinor, &p.CostCurrency,
+			&p.EstimatedCostMinor, &p.CostCurrency, &p.TotalItems, &p.DoneItems,
 		); err != nil {
 			return nil, 0, err
 		}

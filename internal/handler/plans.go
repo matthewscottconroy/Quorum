@@ -137,6 +137,12 @@ func (h *PlansHandler) Get(w http.ResponseWriter, r *http.Request) {
 				items = []model.ActionItem{}
 			}
 			pl.ActionItems = items
+			pl.TotalItems = len(items)
+			for _, it := range items {
+				if it.Status == "done" {
+					pl.DoneItems++
+				}
+			}
 		}
 	}
 	writeJSON(w, 200, pl)

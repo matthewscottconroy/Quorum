@@ -665,7 +665,8 @@ func main() {
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}/quorum", governanceH.Quorum)
 
 			r.With(mw.RequireRole("member")).Get("/meetings/{id}/motions", governanceH.ListMotions)
-			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/motions", governanceH.CreateMotion)
+			// Members may PROPOSE motions (forced to their own draft); officers get the full form.
+			r.With(mw.RequireRole("member")).Post("/meetings/{id}/motions", governanceH.CreateMotion)
 			r.With(mw.RequireRole("member")).Get("/motions/{id}", governanceH.GetMotion)
 			r.With(mw.RequireRole("officer")).Patch("/motions/{id}", governanceH.UpdateMotion)
 			r.With(mw.RequireRole("officer")).Delete("/motions/{id}", governanceH.DeleteMotion)

@@ -67,6 +67,13 @@ class PagePlans extends HTMLElement {
                 ${p.target_date ? ` · target ${esc(String(p.target_date).slice(0,10))}` : ''}
                 ${p.estimated_cost_minor != null ? ` · est. ${formatMoney(p.estimated_cost_minor, p.cost_currency || 'USD')}` : ''}
               </div>
+              ${p.total_items ? `
+              <div style="display:flex;align-items:center;gap:.5rem;margin-top:.35rem;max-width:280px">
+                <div style="flex:1;height:6px;background:var(--color-border);border-radius:3px;overflow:hidden">
+                  <div style="height:100%;width:${Math.round((p.done_items / p.total_items) * 100)}%;background:var(--color-success)"></div>
+                </div>
+                <span style="font-size:.72rem;color:var(--color-text-muted);white-space:nowrap">${p.done_items}/${p.total_items} done</span>
+              </div>` : ''}
             </div>
             ${p.status === 'active' && p.target_date && new Date(p.target_date) < new Date() ? '<span class="badge badge-overdue">overdue</span>' : ''}
             <span class="badge badge-${esc(p.status)}">${esc(p.status)}</span>
@@ -186,6 +193,11 @@ class PagePlans extends HTMLElement {
 
           <h3 style="margin:.75rem 0 .5rem;font-size:.95rem">Linked work</h3>
           <div id="plan-work"></div>
+          ${canWrite()?`
+            <div style="display:flex;gap:.4rem;margin-top:.5rem">
+              <input id="new-item-title" placeholder="New action item for this plan…" style="flex:1;padding:.35rem .5rem;font-size:.85rem">
+              <button class="btn-secondary" id="add-item-btn" style="font-size:.8rem">+ Add</button>
+            </div>`:''}
 
           <h3 style="margin:.75rem 0 .5rem;font-size:.95rem">Decision log</h3>
           <div id="decisions-list"></div>
@@ -238,11 +250,10 @@ class PagePlans extends HTMLElement {
 
     // Linked work: the action items carrying this plan's id, with a progress
     // bar so a plan page finally answers "how far along are we?".
-    {
+    const renderWork = items => {
       const workEl = dialog.querySelector('#plan-work');
-      const items = pl.action_items ?? [];
       if (!items.length) {
-        workEl.innerHTML = '<p style="color:var(--color-text-muted);font-size:.85rem">No linked action items yet — link cards to this plan from the Board.</p>';
+        workEl.innerHTML = '<p style="color:var(--color-text-muted);font-size:.85rem">No linked action items yet — add one below, or link cards from the Board.</p>';
       } else {
         const done = items.filter(i => i.status === 'done').length;
         const pct = Math.round(done / items.length * 100);
@@ -258,7 +269,8 @@ class PagePlans extends HTMLElement {
               <span class="badge badge-${esc(i.status)}" style="font-size:.65rem">${esc(i.status)}</span>
             </div>`).join('')}`;
       }
-    }
+    };
+    renderWork(pl.action_items ?? []);
 
     // Reload the list whenever the detail dialog closes (close button, Close, or Escape),
     // but only while still mounted and authenticated so a logout-triggered close
@@ -301,6 +313,21 @@ class PagePlans extends HTMLElement {
         await refreshDecisions();
       } catch { toast('Failed','error'); }
     });
+
+    // Linked work grows without a detour: the card lands on the Board
+    // already tied to this plan.
+    const addItemBtn = dialog.querySelector('#add-item-btn');
+    addItemBtn?.addEventListener('click', guardButton(addItemBtn, async () => {
+      const title = dialog.querySelector('#new-item-title').value.trim();
+      if (!title) { toast('Give the item a title','error'); return; }
+      try {
+        await api('POST', '/action-items', { title, plan_id: id });
+        toast('Added — assign and schedule it on the Board','success');
+        dialog.querySelector('#new-item-title').value = '';
+        const fresh = await api('GET', `/plans/${id}`);
+        renderWork(fresh.action_items ?? []);
+      } catch (err) { toast(err.error ?? 'Failed','error'); }
+    }));
   }
 }
 customElements.define('page-plans', PagePlans);
