@@ -33,7 +33,13 @@ const MIN_W: i32 = 360;
 const MAX_W: i32 = 1080;
 const CELL: f32 = 2.0;
 const VIEW_W: f32 = 720.0; // the camera window, in px
-const TICKS_PER_SEC: f32 = 30.0;
+/// Simulation tempo. The genre's whole feel is a DELIBERATE march — you're
+/// meant to have time to look, think, and click. 15Hz halves the original
+/// 30Hz pace: walkers stroll ~30px/s, the quit fuse burns ~4-6 seconds
+/// (right in classic bomber territory), and F still fast-forwards the
+/// stragglers. Round length is unaffected: the clock counts ticks against
+/// this same constant.
+const TICKS_PER_SEC: f32 = 15.0;
 const MAX_FALL: i32 = 32; // survivable fall, in cells, without a chute
 const MAX_COUNT: u32 = 100; // walkers per player: sim comfort + sane rounds
 const SKILL_NAMES: [&str; 7] = ["CLIMB", "CHUTE", "SUPER", "BUILD", "BASH", "DIG", "QUIT"];
@@ -2014,7 +2020,8 @@ fn hud_update(
             Some(cfg) => (cfg.seat as usize).min(1),
             None => 0,
         };
-        let flow = 1800 / game.rate[me].max(10); // YOUR spawns per minute
+        let ticks_per_min = TICKS_PER_SEC as u32 * 60;
+        let flow = ticks_per_min / game.rate[me].max(10); // YOUR spawns per minute
         let nuke = if game.nuke_armed && !guest { "   N AGAIN: EVERYONE QUITS" } else { "" };
         let goal = if game.players == 2 {
             "MOST RESCUES WINS".to_string()
