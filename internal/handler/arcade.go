@@ -81,6 +81,15 @@ var arcadeStatNames = map[string][]string{
 		"bust_outs", "tables_swept", "royal_flushes", "straight_flushes",
 		"quads_made", "full_houses", "flushes_shown", "straights_shown",
 	},
+	"red-tape": {
+		"forms_shredded", "tape_cut", "balls_dropped", "perks_caught",
+		"staples_fired", "desks_cleared", "extra_balls",
+	},
+	"night-audit": {
+		"files_lifted", "guards_tranqed", "darts_fired", "times_spotted",
+		"coffees_drunk", "servers_bugged", "extractions", "ghost_runs",
+		"audits_failed",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {

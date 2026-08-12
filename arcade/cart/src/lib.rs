@@ -14,8 +14,10 @@ mod go_ui;
 mod hex_ui;
 mod holdem;
 mod interns;
+mod night_audit;
 mod penny;
 mod powder;
+mod red_tape;
 mod retro;
 mod rng;
 mod shell;
@@ -131,6 +133,12 @@ pub fn run() {
         }
         "texas-holdem" => {
             app.add_plugins((shell_for("HOLD 'EM", holdem::BLURB), holdem::HoldemPlugin));
+        }
+        "red-tape" => {
+            app.add_plugins((shell_for("RED TAPE", red_tape::BLURB), red_tape::RedTapePlugin));
+        }
+        "night-audit" => {
+            app.add_plugins((shell_for("NIGHT AUDIT", night_audit::BLURB), night_audit::NightAuditPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

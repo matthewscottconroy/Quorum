@@ -56,6 +56,14 @@ const CABINETS = [
     players: 'you vs 1-5 machine sharks · 2-6 online', controls: 'F fold · C check/call · R raise (pot) · A all-in · Esc pause (local). Blinds climb every 8 hands; last stack keeps the table. Online: the SERVER deals, so nobody\u2019s browser ever sees your hole cards.',
   },
   {
+    id: 'red-tape', name: 'RED TAPE', tag: 'Paperwork from here to the ceiling. You have a ball.',
+    players: '1P', controls: 'Mouse or ← → steers the paddle · Space (or click) serves and fires the stapler. Forms shred in one hit, red tape takes two, filing cabinets are forever. Falling perks: CYAN wide · MAGENTA split ball · GREEN slow · AMBER stapler · WHITE extra ball.',
+  },
+  {
+    id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
+    players: '1P · one mission', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
+  },
+  {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
     players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally · BOOM self-destructs ONE intern after a 6s fuse, cratering terrain), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) is BOOM for your whole crew and ends the round, the >> button cycles game speed 1x-8x (F holds a burst on top). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
@@ -260,6 +268,16 @@ const STAT_LABELS = {
   miners_deployed: 'MINERS SENT DIAGONAL',
   medals_gold: 'GOLD MEDALS (90%+ SAVED)', medals_silver: 'SILVER MEDALS (75%+ SAVED)',
   medals_bronze: 'BRONZE MEDALS (QUOTA MET)',
+  // RED TAPE
+  forms_shredded: 'FORMS SHREDDED', tape_cut: 'RED TAPE CUT',
+  balls_dropped: 'BALLS FILED UNDER THE DESK', perks_caught: 'OFFICE SUPPLIES CAUGHT',
+  staples_fired: 'STAPLES DISCHARGED', desks_cleared: 'DESKS CLEARED', extra_balls: 'SPARE BALLS EARNED',
+  // NIGHT AUDIT
+  files_lifted: 'INTEL FILES LIFTED', guards_tranqed: 'GUARDS PUT TO BED',
+  darts_fired: 'DARTS EXPENSED', times_spotted: 'TIMES SPOTTED (EMBARRASSING)',
+  coffees_drunk: 'MIDNIGHT COFFEES', servers_bugged: 'SERVERS BUGGED',
+  extractions: 'CLEAN EXTRACTIONS', ghost_runs: 'GHOST RUNS (NEVER SEEN)',
+  audits_failed: 'NIGHTS THAT WENT LOUD',
   chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
   bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
   diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
@@ -276,7 +294,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';
