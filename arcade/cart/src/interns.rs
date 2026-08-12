@@ -246,8 +246,61 @@ pub fn builtin(n: usize) -> LevelDoc {
             l.x2 = Some([30, 100]);
             l
         }
+        // THE MINESHAFT: everyone spawns on a mesa with nothing but a long
+        // way down on either side. Chutes are too scarce to carry the quota;
+        // the way out is THROUGH — miners ramp diagonally down the rock to
+        // the floor. Which direction they dig decides whose exit they reach.
+        5 => {
+            let mut l = base(
+                360,
+                vec![[0, 260, 360, 10], [100, 140, 160, 120]],
+                [170, 120],
+                [40, 240],
+                [2, 2, 2, 4, 2, 4, 2, 10],
+            );
+            l.need = 12;
+            l.time = 420;
+            l.e2 = Some([190, 120]);
+            l.x2 = Some([320, 240]);
+            l
+        }
+        // THE CROSSING: two ledges, one void. Sixty cells of nothing that
+        // only a chain of builders can span — and the stair lip drops you
+        // a survivable three steps onto the far side. Works both ways for
+        // the two-player race.
+        6 => {
+            let mut l = base(
+                720,
+                vec![[0, 240, 300, 14], [360, 240, 360, 14]],
+                [60, 220],
+                [660, 220],
+                [2, 2, 4, 10, 2, 2, 2, 2],
+            );
+            l.time = 360;
+            l.e2 = Some([640, 220]);
+            l.x2 = Some([80, 220]);
+            l
+        }
+        // OBSTACLE COURSE: wall, pit, wall. Bash through the first, bridge
+        // the hole in the floor, bash through the second — the first level
+        // that demands a CHAIN of different jobs to finish.
+        7 => {
+            let mut l = base(
+                360,
+                vec![[0, 260, 360, 10], [120, 200, 14, 60], [230, 200, 14, 60]],
+                [40, 240],
+                [320, 240],
+                [2, 2, 2, 6, 6, 2, 2, 2],
+            );
+            l.holes = vec![[160, 260, 40, 10]];
+            l.need = 12;
+            l.time = 360;
+            l.e2 = Some([335, 240]);
+            l.x2 = Some([25, 240]);
+            l
+        }
         // TWO TOWERS, wide edition: a 720-cell march with a valley between.
-        _ => {
+        4 => {
             let mut l = base(
                 720,
                 vec![
@@ -265,6 +318,31 @@ pub fn builtin(n: usize) -> LevelDoc {
             );
             l.e2 = Some([660, 80]);
             l.x2 = Some([60, 220]);
+            l
+        }
+        // HEADQUARTERS, the finale: a triple-width commute. Step down the
+        // plateaus, bridge the crevasse, then face the mesa — climbers go
+        // over (pack a chute for the far side), bashers go through. Forty
+        // interns, every tool in the drawer, both directions viable.
+        _ => {
+            let mut l = base(
+                1080,
+                vec![
+                    [0, 200, 200, 70],
+                    [200, 230, 200, 40],
+                    [460, 230, 240, 40],
+                    [700, 120, 120, 150],
+                    [820, 230, 260, 40],
+                ],
+                [60, 180],
+                [1010, 210],
+                [6, 6, 2, 10, 6, 2, 2, 6],
+            );
+            l.count = 40;
+            l.need = 15;
+            l.time = 600;
+            l.e2 = Some([1040, 210]);
+            l.x2 = Some([30, 180]);
             l
         }
     };
@@ -460,7 +538,7 @@ enum Job {
     Climb,
     Block,
     Build { steps: i32, cooldown: i32 },
-    Bash { cooldown: i32 },
+    Bash { cooldown: i32, dug: bool },
     Dig { cooldown: i32 },
     Mine { cooldown: i32 },
     Splat { ticks: i32 },
@@ -491,6 +569,10 @@ struct Game {
     next_id: u32,
     tick: u64,
     acc: f32,
+    /// Local sim multiplier from the speed button: 1, 2, 4, or 8.
+    speed: u32,
+    /// Explosion sites queued by the sim, drained into pixel bursts.
+    booms: Vec<(i32, i32, u8)>,
     spawned: [u32; 2],
     saved: [u32; 2],
     dead: [u32; 2],
@@ -552,6 +634,19 @@ struct NukeBtn;
 
 #[derive(Component)]
 struct NukeText;
+
+#[derive(Component)]
+struct SpeedBtn;
+
+#[derive(Component)]
+struct SpeedText;
+
+/// One pixel of a disintegrating intern, arcing under gravity.
+#[derive(Component)]
+struct BoomBit {
+    vel: Vec2,
+    ttl: f32,
+}
 
 // ---- editor ----
 
@@ -655,6 +750,7 @@ impl Plugin for InternsPlugin {
                     refresh_terrain,
                     position_terrain,
                     draw,
+                    boom_fx,
                     hud_update,
                     skill_buttons,
                     endgame,
@@ -768,6 +864,8 @@ fn setup(
         next_id: 1,
         tick: 0,
         acc: 0.0,
+        speed: 1,
+        booms: Vec::new(),
         spawned: [0; 2],
         saved: [0; 2],
         dead: [0; 2],
@@ -918,6 +1016,38 @@ fn setup(
                 NukeText,
             ));
         });
+    // The speed dial (local rounds only — online paces itself): click to
+    // cycle 1x → 2x → 4x → 8x. F still gives a hold-to-hurry burst on top.
+    if net.0.is_none() {
+        commands
+            .spawn((
+                Sprite {
+                    color: CYAN.with_alpha(0.5),
+                    custom_size: Some(Vec2::new(68.0, 30.0)),
+                    ..default()
+                },
+                Transform::from_xyz(-240.0, 292.0, 8.0),
+                SpeedBtn,
+                GameTag,
+            ))
+            .with_children(|kid| {
+                kid.spawn((
+                    Sprite {
+                        color: Color::srgb(0.04, 0.08, 0.10),
+                        custom_size: Some(Vec2::new(64.0, 26.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.05),
+                ));
+                kid.spawn((
+                    Text2d::new(">> 1x"),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(CYAN),
+                    Transform::from_xyz(0.0, 0.0, 0.1),
+                    SpeedText,
+                ));
+            });
+    }
 }
 
 /// Shared mesh handles for the job icons (the cart font is ASCII-only, so
@@ -1019,8 +1149,10 @@ fn skill_buttons(
     net: Res<NetMode>,
     mut btns: Query<(&SkillBtn, &mut Sprite, &mut Visibility)>,
     mut counts: Query<(&SkillCountText, &mut Text2d, &mut TextColor)>,
-    mut nuke_btn: Query<(&mut Sprite, &mut Visibility), (With<NukeBtn>, Without<SkillBtn>)>,
-    mut nuke_text: Query<&mut Text2d, (With<NukeText>, Without<SkillCountText>)>,
+    mut nuke_btn: Query<(&mut Sprite, &mut Visibility), (With<NukeBtn>, Without<SkillBtn>, Without<SpeedBtn>)>,
+    mut nuke_text: Query<&mut Text2d, (With<NukeText>, Without<SkillCountText>, Without<SpeedText>)>,
+    mut speed_btn: Query<(&mut Sprite, &mut Visibility), (With<SpeedBtn>, Without<SkillBtn>, Without<NukeBtn>)>,
+    mut speed_text: Query<&mut Text2d, (With<SpeedText>, Without<SkillCountText>, Without<NukeText>)>,
 ) {
     let me: usize = match &net.0 {
         Some(cfg) => cfg.seat as usize,
@@ -1064,6 +1196,22 @@ fn skill_buttons(
         let s = if game.nuke_armed { "SURE?" } else { "NUKE" };
         if t.0 != s {
             t.0 = s.into();
+        }
+    }
+    if let Ok((mut sp, mut vis)) = speed_btn.single_mut() {
+        let want = if editor.active { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+        let c = if game.speed > 1 { CYAN } else { CYAN.with_alpha(0.5) };
+        if sp.color != c {
+            sp.color = c;
+        }
+    }
+    if let Ok(mut t) = speed_text.single_mut() {
+        let s = format!(">> {}x", game.speed.max(1));
+        if t.0 != s {
+            t.0 = s;
         }
     }
 }
@@ -1138,10 +1286,14 @@ struct WireNuke {
 
 /// Arms the loud-quit countdown for every walker `player` owns. Nukes are
 /// personal: nobody detonates the other player's workforce.
+/// The all-hands ending: closes the player's door (no more spawns) and puts
+/// every walker they own on a rippled fuse. Once the last one pops, the
+/// round ends on its own — a nuke is a conclusion, not a tactic.
 fn nuke_own(game: &mut Game, player: u8) {
+    game.spawned[player as usize] = game.doc.count;
     for w in game.walkers.iter_mut() {
         if w.alive && w.owner == player && w.quit < 0 {
-            w.quit = 60 + (w.x % 30);
+            w.quit = 30 + (w.x % 30);
         }
     }
     sfx("saucer");
@@ -1224,13 +1376,16 @@ fn simulate(
         return;
     }
     game.acc += time.delta_secs();
-    // Fast-forward (local rounds): hold F to run the fixed step at triple
-    // speed — the last stragglers' march is dead time nobody signed up for.
+    // Fast-forward (local rounds): the SPEED button multiplies the fixed
+    // step 1x/2x/4x/8x, and holding F still adds a temporary burst on top.
     // Determinism is untouched; it's the same step, taken more often.
-    let mut step_cap = 4;
+    let mut step_cap = 4 * game.speed.max(1) as usize;
+    if net.0.is_none() && game.speed > 1 {
+        game.acc += (game.speed - 1) as f32 * time.delta_secs();
+    }
     if net.0.is_none() && keys.pressed(KeyCode::KeyF) {
         game.acc += 2.0 * time.delta_secs();
-        step_cap = 12;
+        step_cap += 8;
     }
     let step = 1.0 / TICKS_PER_SEC;
     let mut steps = 0;
@@ -1317,6 +1472,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                         }
                     }
                 }
+                game.booms.push((w.x, w.y, w.owner));
                 sfx("boom");
                 game.dead[w.owner as usize] += 1;
                 w.alive = false;
@@ -1362,6 +1518,9 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                         }
                     }
                     let opened = chute || (w.has_chute && dist >= 8);
+                    if opened && !chute {
+                        sfx("chute");
+                    }
                     w.job = Job::Fall { dist, chute: opened };
                 }
             }
@@ -1439,7 +1598,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                     w.job = Job::Build { steps, cooldown };
                 }
             }
-            Job::Bash { mut cooldown } => {
+            Job::Bash { mut cooldown, dug } => {
                 cooldown -= 1;
                 if cooldown <= 0 {
                     let mut any = false;
@@ -1457,14 +1616,37 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                     }
                     if any {
                         w.x += w.dir * 2;
-                        w.job = Job::Bash { cooldown: 6 };
+                        w.job = Job::Bash { cooldown: 6, dug: true };
+                        sfx("chip");
+                    } else if !dug {
+                        // No rock in reach YET: carry the hammer forward and
+                        // swing again, instead of shrugging the job off. This
+                        // is why clicking a basher anywhere near the wall now
+                        // works — they walk the last stretch themselves.
+                        let ahead_x = w.x + w.dir;
+                        let mut stepped = false;
+                        for up in 0..=4 {
+                            if !site.solid(ahead_x, w.y - up)
+                                && !site.solid(ahead_x, w.y - up - 1)
+                                && !site.solid(ahead_x, w.y - up - 2)
+                                && !site.solid(ahead_x, w.y - up - 3)
+                            {
+                                w.x = ahead_x;
+                                w.y -= up;
+                                stepped = true;
+                                break;
+                            }
+                        }
+                        // Blocked with nothing bashable (the map border):
+                        // give the job up rather than pace forever.
+                        w.job = if stepped { Job::Bash { cooldown: 2, dug: false } } else { Job::Walk };
                     } else {
-                        w.job = Job::Walk;
+                        w.job = Job::Walk; // tunnel finished — daylight
                     }
                 } else if !grounded {
                     w.job = Job::Fall { dist: 0, chute: false };
                 } else {
-                    w.job = Job::Bash { cooldown };
+                    w.job = Job::Bash { cooldown, dug };
                 }
             }
             Job::Dig { mut cooldown } => {
@@ -1482,6 +1664,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                     if any {
                         w.y += 2;
                         w.job = Job::Dig { cooldown: 6 };
+                        sfx("chip");
                     } else {
                         w.job = Job::Fall { dist: 0, chute: false };
                     }
@@ -1513,6 +1696,7 @@ fn step_walkers(game: &mut Game, site: &mut Site) {
                         w.x += w.dir * 2;
                         w.y += 2;
                         w.job = Job::Mine { cooldown: 8 };
+                        sfx("chip");
                     } else {
                         w.job = Job::Fall { dist: 0, chute: false };
                     }
@@ -1577,7 +1761,7 @@ fn finish(game: &mut Game) {
             game.doc.count,
             game.doc.need
         );
-        sfx(if ok { "clear" } else { "death" });
+        sfx(if ok { "win" } else { "over" });
     } else {
         let (a, b) = (game.saved[0], game.saved[1]);
         let verdict = match winner_2p(game) {
@@ -1588,7 +1772,57 @@ fn finish(game: &mut Game) {
             None => "A DEAD HEAT. HR IS FURIOUS.",
         };
         game.result = format!("P1 SAVED {a}  /  P2 SAVED {b}\n{verdict}");
-        sfx("clear");
+        sfx("win");
+    }
+}
+
+/// Drains queued explosions into pixel bursts: the intern's own pixels
+/// blown outward like fireworks, arcing under gravity and fading out.
+/// Screen-space on purpose — the burst is over before the camera moves.
+fn boom_fx(
+    mut commands: Commands,
+    time: Res<Time>,
+    cam: Res<Cam>,
+    mut game: ResMut<Game>,
+    mut bits: Query<(Entity, &mut BoomBit, &mut Transform, &mut Sprite)>,
+) {
+    let booms = std::mem::take(&mut game.booms);
+    for (x, y, owner) in booms {
+        let p = grid_to_world(&cam, x, y - 4);
+        if p.x < -400.0 || p.x > 400.0 {
+            continue;
+        }
+        let base = if owner == 0 { GREEN } else { MAGENTA };
+        for k in 0..28u32 {
+            let a = k as f32 / 28.0 * std::f32::consts::TAU;
+            let sp = 55.0 + ((k * 37) % 95) as f32;
+            let color = match k % 4 {
+                0 => AMBER,
+                1 => WHITE,
+                _ => base,
+            };
+            commands.spawn((
+                Sprite { color, custom_size: Some(Vec2::splat(2.0)), ..default() },
+                Transform::from_xyz(p.x, p.y, 7.0),
+                BoomBit {
+                    vel: Vec2::new(a.cos(), a.sin()) * sp + Vec2::new(0.0, 45.0),
+                    ttl: 0.9,
+                },
+                GameTag,
+            ));
+        }
+    }
+    let dt = time.delta_secs();
+    for (e, mut b, mut tf, mut sp) in &mut bits {
+        b.ttl -= dt;
+        if b.ttl <= 0.0 || tf.translation.y < -330.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        b.vel.y -= 300.0 * dt;
+        tf.translation.x += b.vel.x * dt;
+        tf.translation.y += b.vel.y * dt;
+        sp.color.set_alpha((b.ttl / 0.9).clamp(0.0, 1.0));
     }
 }
 
@@ -1603,7 +1837,7 @@ fn candidate(game: &Game, player: usize, gx: i32, gy: i32) -> Option<usize> {
             continue;
         }
         let d = (w.x - gx).abs() + (w.y - 4 - gy).abs();
-        if d <= 10 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+        if d <= 14 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
             best = Some((i, d));
         }
     }
@@ -1642,7 +1876,7 @@ fn try_assign(game: &mut Game, player: usize, gx: i32, gy: i32, skill: usize, mi
             true
         }
         4 if on_feet && !matches!(w.job, Job::Bash { .. }) => {
-            w.job = Job::Bash { cooldown: 1 };
+            w.job = Job::Bash { cooldown: 1, dug: false };
             true
         }
         5 if on_feet && !matches!(w.job, Job::Dig { .. }) => {
@@ -1808,6 +2042,7 @@ fn input_p1(
             }
         } else {
             game.nuke_armed = true;
+            sfx("buzz");
         }
     }
 
@@ -1848,8 +2083,23 @@ fn input_p1(
             }
         } else {
             game.nuke_armed = true;
-            sfx("tick");
+            sfx("buzz");
         }
+        return;
+    }
+    // The speed dial (local only).
+    if net.0.is_none()
+        && buttons.just_pressed(MouseButton::Left)
+        && (world.x + 240.0).abs() <= 36.0
+        && (world.y - 292.0).abs() <= 17.0
+    {
+        game.speed = match game.speed {
+            1 => 2,
+            2 => 4,
+            4 => 8,
+            _ => 1,
+        };
+        sfx("tick");
         return;
     }
     // Click-to-jump on the minimap: teleport the camera window there.
@@ -2037,7 +2287,7 @@ fn net_apply(
         match v.get("t").and_then(|t| t.as_str()) {
             Some("as") if host => {
                 if let Ok(a) = serde_json::from_str::<WireAssign>(&ev.data) {
-                    if a.skill < 7 {
+                    if a.skill < SKILL_NAMES.len() {
                         try_assign(&mut game, ev.seat as usize, a.x, a.y, a.skill, false);
                     }
                 }
@@ -2096,6 +2346,14 @@ fn net_apply(
                     game.spawned = st.spawned;
                     game.skills = st.skills;
                     game.time_left = st.tl;
+                    // Walkers who were on a lit fuse and are gone in this
+                    // snapshot exploded — queue their pixel burst locally.
+                    let armed: Vec<(u32, i32, i32, u8)> = game
+                        .walkers
+                        .iter()
+                        .filter(|w| w.alive && w.quit >= 0)
+                        .map(|w| (w.id, w.x, w.y, w.owner))
+                        .collect();
                     // Roll the interpolation window.
                     game.guest_prev = std::mem::take(&mut game.guest_curr);
                     game.guest_dt = game.guest_t.clamp(0.05, 0.3);
@@ -2117,7 +2375,7 @@ fn net_apply(
                                     3 => Job::Climb,
                                     4 => Job::Block,
                                     5 => Job::Build { steps: 1, cooldown: 99 },
-                                    6 => Job::Bash { cooldown: 99 },
+                                    6 => Job::Bash { cooldown: 99, dug: true },
                                     7 => Job::Dig { cooldown: 99 },
                                     8 => Job::Mine { cooldown: 99 },
                                     9 => Job::Splat { ticks: 99 },
@@ -2131,6 +2389,12 @@ fn net_apply(
                             }
                         })
                         .collect();
+                    for (id, x, y, owner) in armed {
+                        if !game.walkers.iter().any(|w| w.id == id) {
+                            game.booms.push((x, y, owner));
+                            sfx("boom");
+                        }
+                    }
                 }
             }
             Some("end") if !host => {
@@ -2566,6 +2830,8 @@ fn endgame(
 
 fn reset_round(game: &mut Game) {
     game.walkers.clear();
+    game.speed = 1;
+    game.booms.clear();
     game.spawned = [0; 2];
     game.saved = [0; 2];
     game.dead = [0; 2];

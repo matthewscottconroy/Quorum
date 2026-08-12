@@ -57,7 +57,7 @@ const CABINETS = [
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
-    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally · BOOM self-destructs ONE intern after a 6s fuse, cratering terrain), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) is BOOM for your whole crew, F fast-forwards (local). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
+    players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally · BOOM self-destructs ONE intern after a 6s fuse, cratering terrain), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) is BOOM for your whole crew and ends the round, the >> button cycles game speed 1x-8x (F holds a burst on top). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
 ];
 
@@ -71,7 +71,7 @@ const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': {
 // and the toast shown when the editor opens.
 const LEVELS = {
   interns: {
-    house: [['b1', 'HOUSE: ORIENTATION DAY'], ['b2', 'HOUSE: THE BASEMENT'], ['b3', 'HOUSE: CUBICLE WALLS'], ['b4', 'HOUSE: TWO TOWERS (WIDE)']],
+    house: [['b1', 'HOUSE: ORIENTATION DAY'], ['b2', 'HOUSE: THE BASEMENT'], ['b3', 'HOUSE: CUBICLE WALLS'], ['b4', 'HOUSE: TWO TOWERS (WIDE)'], ['b5', 'HOUSE: THE MINESHAFT'], ['b6', 'HOUSE: THE CROSSING (WIDE)'], ['b7', 'HOUSE: OBSTACLE COURSE'], ['b8', 'HOUSE: HEADQUARTERS (WIDE)']],
     blank: 'EDITOR: BLANK CANVAS', playFallback: { builtin: 1 },
     toast: 'Editor: paint (Shift+click lines, F mirrors, U undoes), W widens, S saves, G test-plays, X returns',
   },
@@ -196,6 +196,8 @@ const SFX = {
   levelup: () => { _tone(523, 523, 0.07); _tone(659, 659, 0.07, 0.08); _tone(784, 784, 0.07, 0.16); _tone(1047, 1047, 0.12, 0.24); },
   buzz:    () => _tone(140, 110, 0.12, 0, 0.06, 'sawtooth'),
   win:     () => { for (let i = 0; i < 5; i++) _tone(523 * Math.pow(1.2, i), 523 * Math.pow(1.2, i), 0.09, i * 0.1); },
+  chip:    () => _tone(170 + Math.random() * 50, 130, 0.04, 0, 0.05),
+  chute:   () => _tone(880, 320, 0.22, 0, 0.035, 'triangle'),
 };
 window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
 
