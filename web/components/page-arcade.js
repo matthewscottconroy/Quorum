@@ -45,7 +45,7 @@ const CABINETS = [
   },
   {
     id: 'powder-keg', name: 'POWDER KEG', tag: 'Kegs, fuses, and up to a dozen rivals in the cellar.',
-    players: 'up to 12 — local + bots, or online', controls: 'TO START: pick PLAYERS (bots fill the rest) and HUMANS, then INSERT CREDIT. P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). Perks from crates — RED longer blast · BLUE extra keg · GREEN faster · WHITE kicks kegs.',
+    players: 'up to 12 — local + bots, or online', controls: 'TO START: pick PLAYERS (bots fill the rest) and HUMANS, then INSERT CREDIT. P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). Perks from crates — RED longer blast · BLUE extra keg · GREEN faster · WHITE kicks kegs · ORANGE blasts pierce crates · CYAN vest survives one hit · PURPLE walks through crates.',
   },
   {
     id: 'hexfection', name: 'HEXFECTION', tag: 'Spread across the hex dish. Convert your neighbours.',
@@ -78,7 +78,7 @@ const LEVELS = {
   'powder-keg': {
     house: [['std', 'HOUSE: RANDOM CELLAR']],
     blank: 'EDITOR: BLANK CELLAR', playFallback: null,
-    toast: 'Editor: 1 crate / 2 wall / 3 erase, click paints, rings mark spawns, S saves, G test-plays, X returns',
+    toast: 'Editor: 1 crate / 2 wall / 3 erase / 4 loaded crate (press 4 again to pick its perk), click paints, rings mark spawns, S saves, G test-plays, X returns',
   },
   hexfection: {
     house: [['std', 'HOUSE: STANDARD DISH']],
@@ -238,6 +238,7 @@ const STAT_LABELS = {
   bombs_laid: 'KEGS PLANTED', kills: 'RIVALS RETIRED', deaths: 'TIMES RETIRED',
   self_demolitions: 'SELF-DEMOLITIONS', crates_smashed: 'CRATES SMASHED',
   perks_grabbed: 'UPGRADES LOOTED', kegs_kicked: 'KEGS PUNTED',
+  vests_shredded: 'VESTS TAKEN FOR THE TEAM',
   wall_crushes: 'FLATTENED BY MASONRY', steps_walked: 'TILES SPRINTED',
   cellar_wins: 'CELLARS KEPT', settle_draws: 'MUTUAL STANDOFFS',
   // Hexfection

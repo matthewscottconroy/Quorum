@@ -60,7 +60,7 @@ var arcadeStatNames = map[string][]string{
 	"powder-keg": {
 		"bombs_laid", "kills", "deaths", "self_demolitions", "crates_smashed",
 		"perks_grabbed", "kegs_kicked", "wall_crushes", "steps_walked",
-		"cellar_wins", "settle_draws",
+		"cellar_wins", "settle_draws", "vests_shredded",
 	},
 	"hexfection": {
 		"clones", "jumps", "blobs_converted", "blobs_lost", "times_consumed",

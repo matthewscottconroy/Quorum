@@ -30,21 +30,38 @@ struct PowderDoc {
     tiles: String,
 }
 
-fn doc_tiles(doc: &PowderDoc) -> Option<Vec<Tile>> {
+/// Parses a cellar document: '0' empty, '1' solid, '2' crate, and a perk
+/// letter (R/B/S/K/P/V/G) is a crate with that upgrade planted inside —
+/// the editor's guaranteed drops. Old digit-only documents parse unchanged.
+fn doc_tiles(doc: &PowderDoc) -> Option<(Vec<Tile>, Vec<Option<Perk>>)> {
     let chars: Vec<char> = doc.tiles.chars().collect();
     if chars.len() != (COLS * ROWS) as usize {
         return None;
     }
-    let mut tiles: Vec<Tile> = chars
-        .iter()
-        .map(|c| match c {
-            '1' => Tile::Solid,
-            '2' => Tile::Crate,
-            _ => Tile::Empty,
-        })
-        .collect();
+    let mut tiles = Vec::with_capacity(chars.len());
+    let mut planted = Vec::with_capacity(chars.len());
+    for c in &chars {
+        match (c, char_perk(*c)) {
+            ('1', _) => {
+                tiles.push(Tile::Solid);
+                planted.push(None);
+            }
+            ('2', _) => {
+                tiles.push(Tile::Crate);
+                planted.push(None);
+            }
+            (_, Some(p)) => {
+                tiles.push(Tile::Crate);
+                planted.push(Some(p));
+            }
+            _ => {
+                tiles.push(Tile::Empty);
+                planted.push(None);
+            }
+        }
+    }
     enforce_shell(&mut tiles);
-    Some(tiles)
+    Some((tiles, planted))
 }
 
 /// The invariants every cellar keeps: a solid border ring.
@@ -58,8 +75,8 @@ fn enforce_shell(tiles: &mut [Tile]) {
     }
 }
 
-/// Clears breathing room around each active spawn.
-fn clear_spawn_pockets(tiles: &mut [Tile], players: usize) {
+/// Clears breathing room around each active spawn (cargo included).
+fn clear_spawn_pockets(tiles: &mut [Tile], planted: &mut [Option<Perk>], players: usize) {
     for &(sc, sr) in SPAWNS.iter().take(players) {
         for (dc, dr) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
             let (c, r) = (sc + dc, sr + dr);
@@ -67,6 +84,7 @@ fn clear_spawn_pockets(tiles: &mut [Tile], players: usize) {
                 if tiles[Arena::idx(c, r)] != Tile::Empty {
                     tiles[Arena::idx(c, r)] = Tile::Empty;
                 }
+                planted[Arena::idx(c, r)] = None;
             }
         }
     }
@@ -107,7 +125,12 @@ struct CellarEditor {
     active: bool,
     testing: bool,
     tiles: Vec<Tile>,
+    /// Cargo per cell: a Some crate always drops that perk when it burns.
+    planted: Vec<Option<Perk>>,
     brush: Tile,
+    /// When set, painting lays a LOADED crate carrying this perk (key 4
+    /// cycles which one); 1/2/3 return to the plain brushes.
+    perk_brush: Option<Perk>,
     /// Set by `finish` when a test round ends; editor_update executes the
     /// return (it owns the queries needed to reset the scene).
     want_return: bool,
@@ -140,7 +163,8 @@ fn random_cellar(rng: &mut Rng, players: usize) -> Vec<Tile> {
             }
         }
     }
-    clear_spawn_pockets(&mut tiles, players);
+    let mut planted = vec![None; tiles.len()];
+    clear_spawn_pockets(&mut tiles, &mut planted, players);
     tiles
 }
 
@@ -232,7 +256,10 @@ fn perk_color_by_kind(kind: u8) -> Color {
         0 => RED,
         1 => Color::srgb(0.3, 0.6, 1.0),
         2 => Color::srgb(0.55, 1.0, 0.3),
-        _ => WHITE,
+        3 => WHITE,
+        4 => Color::srgb(1.0, 0.62, 0.2),
+        5 => Color::srgb(0.35, 0.9, 1.0),
+        _ => Color::srgb(0.75, 0.5, 1.0),
     }
 }
 
@@ -242,7 +269,58 @@ fn perk_kind(p: Perk) -> u8 {
         Perk::Bombs => 1,
         Perk::Speed => 2,
         Perk::Kick => 3,
+        Perk::Pierce => 4,
+        Perk::Vest => 5,
+        Perk::Phase => 6,
     }
+}
+
+fn perk_name(p: Perk) -> &'static str {
+    match p {
+        Perk::Range => "RANGE",
+        Perk::Bombs => "KEGS",
+        Perk::Speed => "SPEED",
+        Perk::Kick => "KICK",
+        Perk::Pierce => "PIERCE",
+        Perk::Vest => "VEST",
+        Perk::Phase => "PHASE",
+    }
+}
+
+const ALL_PERKS: [Perk; 7] = [
+    Perk::Range,
+    Perk::Bombs,
+    Perk::Speed,
+    Perk::Kick,
+    Perk::Pierce,
+    Perk::Vest,
+    Perk::Phase,
+];
+
+/// A planted crate's cargo, as saved in a cellar document.
+fn perk_char(p: Perk) -> char {
+    match p {
+        Perk::Range => 'R',
+        Perk::Bombs => 'B',
+        Perk::Speed => 'S',
+        Perk::Kick => 'K',
+        Perk::Pierce => 'P',
+        Perk::Vest => 'V',
+        Perk::Phase => 'G',
+    }
+}
+
+fn char_perk(c: char) -> Option<Perk> {
+    Some(match c {
+        'R' => Perk::Range,
+        'B' => Perk::Bombs,
+        'S' => Perk::Speed,
+        'K' => Perk::Kick,
+        'P' => Perk::Pierce,
+        'V' => Perk::Vest,
+        'G' => Perk::Phase,
+        _ => return None,
+    })
 }
 
 /// Shared meshes and materials: the round keg body (normal and about-to-blow
@@ -251,9 +329,11 @@ fn perk_kind(p: Perk) -> u8 {
 struct PowderFx {
     keg: Handle<Mesh>,
     puck: Handle<Mesh>,
+    puck_small: Handle<Mesh>,
     keg_mat: Handle<ColorMaterial>,
     keg_hot: Handle<ColorMaterial>,
-    icon_mats: [Handle<ColorMaterial>; 4],
+    dark_mat: Handle<ColorMaterial>,
+    icon_mats: [Handle<ColorMaterial>; 7],
 }
 
 /// A round keg with a lit fuse — spawned identically on host and guest.
@@ -338,11 +418,63 @@ fn spawn_perk_sprite(commands: &mut Commands, fx: &PowderFx, kind: u8, p: Vec2) 
                     rect(kid, 4.5, 2.4, 8.0, 2.5, -0.65);
                     rect(kid, 4.5, -2.4, 8.0, 2.5, 0.65);
                 }
-                _ => {
+                3 => {
                     // KICK: a boot and the keg it just sent flying.
                     rect(kid, -4.0, 2.0, 4.5, 10.0, 0.0);
                     rect(kid, -2.0, -4.0, 9.0, 4.0, 0.0);
                     dot(kid, 6.5, -1.0);
+                }
+                4 => {
+                    // PIERCE: an arrow drilling straight through a crate.
+                    rect(kid, 2.0, 5.0, 9.0, 2.0, 0.0);
+                    rect(kid, 2.0, -5.0, 9.0, 2.0, 0.0);
+                    rect(kid, -2.0, 0.0, 2.0, 12.0, 0.0);
+                    rect(kid, 6.0, 0.0, 2.0, 12.0, 0.0);
+                    rect(kid, 0.0, 0.0, 17.0, 2.5, 0.0);
+                    rect(kid, 8.0, 0.0, 6.0, 6.0, std::f32::consts::FRAC_PI_4);
+                }
+                5 => {
+                    // VEST: a shield bubble.
+                    kid.spawn((
+                        Mesh2d(fx.puck.clone()),
+                        MeshMaterial2d(fx.icon_mats[5].clone()),
+                        Transform::from_xyz(0.0, 0.0, 0.1),
+                    ));
+                    kid.spawn((
+                        Mesh2d(fx.puck_small.clone()),
+                        MeshMaterial2d(fx.dark_mat.clone()),
+                        Transform::from_xyz(0.0, 0.0, 0.15),
+                    ));
+                    rect(kid, 0.0, 6.5, 3.0, 3.0, std::f32::consts::FRAC_PI_4);
+                }
+                _ => {
+                    // PHASE: the little ghost that walks through crates.
+                    dot(kid, 0.0, 1.5);
+                    rect(kid, 0.0, -2.5, 10.0, 5.0, 0.0);
+                    kid.spawn((
+                        Sprite {
+                            color: Color::srgb(0.08, 0.08, 0.14),
+                            custom_size: Some(Vec2::new(2.5, 2.5)),
+                            ..default()
+                        },
+                        Transform::from_xyz(-2.5, -5.0, 0.15),
+                    ));
+                    kid.spawn((
+                        Sprite {
+                            color: Color::srgb(0.08, 0.08, 0.14),
+                            custom_size: Some(Vec2::new(2.5, 2.5)),
+                            ..default()
+                        },
+                        Transform::from_xyz(2.5, -5.0, 0.15),
+                    ));
+                    kid.spawn((
+                        Sprite { color: Color::srgb(0.08, 0.08, 0.14), custom_size: Some(Vec2::new(1.8, 2.4)), ..default() },
+                        Transform::from_xyz(-2.0, 2.2, 0.2),
+                    ));
+                    kid.spawn((
+                        Sprite { color: Color::srgb(0.08, 0.08, 0.14), custom_size: Some(Vec2::new(1.8, 2.4)), ..default() },
+                        Transform::from_xyz(2.0, 2.2, 0.2),
+                    ));
                 }
             }
         })
@@ -398,7 +530,7 @@ fn celebrate(commands: &mut Commands, rng: &mut Rng, seat: usize) {
 /// bot self-blast sim, chain detection, burst application): each of the four
 /// arms stops at Solid, includes a Crate cell, then stops. `(cell, was_crate)`
 /// per reached cell, center NOT included.
-fn blast_cells(tiles: &[Tile], cell: usize, range: i32) -> Vec<(usize, bool)> {
+fn blast_cells(tiles: &[Tile], cell: usize, range: i32, pierce: bool) -> Vec<(usize, bool)> {
     let (c0, r0) = ((cell as i32) % COLS, (cell as i32) / COLS);
     let mut out = Vec::new();
     for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -413,7 +545,8 @@ fn blast_cells(tiles: &[Tile], cell: usize, range: i32) -> Vec<(usize, bool)> {
             }
             let is_crate = tiles[j] == Tile::Crate;
             out.push((j, is_crate));
-            if is_crate {
+            // A piercing blast drills straight through crates.
+            if is_crate && !pierce {
                 break;
             }
         }
@@ -426,16 +559,21 @@ enum Perk {
     Range,
     Bombs,
     Speed,
-    Kick, // walk into a keg to send it sliding
+    Kick,   // walk into a keg to send it sliding
+    Pierce, // your blasts drill through crates instead of stopping
+    Vest,   // survive one blast (consumed, with a moment of cover)
+    Phase,  // walk through crates like they're fog
 }
 
 #[derive(Resource)]
 struct Arena {
     tiles: Vec<Tile>,
-    bombs: Vec<Option<(Entity, f32, i32, usize)>>, // fuse left, range, owner
+    bombs: Vec<Option<(Entity, f32, i32, usize, bool)>>, // fuse left, range, owner, pierce
     flames: Vec<f32>,                              // seconds of flame left per cell
     flame_owner: Vec<usize>,
     perks: Vec<Option<(Perk, Entity)>>,
+    /// Editor-planted cargo: this crate ALWAYS drops this perk when it burns.
+    planted: Vec<Option<Perk>>,
     clock: f32,
     spiral: Vec<usize>, // sudden-death closing order
     spiral_next: usize,
@@ -457,12 +595,6 @@ struct Arena {
 impl Arena {
     fn idx(c: i32, r: i32) -> usize {
         (r * COLS + c) as usize
-    }
-    fn open(&self, c: i32, r: i32) -> bool {
-        if c < 0 || c >= COLS || r < 0 || r >= ROWS {
-            return false;
-        }
-        self.tiles[Self::idx(c, r)] == Tile::Empty && self.bombs[Self::idx(c, r)].is_none()
     }
 }
 
@@ -490,6 +622,11 @@ struct Fighter {
     kills: u32,
     wants_bomb: bool,
     kick: bool,
+    pierce: bool,
+    vest: bool,
+    phase: bool,
+    /// Post-vest mercy window: flames can't touch a blinking fighter.
+    iframes: f32,
     think: Timer,
 }
 
@@ -596,27 +733,31 @@ fn setup(
     commands.insert_resource(PowderFx {
         keg: meshes.add(Circle::new((CELL - 8.0) / 2.0)),
         puck: meshes.add(Circle::new(5.0)),
+        puck_small: meshes.add(Circle::new(3.0)),
         keg_mat: materials.add(Color::srgb(0.22, 0.22, 0.28)),
         keg_hot: materials.add(Color::srgb(0.75, 0.22, 0.18)),
-        icon_mats: [0u8, 1, 2, 3].map(|k| materials.add(perk_color_by_kind(k))),
+        dark_mat: materials.add(Color::srgb(0.08, 0.08, 0.14)),
+        icon_mats: [0u8, 1, 2, 3, 4, 5, 6].map(|k| materials.add(perk_color_by_kind(k))),
     });
     let editor_mode = crate::shell::take_editor_pending();
     let players = config.players.clamp(2, 12) as usize;
     let humans = if net.0.is_some() { 1 } else { config.humans.clamp(1, 2.min(players as u32)) as usize };
 
     // The editor survives rounds; fresh entry loads the page's template.
-    let mut canvas: Option<Vec<Tile>> = None;
+    let n_cells = (COLS * ROWS) as usize;
+    let mut canvas: Option<(Vec<Tile>, Vec<Option<Perk>>)> = None;
     match (existing_editor, editor_mode) {
         (Some(mut e), true) => {
             if let CellarSpec::Doc(doc) = page_cellar() {
-                if let Some(t) = doc_tiles(&doc) {
+                if let Some((t, pl)) = doc_tiles(&doc) {
                     e.tiles = t;
+                    e.planted = pl;
                 }
             }
             e.active = true;
             e.testing = false;
             e.want_return = false;
-            canvas = Some(e.tiles.clone());
+            canvas = Some((e.tiles.clone(), e.planted.clone()));
         }
         (Some(mut e), false) => {
             e.active = false;
@@ -624,35 +765,39 @@ fn setup(
             e.want_return = false;
         }
         (None, editing) => {
-            let t = match page_cellar() {
-                CellarSpec::Doc(ref doc) if editing => doc_tiles(doc).unwrap_or_else(blank_cellar),
-                _ => blank_cellar(),
+            let (t, pl) = match page_cellar() {
+                CellarSpec::Doc(ref doc) if editing => {
+                    doc_tiles(doc).unwrap_or_else(|| (blank_cellar(), vec![None; n_cells]))
+                }
+                _ => (blank_cellar(), vec![None; n_cells]),
             };
             if editing {
-                canvas = Some(t.clone());
+                canvas = Some((t.clone(), pl.clone()));
             }
             commands.insert_resource(CellarEditor {
                 active: editing,
                 testing: false,
                 tiles: t,
+                planted: pl,
                 brush: Tile::Crate,
+                perk_brush: None,
                 want_return: false,
             });
         }
     }
 
-    let mut tiles = if let Some(canvas) = canvas {
+    let (mut tiles, planted) = if let Some(canvas) = canvas {
         canvas // the editor shows its canvas; the round starts on G
     } else if let CellarSpec::Doc(doc) = page_cellar() {
         match doc_tiles(&doc) {
-            Some(mut t) => {
-                clear_spawn_pockets(&mut t, players);
-                t
+            Some((mut t, mut pl)) => {
+                clear_spawn_pockets(&mut t, &mut pl, players);
+                (t, pl)
             }
-            None => random_cellar(&mut rng, players),
+            None => (random_cellar(&mut rng, players), vec![None; n_cells]),
         }
     } else {
-        random_cellar(&mut rng, players)
+        (random_cellar(&mut rng, players), vec![None; n_cells])
     };
     enforce_shell(&mut tiles);
 
@@ -700,6 +845,7 @@ fn setup(
     let n = (COLS * ROWS) as usize;
     commands.insert_resource(Arena {
         tiles,
+        planted,
         bombs: vec![None; n],
         flames: vec![0.0; n],
         flame_owner: vec![usize::MAX; n],
@@ -748,6 +894,10 @@ fn setup(
                     kills: 0,
                     wants_bomb: false,
                     kick: false,
+                    pierce: false,
+                    vest: false,
+                    phase: false,
+                    iframes: 0.0,
                     think: Timer::from_seconds(0.12 + 0.013 * seat as f32, TimerMode::Repeating),
                 },
                 Sprite {
@@ -819,12 +969,12 @@ fn danger_map(arena: &Arena, soon: f32) -> Vec<bool> {
         }
     }
     for (i, b) in arena.bombs.iter().enumerate() {
-        let Some((_, fuse, range, _)) = b else { continue };
+        let Some((_, fuse, range, _, pierce)) = b else { continue };
         if *fuse > soon {
             continue;
         }
         danger[i] = true;
-        for (j, _) in blast_cells(&arena.tiles, i, *range) {
+        for (j, _) in blast_cells(&arena.tiles, i, *range, *pierce) {
             danger[j] = true;
         }
     }
@@ -926,7 +1076,7 @@ fn bot_brains(
             continue;
         }
         // 2. Adjacent crate or enemy, with an escape route? Drop a keg.
-        let worth_bombing = blast_cells(&arena.tiles, here, f.range).iter().any(|&(j, is_crate)| {
+        let worth_bombing = blast_cells(&arena.tiles, here, f.range, f.pierce).iter().any(|&(j, is_crate)| {
             is_crate || {
                 let cell = IVec2::new((j as i32) % COLS, (j as i32) / COLS);
                 positions.iter().any(|&(s, t, alive)| alive && s != f.seat && t == cell)
@@ -937,7 +1087,7 @@ fn bot_brains(
             let mut sim = vec![false; danger.len()];
             sim.copy_from_slice(&danger);
             sim[here] = true;
-            for (j, _) in blast_cells(&arena.tiles, here, f.range) {
+            for (j, _) in blast_cells(&arena.tiles, here, f.range, f.pierce) {
                 sim[j] = true;
             }
             if bfs_step(&arena, &sim, f.tile, true, |i| !sim[i]).is_some() {
@@ -995,13 +1145,13 @@ fn slide_bomb(
     if moved {
         let to = Arena::idx(c, r);
         let bomb = arena.bombs[from].take();
-        if let Some((e, fuse, range, owner)) = bomb {
+        if let Some((e, fuse, range, owner, pierce)) = bomb {
             let p = world(c, r);
             if let Ok(mut tf) = bomb_tfs.get_mut(e) {
                 tf.translation.x = p.x;
                 tf.translation.y = p.y;
             }
-            arena.bombs[to] = Some((e, fuse, range, owner));
+            arena.bombs[to] = Some((e, fuse, range, owner, pierce));
         }
         sfx("drop");
     }
@@ -1046,10 +1196,25 @@ fn movement(
         if !f.alive {
             continue;
         }
+        // A phaser treats crates as fog; walls and kegs still stop everyone.
+        let open_for = |arena: &Arena, phase: bool, c: i32, r: i32| -> bool {
+            if c < 0 || c >= COLS || r < 0 || r >= ROWS {
+                return false;
+            }
+            let j = Arena::idx(c, r);
+            if arena.bombs[j].is_some() {
+                return false;
+            }
+            match arena.tiles[j] {
+                Tile::Empty => true,
+                Tile::Crate => phase,
+                Tile::Solid => false,
+            }
+        };
         let mut remaining = f.speed * dt;
         while remaining > 0.0 {
             if f.dir == IVec2::ZERO {
-                if f.want != IVec2::ZERO && arena.open(f.tile.x + f.want.x, f.tile.y + f.want.y) {
+                if f.want != IVec2::ZERO && open_for(&arena, f.phase, f.tile.x + f.want.x, f.tile.y + f.want.y) {
                     f.dir = f.want;
                 } else {
                     break;
@@ -1079,10 +1244,10 @@ fn movement(
                 if f.human.is_some() {
                     stat("steps_walked", 1);
                 }
-                let turn_ok = f.want != IVec2::ZERO && arena.open(f.tile.x + f.want.x, f.tile.y + f.want.y);
+                let turn_ok = f.want != IVec2::ZERO && open_for(&arena, f.phase, f.tile.x + f.want.x, f.tile.y + f.want.y);
                 if turn_ok {
                     f.dir = f.want;
-                } else if f.want == IVec2::ZERO || !arena.open(f.tile.x + f.dir.x, f.tile.y + f.dir.y) {
+                } else if f.want == IVec2::ZERO || !open_for(&arena, f.phase, f.tile.x + f.dir.x, f.tile.y + f.dir.y) {
                     // No key held: stop at this tile center. (Holding a
                     // blocked direction keeps you sliding the way you were
                     // going — classic corner forgiveness.)
@@ -1133,7 +1298,7 @@ fn bombs_and_flames(
             }
             let p = world(f.tile.x, f.tile.y);
             let e = spawn_keg(&mut commands, &fx, p);
-            arena.bombs[i] = Some((e, FUSE, f.range, f.seat));
+            arena.bombs[i] = Some((e, FUSE, f.range, f.seat, f.pierce));
             f.live_bombs += 1;
             sfx("place");
         }
@@ -1146,7 +1311,7 @@ fn bombs_and_flames(
     // whose keg STARTED the chain — the classic credit rule.
     let mut exploding: Vec<(usize, Option<usize>)> = Vec::new(); // cell, initiator
     for i in 0..arena.bombs.len() {
-        if let Some((_, fuse, _, _)) = arena.bombs[i].as_mut() {
+        if let Some((_, fuse, _, _, _)) = arena.bombs[i].as_mut() {
             *fuse -= dt;
             if *fuse <= 0.0 {
                 exploding.push((i, None));
@@ -1156,9 +1321,9 @@ fn bombs_and_flames(
     if !exploding.is_empty() {
         sfx("boom");
     }
-    let mut burst: Vec<(usize, i32, usize)> = Vec::new(); // cell, range, credited seat
+    let mut burst: Vec<(usize, i32, usize, bool)> = Vec::new(); // cell, range, credited seat, pierce
     while let Some((i, initiator)) = exploding.pop() {
-        let Some((e, _, range, owner)) = arena.bombs[i].take() else { continue };
+        let Some((e, _, range, owner, pierce)) = arena.bombs[i].take() else { continue };
         commands.entity(e).despawn();
         // Give the owner their slot back.
         for (mut f, _) in &mut fighters {
@@ -1167,16 +1332,16 @@ fn bombs_and_flames(
             }
         }
         let credited = initiator.unwrap_or(owner);
-        burst.push((i, range, credited));
+        burst.push((i, range, credited, pierce));
         // Chain: any bomb in this blast goes off now, on the initiator's tab.
-        for (j, _) in blast_cells(&arena.tiles, i, range) {
+        for (j, _) in blast_cells(&arena.tiles, i, range, pierce) {
             if arena.bombs[j].is_some() && !exploding.iter().any(|&(cell, _)| cell == j) {
                 exploding.push((j, Some(credited)));
             }
         }
     }
     // Apply bursts: flames, crate destruction, perk reveals.
-    for (i, range, owner) in burst {
+    for (i, range, owner, pierce) in burst {
         let (c0, r0) = ((i as i32) % COLS, (i as i32) / COLS);
         let lay_flame = |arena: &mut Arena, commands: &mut Commands, c: i32, r: i32, dir: (i32, i32)| {
             let j = Arena::idx(c, r);
@@ -1200,7 +1365,7 @@ fn bombs_and_flames(
             ));
         };
         lay_flame(&mut arena, &mut commands, c0, r0, (0, 0));
-        let cells = blast_cells(&arena.tiles, i, range);
+        let cells = blast_cells(&arena.tiles, i, range, pierce);
         for (j, was_crate) in cells {
             let (c, r) = ((j as i32) % COLS, (j as i32) / COLS);
             if was_crate {
@@ -1208,14 +1373,25 @@ fn bombs_and_flames(
                 if human_seats.contains(&owner) {
                     stat("crates_smashed", 1);
                 }
-                // A third of crates hide an upgrade.
-                if rng.chance(0.34) {
-                    let perk = match rng.range(7) {
-                        0 | 1 => Perk::Range,
-                        2 | 3 => Perk::Bombs,
-                        4 | 5 => Perk::Speed,
-                        _ => Perk::Kick,
-                    };
+                // Editor-planted cargo always drops; a third of the rest
+                // hide something from the table.
+                let planted = arena.planted[j].take();
+                let rolled = if planted.is_some() {
+                    planted
+                } else if rng.chance(0.34) {
+                    Some(match rng.range(13) {
+                        0..=2 => Perk::Range,
+                        3..=5 => Perk::Bombs,
+                        6 | 7 => Perk::Speed,
+                        8 => Perk::Kick,
+                        9 => Perk::Pierce,
+                        10 | 11 => Perk::Vest,
+                        _ => Perk::Phase,
+                    })
+                } else {
+                    None
+                };
+                if let Some(perk) = rolled {
                     let p = world(c, r);
                     let e = spawn_perk_sprite(&mut commands, &fx, perk_kind(perk), p);
                     arena.perks[j] = Some((perk, e));
@@ -1255,6 +1431,13 @@ fn bombs_and_flames(
         if !f.alive {
             continue;
         }
+        if f.iframes > 0.0 {
+            f.iframes -= dt;
+            if f.iframes <= 0.0 {
+                sprite.color.set_alpha(1.0);
+            }
+            continue; // still blinking from the vest — untouchable
+        }
         let i = Arena::idx(f.tile.x, f.tile.y);
         // Also check the cell being entered when mid-step.
         let j = if f.dir != IVec2::ZERO && f.progress > 0.45 {
@@ -1270,6 +1453,18 @@ fn bombs_and_flames(
             None
         };
         if let Some(owner) = hit {
+            if f.vest {
+                // The vest takes it: consumed, with a mercy blink so the
+                // same flame doesn't finish the job a frame later.
+                f.vest = false;
+                f.iframes = 0.8;
+                sprite.color.set_alpha(0.55);
+                if f.human.is_some() {
+                    stat("vests_shredded", 1);
+                }
+                sfx("buzz");
+                continue;
+            }
             f.alive = false;
             sprite.color.set_alpha(0.15);
             sfx("death");
@@ -1324,6 +1519,9 @@ fn pickups(
                 Perk::Bombs => f.max_bombs = (f.max_bombs + 1).min(6),
                 Perk::Speed => f.speed = (f.speed + 0.45).min(6.5),
                 Perk::Kick => f.kick = true,
+                Perk::Pierce => f.pierce = true,
+                Perk::Vest => f.vest = true,
+                Perk::Phase => f.phase = true,
             }
             sfx("power");
         }
@@ -1368,7 +1566,7 @@ fn closing_walls(
     let i = arena.spiral[arena.spiral_next];
     arena.spiral_next += 1;
     arena.tiles[i] = Tile::Solid;
-    if let Some((e, _, _, owner)) = arena.bombs[i].take() {
+    if let Some((e, _, _, owner, _)) = arena.bombs[i].take() {
         commands.entity(e).despawn();
         for (mut f, _) in &mut fighters {
             if f.seat == owner {
@@ -1379,6 +1577,7 @@ fn closing_walls(
     if let Some((_, e)) = arena.perks[i].take() {
         commands.entity(e).despawn();
     }
+    arena.planted[i] = None;
     let cell = IVec2::new((i as i32) % COLS, (i as i32) / COLS);
     let mut walled = Vec::new();
     for (mut f, mut sprite) in &mut fighters {
@@ -1603,7 +1802,7 @@ fn host_broadcast(
             .bombs
             .iter()
             .enumerate()
-            .filter_map(|(i, b)| b.as_ref().map(|(_, fuse, _, _)| (i as u16, (fuse * 100.0).max(0.0) as u16)))
+            .filter_map(|(i, b)| b.as_ref().map(|(_, fuse, _, _, _)| (i as u16, (fuse * 100.0).max(0.0) as u16)))
             .collect(),
         fl: arena
             .flames
@@ -1616,14 +1815,7 @@ fn host_broadcast(
             .iter()
             .enumerate()
             .filter_map(|(i, p)| {
-                p.as_ref().map(|(perk, _)| {
-                    (i as u16, match perk {
-                        Perk::Range => 0u8,
-                        Perk::Bombs => 1,
-                        Perk::Speed => 2,
-                        Perk::Kick => 3,
-                    })
-                })
+                p.as_ref().map(|(perk, _)| (i as u16, perk_kind(*perk)))
             })
             .collect(),
         clk: (arena.clock * 10.0) as u32,
@@ -1977,6 +2169,9 @@ fn reset_field(
             commands.entity(e).despawn();
         }
     }
+    for p in arena.planted.iter_mut() {
+        *p = None;
+    }
     arena.clock = 0.0;
     arena.spiral_next = 0;
     arena.finished = false;
@@ -2019,6 +2214,7 @@ fn editor_update(
             editor.active = true;
             reset_field(&mut arena, &mut commands, &bombs, &flames, &banners);
             arena.tiles = editor.tiles.clone();
+            arena.planted = editor.planted.clone();
             for (_, _, _, mut vis) in &mut fighters {
                 *vis = Visibility::Hidden;
             }
@@ -2028,24 +2224,33 @@ fn editor_update(
     }
 
     // The canvas paints straight onto the tile sprites; spawn rings show
-    // where the twelve fighters would enter.
+    // where the twelve fighters would enter, and a colored square marks a
+    // loaded crate's guaranteed drop.
     for (ts, mut sprite) in &mut tiles_q {
         let want = tile_color(editor.tiles[ts.0]);
         if sprite.color != want {
             sprite.color = want;
         }
     }
+    for (i, planted) in editor.planted.iter().enumerate() {
+        if let Some(p) = planted {
+            let (c, r) = ((i as i32) % COLS, (i as i32) / COLS);
+            let at = world(c, r);
+            gizmos.rect_2d(at, Vec2::splat(CELL * 0.4), perk_color_by_kind(perk_kind(*p)));
+        }
+    }
     for (i, &(sc, sr)) in SPAWNS.iter().enumerate() {
         gizmos.circle_2d(world(sc, sr), CELL * 0.42, PLAYER_COLORS[i % 12].with_alpha(0.6));
     }
     if let Ok((mut t, mut tfnt)) = hud.single_mut() {
-        let b = match editor.brush {
-            Tile::Crate => "CRATE",
-            Tile::Solid => "WALL",
-            Tile::Empty => "ERASE",
+        let b = match (editor.perk_brush, editor.brush) {
+            (Some(p), _) => format!("LOADED CRATE ({})", perk_name(p)),
+            (None, Tile::Crate) => "CRATE".into(),
+            (None, Tile::Solid) => "WALL".into(),
+            (None, Tile::Empty) => "ERASE".into(),
         };
         let s = format!(
-            "CELLAR EDITOR - BRUSH: {b}\nPICK A BRUSH: 1 CRATE / 2 WALL / 3 ERASE - LEFT-CLICK PAINTS - RIGHT-CLICK ALWAYS ERASES\nRINGS = WHERE FIGHTERS SPAWN - S SAVES TO THE SHELF - G TEST-PLAYS IT - X RETURNS HERE"
+            "CELLAR EDITOR - BRUSH: {b}\n1 CRATE / 2 WALL / 3 ERASE / 4 LOADED CRATE (PRESS AGAIN TO PICK THE PERK) - LEFT-CLICK PAINTS - RIGHT-CLICK ERASES\nCOLORED SQUARES = GUARANTEED DROPS - RINGS = SPAWNS - S SAVES - G TEST-PLAYS - X RETURNS"
         );
         if t.0 != s {
             t.0 = s;
@@ -2057,14 +2262,30 @@ fn editor_update(
 
     if keys.just_pressed(KeyCode::Digit1) {
         editor.brush = Tile::Crate;
+        editor.perk_brush = None;
         sfx("tick");
     }
     if keys.just_pressed(KeyCode::Digit2) {
         editor.brush = Tile::Solid;
+        editor.perk_brush = None;
         sfx("tick");
     }
     if keys.just_pressed(KeyCode::Digit3) {
         editor.brush = Tile::Empty;
+        editor.perk_brush = None;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Digit4) {
+        // First press arms the loaded-crate brush; further presses cycle
+        // through the seven perks.
+        editor.perk_brush = Some(match editor.perk_brush {
+            None => ALL_PERKS[0],
+            Some(p) => {
+                let i = ALL_PERKS.iter().position(|&x| x == p).unwrap_or(0);
+                ALL_PERKS[(i + 1) % ALL_PERKS.len()]
+            }
+        });
+        editor.brush = Tile::Crate;
         sfx("tick");
     }
 
@@ -2076,10 +2297,12 @@ fn editor_update(
             name: String::new(),
             tiles: tiles
                 .iter()
-                .map(|t| match t {
-                    Tile::Empty => '0',
-                    Tile::Solid => '1',
-                    Tile::Crate => '2',
+                .enumerate()
+                .map(|(i, t)| match (t, editor.planted[i]) {
+                    (Tile::Crate, Some(p)) => perk_char(p),
+                    (Tile::Empty, _) => '0',
+                    (Tile::Solid, _) => '1',
+                    (Tile::Crate, None) => '2',
                 })
                 .collect(),
         };
@@ -2098,10 +2321,12 @@ fn editor_update(
             tfnt.font_size = 22.0;
         }
         let mut tiles = editor.tiles.clone();
+        let mut planted = editor.planted.clone();
         enforce_shell(&mut tiles);
-        clear_spawn_pockets(&mut tiles, fighters.iter().count());
+        clear_spawn_pockets(&mut tiles, &mut planted, fighters.iter().count());
         reset_field(&mut arena, &mut commands, &bombs, &flames, &banners);
         arena.tiles = tiles;
+        arena.planted = planted;
         for (mut f, mut tf, mut sprite, mut vis) in &mut fighters {
             let (sc, sr) = SPAWNS[f.seat];
             f.tile = IVec2::new(sc, sr);
@@ -2116,6 +2341,10 @@ fn editor_update(
             f.kills = 0;
             f.wants_bomb = false;
             f.kick = false;
+            f.pierce = false;
+            f.vest = false;
+            f.phase = false;
+            f.iframes = 0.0;
             let p = world(sc, sr);
             tf.translation.x = p.x;
             tf.translation.y = p.y;
@@ -2143,6 +2372,7 @@ fn editor_update(
         if editor.tiles[i] != v {
             editor.tiles[i] = v;
         }
+        editor.planted[i] = if erase || v != Tile::Crate { None } else { editor.perk_brush };
     }
 }
 
