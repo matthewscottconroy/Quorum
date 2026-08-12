@@ -8,7 +8,10 @@
 use bevy::prelude::*;
 
 mod brickfall;
+mod bumper_chairs;
 mod chess_ui;
+mod floor_plan;
+mod homestead;
 mod comet;
 mod go_ui;
 mod hex_ui;
@@ -23,6 +26,7 @@ mod powder;
 mod red_tape;
 mod retro;
 mod rng;
+mod roll_call;
 mod shell;
 
 /// Every cabinet shares one lifecycle. Games implement only `Playing`;
@@ -151,6 +155,18 @@ pub fn run() {
         }
         "pest-control" => {
             app.add_plugins((shell_for("PEST CONTROL", pest_control::BLURB), pest_control::PestPlugin));
+        }
+        "bumper-chairs" => {
+            app.add_plugins((shell_for("BUMPER CHAIRS", bumper_chairs::BLURB), bumper_chairs::ChairsPlugin));
+        }
+        "roll-call" => {
+            app.add_plugins((shell_for("ROLL CALL", roll_call::BLURB), roll_call::RollCallPlugin));
+        }
+        "floor-plan" => {
+            app.add_plugins((shell_for("FLOOR PLAN", floor_plan::BLURB), floor_plan::FloorPlanPlugin));
+        }
+        "homestead" => {
+            app.add_plugins((shell_for("HOMESTEAD", homestead::BLURB), homestead::HomesteadPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

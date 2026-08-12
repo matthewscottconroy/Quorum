@@ -79,14 +79,30 @@ const CABINETS = [
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
     players: '1P · 2P local · 2P online · editor', controls: 'P1: mouse assigns (hover shows who), 1-8 or click picks a job (MINE digs diagonally · BOOM self-destructs ONE intern after a 6s fuse, cratering terrain), T/R your flow, A/D or screen edge scrolls, click the minimap to jump, the red NUKE button (or N-N) is BOOM for your whole crew and ends the round, the >> button cycles game speed 1x-8x (F holds a burst on top). P2 (local): arrows + Enter, Q/E job. Esc pause (you can still assign).',
   },
+  {
+    id: 'bumper-chairs', name: 'BUMPER CHAIRS', tag: 'Last chair rolling wins. Facilities is furious.',
+    players: '1P vs bots · 2-12 online · editor', controls: '← →/A D steer · ↑/W drives · Space uses your item. Three balloons each — staplers pop them. Supply crates drop: STAPLER · COFFEE PUDDLE (spins whoever rolls through) · ESPRESSO (boost) · TRIPLE STAPLER. Last chair holding a balloon wins; at the horn, most balloons.',
+  },
+  {
+    id: 'roll-call', name: 'ROLL CALL', tag: 'Five dice, three throws, thirteen boxes, no excuses.',
+    players: '1P score attack · 2-8 online', controls: 'R (or Space) rolls · click dice to hold them · click a row on the sheet to score it. Upper-section bonus pays 35 at 63+, FIVE ALIKE pays 50, zeroes are forever. Highest sheet takes the table.',
+  },
+  {
+    id: 'floor-plan', name: 'FLOOR PLAN', tag: 'Forty spaces of prime office real estate. Rent is due.',
+    players: '1P vs 3 bots · 2-8 online', controls: 'R rolls · B buys the deed, N passes · click a wing you own (full color set) to build desks · E ends the turn. HR REVIEW: P pays 50 or R rolls for doubles — three doubles sends you there. Bankrupt the floor, or be richest when the fiscal year ends.',
+  },
+  {
+    id: 'homestead', name: 'HOMESTEAD', tag: 'Nineteen lots. Five supplies. One inspector.',
+    players: '1P vs 3 bots · 3-4 online', controls: 'Draft two outposts, then R rolls each turn — lots pay COFFEE, PAPER, TONER, SNACKS, and STAPLES. Click corners for outposts (click yours again for an office), edges for halls · I buys an idea · G plays a guard · T trades 4:1 · E ends. A 7 wakes THE INSPECTOR. First to 10 points owns the park.',
+  },
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
-const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 }, 'texas-holdem': { min: 2, max: 6, humans: 1 } };
+const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 }, 'texas-holdem': { min: 2, max: 6, humans: 1 }, 'bumper-chairs': { min: 2, max: 12, humans: 1 } };
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 12 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 12 }, 'bumper-chairs': { min: 2, max: 12 }, 'roll-call': { min: 2, max: 8 }, 'floor-plan': { min: 2, max: 8 }, homestead: { min: 3, max: 4 } };
 // Level-capable cabinets: house options, the editor's blank-canvas label,
 // and the toast shown when the editor opens.
 const LEVELS = {
@@ -114,6 +130,11 @@ const LEVELS = {
     house: [['std', 'STANDARD GAME'], ['fischer', 'FISCHER RANDOM']],
     blank: 'EDITOR: SET UP A POSITION', playFallback: null,
     toast: 'Editor: 1-6 picks a piece, C flips its color, click places, right-click clears, T sets who moves, G test-plays, S saves, X returns',
+  },
+  'bumper-chairs': {
+    house: [['std', 'HOUSE: THE PARKING GARAGE']],
+    blank: 'EDITOR: EMPTY GARAGE', playFallback: null,
+    toast: 'Editor: 1 wall / 2 floor / 3 crate spot / 4 spawn, click paints, right-click erases, Shift+S saves (needs 2+ spawns), G test-plays, X returns',
   },
 };
 // Clock-capable cabinets: per-side game clock choices, in seconds. Online,
@@ -309,6 +330,25 @@ const STAT_LABELS = {
   chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
   bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
   diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
+  // BUMPER CHAIRS
+  items_used: 'ITEMS DEPLOYED', staplers_thrown: 'STAPLERS THROWN',
+  boxes_grabbed: 'SUPPLY CRATES RAIDED', balloons_lost: 'BALLOONS SURRENDERED',
+  balloons_popped: 'BALLOONS POPPED (THEIRS)', chairs_lost: 'CHAIRS RETIRED',
+  floors_taken: 'GARAGES TAKEN',
+  // ROLL CALL
+  rolls_thrown: 'DICE THROWN', boxes_filled: 'BOXES FILLED',
+  five_alikes: 'FIVE ALIKES (THE BIG 50)', zeroes_taken: 'ZEROES SWALLOWED',
+  tables_won: 'TABLES TAKEN',
+  // FLOOR PLAN
+  deeds_bought: 'DEEDS BOUGHT', desks_built: 'DESKS BUILT',
+  rent_paid: 'RENT COUGHED UP', rent_collected: 'RENT COLLECTED',
+  hr_visits: 'HR REVIEWS ATTENDED', laps_completed: 'PAYDAYS COLLECTED',
+  floors_owned: 'FLOORS OWNED OUTRIGHT',
+  // HOMESTEAD
+  halls_built: 'HALLS LAID', outposts_founded: 'OUTPOSTS FOUNDED',
+  offices_upgraded: 'OFFICES OPENED', ideas_drawn: 'IDEAS FILED',
+  guards_played: 'GUARDS DEPLOYED', inspector_moves: 'INSPECTOR RELOCATIONS',
+  resources_gained: 'SUPPLIES COLLECTED', homesteads_won: 'PARKS OWNED',
 };
 function statLabel(key) {
   return STAT_LABELS[key] ?? key.replace(/_/g, ' ').toUpperCase();
@@ -322,7 +362,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control', 'bumper-chairs', 'roll-call', 'floor-plan', 'homestead']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';

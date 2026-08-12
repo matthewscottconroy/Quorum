@@ -1,0 +1,1178 @@
+//! BUMPER CHAIRS — a top-down office-chair battle in the parking garage,
+//! built from scratch: original name, art, arenas, and items. Genre
+//! mechanics only: drive, grab item boxes, pop the other chairs' balloons.
+//! Three balloons each; the last chair still rolling takes the floor.
+//!
+//! Items: STAPLER (straight shot, bounces once), TRIPLE STAPLER, a spilled
+//! COFFEE puddle (spins whoever rolls through it), and ESPRESSO (a boost).
+//! Online (2-12): every client owns its chair and streams position; shots
+//! spawn everywhere, but only your OWN chair decides it was hit — victim-
+//! authoritative balloons, shooter-credited pops. Local play fills empty
+//! seats with bot chairs. The ARENA EDITOR paints walls, boxes, and spawn
+//! points; the host's arena ships to the whole room at start.
+
+use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
+
+use crate::retro::{popup, text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, RED, WHITE};
+use crate::shell::{net_send, sfx, stat};
+use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
+
+pub const BLURB: &[&str] = &[
+    "THREE BALLOONS. ONE GARAGE. NO BRAKES WORTH USING.",
+    "ARROWS/WASD DRIVE - SPACE FIRES THE ITEM.",
+    "LAST CHAIR ROLLING TAKES THE FLOOR.",
+];
+
+const AW: usize = 24; // arena cells
+const AH: usize = 18;
+const ACELL: f32 = 30.0;
+const TURN_RATE: f32 = 3.4;
+const ACCEL: f32 = 260.0;
+const MAX_SPEED: f32 = 240.0;
+const FRICTION: f32 = 1.6;
+
+const DEFAULT_ARENA: [&str; AH] = [
+    "########################",
+    "#s.......B......#....s.#",
+    "#..##........#..#..##..#",
+    "#..##..s.....#.....##..#",
+    "#......###...#..B......#",
+    "#.B........s.#####..##.#",
+    "#....#..............##.#",
+    "#....#...####..........#",
+    "#s...#...#..#....s...B.#",
+    "#....B...#..#..........#",
+    "#....#...####...#####..#",
+    "#....#....... .........#",
+    "#..#####....B....#...s.#",
+    "#.......s........#.....#",
+    "#..B.....#####...#..B..#",
+    "#..##....#...........s.#",
+    "#s.......#....B........#",
+    "########################",
+];
+
+fn cell_at(rows: &[String], x: i32, y: i32) -> char {
+    if x < 0 || y < 0 || x >= AW as i32 || y >= AH as i32 {
+        return '#';
+    }
+    rows[y as usize].chars().nth(x as usize).unwrap_or('#')
+}
+
+fn world_of(x: f32, y: f32) -> Vec2 {
+    Vec2::new(x * ACELL - 360.0, 250.0 - y * ACELL)
+}
+
+struct Chair {
+    seat: usize,
+    human: bool,   // this machine's keyboard
+    remote: bool,  // a live human elsewhere
+    pos: Vec2,     // in CELL units
+    ang: f32,
+    speed: f32,
+    balloons: i32,
+    item: Option<u8>,
+    spin_t: f32,
+    boost_t: f32,
+    inv_t: f32,
+    pops: u32,
+    think: f32,
+    ent: Entity,
+    balloon_ent: Entity,
+}
+
+struct Shot {
+    pos: Vec2,
+    vel: Vec2,
+    owner: usize,
+    bounces: i32,
+    ent: Entity,
+}
+
+struct Puddle {
+    pos: Vec2,
+    ttl: f32,
+    owner: usize,
+    ent: Entity,
+}
+
+struct Box_ {
+    cell: (usize, usize),
+    up_in: f32, // respawn countdown; 0 = available
+    ent: Entity,
+}
+
+#[derive(Resource)]
+struct Garage {
+    rows: Vec<String>,
+    chairs: Vec<Chair>,
+    shots: Vec<Shot>,
+    puddles: Vec<Puddle>,
+    boxes: Vec<Box_>,
+    my_seat: usize,
+    net: bool,
+    clock: f32,
+    pos_t: f32,
+    score: u32,
+    over: Option<Timer>,
+    result: String,
+}
+
+#[derive(Component)]
+struct Hud;
+
+#[derive(Serialize, Deserialize)]
+struct WPos {
+    t: String, // "pos"
+    x: f32,
+    y: f32,
+    a: f32,
+    b: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WFire {
+    t: String, // "fire": a shot or a puddle everyone should spawn
+    k: u8,     // 0 stapler, 1 puddle
+    x: f32,
+    y: f32,
+    a: f32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WPop {
+    t: String, // "pop": MY balloon went; credit `by`
+    by: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WBox {
+    t: String, // "box": I claimed box #i
+    i: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WLevel {
+    t: String, // "lv"
+    rows: Vec<String>,
+}
+
+/// The arena editor (same shape as the office editor next door).
+#[derive(Resource)]
+struct ArenaEditor {
+    active: bool,
+    testing: bool,
+    rows: Vec<String>,
+    brush: char,
+}
+
+fn editor_off(editor: Option<Res<ArenaEditor>>) -> bool {
+    editor.map(|e| !e.active).unwrap_or(true)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ArenaDoc {
+    v: u32,
+    #[serde(default)]
+    name: String,
+    rows: Vec<String>,
+}
+
+fn page_level() -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct BlankRef {
+        blank: bool,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let raw = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_LEVEL".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let raw: Option<String> = None;
+    if let Some(raw) = raw {
+        if serde_json::from_str::<BlankRef>(&raw).map(|b| b.blank).unwrap_or(false) {
+            let mut rows: Vec<String> = (0..AH)
+                .map(|y| {
+                    (0..AW)
+                        .map(|x| if x == 0 || y == 0 || x == AW - 1 || y == AH - 1 { '#' } else { '.' })
+                        .collect()
+                })
+                .collect();
+            for (x, y) in [(2usize, 2usize), (21, 15), (21, 2), (2, 15)] {
+                rows[y].replace_range(x..x + 1, "s");
+            }
+            return Some(rows);
+        }
+        if let Ok(doc) = serde_json::from_str::<ArenaDoc>(&raw) {
+            if doc.rows.len() == AH && doc.rows.iter().all(|r| r.chars().count() == AW) {
+                return Some(doc.rows);
+            }
+        }
+    }
+    None
+}
+
+pub struct ChairsPlugin;
+
+impl Plugin for ChairsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(
+                Update,
+                poll_editor_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
+            )
+            .add_systems(
+                Update,
+                editor_update.run_if(in_state(Phase::Playing)).run_if(crate::unpaused),
+            )
+            .add_systems(
+                Update,
+                (net_apply, drive, bots, shots_fly, hazards, boxes_spin, hud, endgame)
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused)
+                    .run_if(editor_off),
+            );
+    }
+}
+
+fn poll_editor_start(
+    mut next: ResMut<NextState<Phase>>,
+    mut net: ResMut<NetMode>,
+    mut cfg: ResMut<CabinetConfig>,
+) {
+    if crate::shell::take_editor_start() {
+        net.0 = None;
+        cfg.players = 4;
+        cfg.humans = 1;
+        crate::shell::mark_editor_pending();
+        next.set(Phase::Playing);
+    }
+}
+
+fn spawn_chair(commands: &mut Commands, seat: usize, at: Vec2) -> (Entity, Entity) {
+    let ent = commands
+        .spawn((
+            Sprite {
+                color: PLAYER_COLORS[seat % 12],
+                custom_size: Some(Vec2::new(24.0, 20.0)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, 0.0, 3.0),
+            GameTag,
+        ))
+        .with_children(|kid| {
+            // The backrest: which way this chair believes it is going.
+            kid.spawn((
+                Sprite { color: WHITE.with_alpha(0.8), custom_size: Some(Vec2::new(6.0, 14.0)), ..default() },
+                Transform::from_xyz(8.0, 0.0, 0.1),
+            ));
+        })
+        .id();
+    let balloon_ent = commands
+        .spawn((
+            Sprite { color: PLAYER_COLORS[seat % 12].with_alpha(0.9), custom_size: Some(Vec2::new(30.0, 5.0)), ..default() },
+            Transform::from_xyz(0.0, 0.0, 3.5),
+            GameTag,
+        ))
+        .id();
+    let _ = at;
+    (ent, balloon_ent)
+}
+
+fn setup(
+    mut commands: Commands,
+    config: Res<CabinetConfig>,
+    net: Res<NetMode>,
+    existing_editor: Option<ResMut<ArenaEditor>>,
+) {
+    let editor_mode = crate::shell::take_editor_pending();
+    let base: Vec<String> = DEFAULT_ARENA.iter().map(|r| r.to_string()).collect();
+    let rows = page_level().unwrap_or(base);
+    match (existing_editor, editor_mode) {
+        (Some(mut e), true) => {
+            e.active = true;
+            e.testing = false;
+            e.rows = rows.clone();
+        }
+        (Some(mut e), false) => {
+            e.active = false;
+            e.testing = false;
+        }
+        (None, editing) => {
+            commands.insert_resource(ArenaEditor {
+                active: editing,
+                testing: false,
+                rows: rows.clone(),
+                brush: '#',
+            });
+        }
+    }
+
+    // Floor + walls + boxes from the arena text.
+    let mut spawns: Vec<Vec2> = Vec::new();
+    let mut boxes = Vec::new();
+    for y in 0..AH {
+        for x in 0..AW {
+            let ch = cell_at(&rows, x as i32, y as i32);
+            let p = world_of(x as f32 + 0.5, y as f32 + 0.5);
+            match ch {
+                '#' => {
+                    commands.spawn((
+                        Sprite { color: Color::srgb(0.22, 0.24, 0.30), custom_size: Some(Vec2::splat(ACELL - 1.0)), ..default() },
+                        Transform::from_xyz(p.x, p.y, 1.0),
+                        GameTag,
+                    ));
+                }
+                'B' => {
+                    let ent = commands
+                        .spawn((
+                            Sprite { color: AMBER, custom_size: Some(Vec2::splat(18.0)), ..default() },
+                            Transform::from_xyz(p.x, p.y, 2.0).with_rotation(Quat::from_rotation_z(0.4)),
+                            GameTag,
+                        ))
+                        .id();
+                    boxes.push(Box_ { cell: (x, y), up_in: 0.0, ent });
+                }
+                's' => spawns.push(Vec2::new(x as f32 + 0.5, y as f32 + 0.5)),
+                _ => {}
+            }
+        }
+    }
+    while spawns.len() < 12 {
+        spawns.push(Vec2::new(2.5 + (spawns.len() as f32 * 1.7) % 19.0, 2.5 + (spawns.len() as f32 * 2.3) % 13.0));
+    }
+
+    let my_seat = net.0.as_ref().map(|c| c.seat as usize).unwrap_or(0);
+    let is_net = net.0.is_some() && !editor_mode;
+    let players = if is_net {
+        net.0.as_ref().map(|c| c.seats as usize).unwrap_or(2)
+    } else {
+        (config.players.clamp(2, 12)) as usize
+    };
+    let mut chairs = Vec::new();
+    for seat in 0..players {
+        let (human, remote) = if is_net {
+            let present = net.0.as_ref().map(|c| c.present.get(seat).copied().unwrap_or(false)).unwrap_or(false);
+            (seat == my_seat, present && seat != my_seat)
+        } else {
+            (seat == 0, false)
+        };
+        // Online, absent seats simply don't exist — nobody drives them.
+        if is_net && !human && !remote {
+            continue;
+        }
+        let (ent, balloon_ent) = spawn_chair(&mut commands, seat, Vec2::ZERO);
+        let at = spawns[seat % spawns.len()];
+        chairs.push(Chair {
+            seat,
+            human,
+            remote,
+            pos: at,
+            ang: 0.0,
+            speed: 0.0,
+            balloons: 3,
+            item: None,
+            spin_t: 0.0,
+            boost_t: 0.0,
+            inv_t: 0.0,
+            pops: 0,
+            think: seat as f32 * 0.1,
+            ent,
+            balloon_ent,
+        });
+    }
+    if is_net {
+        if net.0.as_ref().map(|c| c.is_host()).unwrap_or(false) {
+            if let Ok(w) = serde_json::to_string(&WLevel { t: "lv".into(), rows: rows.clone() }) {
+                net_send(&w);
+            }
+        }
+    }
+    commands.insert_resource(Garage {
+        rows,
+        chairs,
+        shots: Vec::new(),
+        puddles: Vec::new(),
+        boxes,
+        my_seat: if is_net { my_seat } else { 0 },
+        net: is_net,
+        clock: 180.0,
+        pos_t: 0.0,
+        score: 0,
+        over: None,
+        result: String::new(),
+    });
+    let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 6.0));
+    commands.entity(hud).insert((Hud, GameTag));
+}
+
+fn solid_at(rows: &[String], pos: Vec2) -> bool {
+    cell_at(rows, pos.x.floor() as i32, pos.y.floor() as i32) == '#'
+}
+
+fn fire_item(
+    commands: &mut Commands,
+    g: &mut Garage,
+    shooter: usize,
+    kind: u8,
+    broadcast: bool,
+) {
+    let (pos, ang) = {
+        let c = &g.chairs[shooter];
+        (c.pos, c.ang)
+    };
+    let seat = g.chairs[shooter].seat;
+    match kind {
+        1 => {
+            // Coffee: a puddle just behind the chair.
+            let back = pos - Vec2::new(ang.cos(), -ang.sin()) * 0.9;
+            let w = world_of(back.x, back.y);
+            let ent = commands
+                .spawn((
+                    Sprite { color: Color::srgb(0.32, 0.2, 0.08), custom_size: Some(Vec2::splat(26.0)), ..default() },
+                    Transform::from_xyz(w.x, w.y, 1.5).with_rotation(Quat::from_rotation_z(0.5)),
+                    GameTag,
+                ))
+                .id();
+            g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
+        }
+        _ => {
+            let dir = Vec2::new(ang.cos(), -ang.sin());
+            let start = pos + dir * 0.8;
+            let w = world_of(start.x, start.y);
+            let ent = commands
+                .spawn((
+                    Sprite { color: CYAN, custom_size: Some(Vec2::splat(9.0)), ..default() },
+                    Transform::from_xyz(w.x, w.y, 3.8),
+                    GameTag,
+                ))
+                .id();
+            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 1, ent });
+        }
+    }
+    sfx(if kind == 1 { "drop" } else { "fire" });
+    if broadcast && g.net {
+        if let Ok(m) = serde_json::to_string(&WFire { t: "fire".into(), k: kind, x: pos.x, y: pos.y, a: ang }) {
+            net_send(&m);
+        }
+    }
+}
+
+/// My chair (and the shared physics for every locally-simulated chair).
+#[allow(clippy::too_many_arguments)]
+fn drive(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut g: ResMut<Garage>,
+    mut tfs: Query<&mut Transform>,
+    mut sprites: Query<&mut Sprite>,
+) {
+    if g.over.is_some() {
+        return;
+    }
+    let dt = time.delta_secs();
+    g.clock -= dt;
+    let rows = g.rows.clone();
+    let my = g.my_seat;
+    let net = g.net;
+
+    // Inputs act on MY chair; bots and physics run for locally-owned chairs.
+    let mut fire_req: Option<(usize, u8)> = None;
+    for i in 0..g.chairs.len() {
+        let local = {
+            let c = &g.chairs[i];
+            c.human || (!net && !c.human) // local mode simulates the bots too
+        };
+        if !local {
+            continue;
+        }
+        let c = &mut g.chairs[i];
+        if c.balloons <= 0 {
+            c.speed = 0.0;
+            continue;
+        }
+        c.spin_t = (c.spin_t - dt).max(0.0);
+        c.boost_t = (c.boost_t - dt).max(0.0);
+        c.inv_t = (c.inv_t - dt).max(0.0);
+        if c.human {
+            let turn = i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
+                - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD));
+            let gas = i32::from(keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW))
+                - i32::from(keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS));
+            if c.spin_t > 0.0 {
+                c.ang += 9.0 * dt; // the spin-out: all wheel, no say
+            } else {
+                c.ang += turn as f32 * TURN_RATE * dt * (0.4 + (c.speed.abs() / MAX_SPEED).min(1.0));
+                c.speed += gas as f32 * ACCEL * dt;
+            }
+            if keys.just_pressed(KeyCode::Space) {
+                if let Some(kind) = c.item.take() {
+                    match kind {
+                        2 => {
+                            c.boost_t = 1.4;
+                            sfx("power");
+                        }
+                        3 => fire_req = Some((i, 10)), // triple
+                        k => fire_req = Some((i, k)),
+                    }
+                    stat("items_used", 1);
+                }
+            }
+        }
+        let max = if c.boost_t > 0.0 { MAX_SPEED * 1.55 } else { MAX_SPEED };
+        c.speed = c.speed.clamp(-max * 0.45, max);
+        c.speed -= c.speed * FRICTION * dt;
+        let dir = Vec2::new(c.ang.cos(), -c.ang.sin());
+        let step = dir * (c.speed / ACELL) * dt;
+        let next = c.pos + step;
+        if solid_at(&rows, Vec2::new(next.x, c.pos.y)) {
+            c.speed *= -0.35;
+        } else {
+            c.pos.x = next.x;
+        }
+        if solid_at(&rows, Vec2::new(c.pos.x, next.y)) {
+            c.speed *= -0.35;
+        } else {
+            c.pos.y = next.y;
+        }
+    }
+    if let Some((i, kind)) = fire_req {
+        if kind == 10 {
+            for spread in [-0.25f32, 0.0, 0.25] {
+                g.chairs[i].ang += spread;
+                fire_item(&mut commands, &mut g, i, 0, true);
+                g.chairs[i].ang -= spread;
+            }
+            stat("staplers_thrown", 3);
+        } else {
+            fire_item(&mut commands, &mut g, i, kind, true);
+            if kind == 0 {
+                stat("staplers_thrown", 1);
+            }
+        }
+    }
+
+    // Box pickups (locally-owned chairs claim; net broadcasts the claim).
+    let mut claims: Vec<u32> = Vec::new();
+    for bi in 0..g.boxes.len() {
+        if g.boxes[bi].up_in > 0.0 {
+            continue;
+        }
+        let bc = g.boxes[bi].cell;
+        let bpos = Vec2::new(bc.0 as f32 + 0.5, bc.1 as f32 + 0.5);
+        let clock = g.clock;
+        let mut taken = false;
+        for c in g.chairs.iter_mut() {
+            let local = c.human || (!net && !c.remote && !c.human);
+            let alive = c.balloons > 0;
+            if local && alive && c.item.is_none() && c.pos.distance(bpos) < 0.8 {
+                let roll = ((c.pos.x * 13.7 + c.pos.y * 7.3 + clock * 31.0) as u32) % 10;
+                c.item = Some(match roll {
+                    0..=3 => 0,
+                    4 | 5 => 1,
+                    6 | 7 => 2,
+                    _ => 3,
+                });
+                taken = true;
+                if c.human {
+                    stat("boxes_grabbed", 1);
+                    sfx("coin");
+                }
+                break;
+            }
+        }
+        if taken {
+            g.boxes[bi].up_in = 7.0;
+            claims.push(bi as u32);
+        }
+    }
+    if net {
+        for i in claims {
+            if let Ok(m) = serde_json::to_string(&WBox { t: "box".into(), i }) {
+                net_send(&m);
+            }
+        }
+    }
+
+    // Stream my chair.
+    if net {
+        g.pos_t -= dt;
+        if g.pos_t <= 0.0 {
+            g.pos_t = 0.1;
+            if let Some(c) = g.chairs.iter().find(|c| c.seat == my) {
+                if let Ok(m) = serde_json::to_string(&WPos {
+                    t: "pos".into(),
+                    x: c.pos.x,
+                    y: c.pos.y,
+                    a: c.ang,
+                    b: c.balloons,
+                }) {
+                    net_send(&m);
+                }
+            }
+        }
+    }
+
+    // Paint every chair.
+    for c in &g.chairs {
+        let w = world_of(c.pos.x, c.pos.y);
+        if let Ok(mut tf) = tfs.get_mut(c.ent) {
+            tf.translation.x = w.x;
+            tf.translation.y = w.y;
+            tf.rotation = Quat::from_rotation_z(-c.ang);
+        }
+        if let Ok(mut sp) = sprites.get_mut(c.ent) {
+            let base = PLAYER_COLORS[c.seat % 12];
+            sp.color = if c.balloons <= 0 {
+                base.with_alpha(0.15)
+            } else if c.inv_t > 0.0 {
+                base.with_alpha(0.5)
+            } else {
+                base
+            };
+        }
+        if let Ok(mut tf) = tfs.get_mut(c.balloon_ent) {
+            tf.translation.x = w.x;
+            tf.translation.y = w.y + 18.0;
+        }
+        if let Ok(mut sp) = sprites.get_mut(c.balloon_ent) {
+            sp.custom_size = Some(Vec2::new(10.0 * c.balloons.max(0) as f32, 5.0));
+        }
+    }
+}
+
+/// Bot chairs (local rounds): chase a box or the nearest live rival, fire
+/// when roughly lined up. Dumb, cheerful, dangerous in numbers.
+fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
+    if g.net || g.over.is_some() {
+        return;
+    }
+    let dt = time.delta_secs();
+    let positions: Vec<(usize, Vec2, i32)> =
+        g.chairs.iter().map(|c| (c.seat, c.pos, c.balloons)).collect();
+    let boxes: Vec<Vec2> = g
+        .boxes
+        .iter()
+        .filter(|b| b.up_in <= 0.0)
+        .map(|b| Vec2::new(b.cell.0 as f32 + 0.5, b.cell.1 as f32 + 0.5))
+        .collect();
+    let mut fire_req: Vec<usize> = Vec::new();
+    for i in 0..g.chairs.len() {
+        let c = &mut g.chairs[i];
+        if c.human || c.balloons <= 0 {
+            continue;
+        }
+        c.think -= dt;
+        // Target: a box when unarmed, the nearest live rival when armed.
+        let target = if c.item.is_none() {
+            boxes.iter().min_by(|a, b| {
+                a.distance(c.pos).partial_cmp(&b.distance(c.pos)).unwrap_or(std::cmp::Ordering::Equal)
+            }).copied()
+        } else {
+            positions
+                .iter()
+                .filter(|(s, _, b)| *s != c.seat && *b > 0)
+                .min_by(|a, b| a.1.distance(c.pos).partial_cmp(&b.1.distance(c.pos)).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(_, p, _)| *p)
+        };
+        let Some(t) = target else { continue };
+        let want = (-(t.y - c.pos.y)).atan2(t.x - c.pos.x);
+        let mut da = want - c.ang;
+        while da > std::f32::consts::PI {
+            da -= std::f32::consts::TAU;
+        }
+        while da < -std::f32::consts::PI {
+            da += std::f32::consts::TAU;
+        }
+        if c.spin_t <= 0.0 {
+            c.ang += da.clamp(-TURN_RATE * dt, TURN_RATE * dt);
+            c.speed += ACCEL * 0.8 * dt;
+        }
+        if c.item.is_some() && da.abs() < 0.25 && c.think <= 0.0 && t.distance(c.pos) < 9.0 {
+            c.think = 0.8;
+            let kind = c.item.take().unwrap();
+            if kind == 2 {
+                c.boost_t = 1.2;
+            } else {
+                fire_req.push(i);
+            }
+        }
+    }
+    for i in fire_req {
+        fire_item(&mut commands, &mut g, i, 0, false);
+    }
+}
+
+/// Shots travel, bounce once, and pop balloons on locally-owned chairs.
+fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>, mut tfs: Query<&mut Transform>) {
+    if g.over.is_some() {
+        return;
+    }
+    let dt = time.delta_secs();
+    let rows = g.rows.clone();
+    let net = g.net;
+    let mut pops: Vec<(usize, usize)> = Vec::new(); // chair idx, by-seat
+    let mut dead_shots = Vec::new();
+    for si in 0..g.shots.len() {
+        let s = &mut g.shots[si];
+        let next = s.pos + s.vel * dt;
+        if solid_at(&rows, next) {
+            if s.bounces > 0 {
+                s.bounces -= 1;
+                // Bounce off whichever axis hit.
+                if solid_at(&rows, Vec2::new(next.x, s.pos.y)) {
+                    s.vel.x = -s.vel.x;
+                } else {
+                    s.vel.y = -s.vel.y;
+                }
+                sfx("tick");
+            } else {
+                dead_shots.push(si);
+                continue;
+            }
+        } else {
+            s.pos = next;
+        }
+        let w = world_of(s.pos.x, s.pos.y);
+        if let Ok(mut tf) = tfs.get_mut(s.ent) {
+            tf.translation.x = w.x;
+            tf.translation.y = w.y;
+        }
+    }
+    // Hits: only chairs this machine owns decide they were hit.
+    for (ci, c) in g.chairs.iter().enumerate() {
+        let owned = c.human || (!net && !c.remote);
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 {
+            continue;
+        }
+        for (si, s) in g.shots.iter().enumerate() {
+            if s.owner != c.seat && s.pos.distance(c.pos) < 0.6 {
+                pops.push((ci, s.owner));
+                dead_shots.push(si);
+                break;
+            }
+        }
+    }
+    dead_shots.sort_unstable();
+    dead_shots.dedup();
+    for si in dead_shots.into_iter().rev() {
+        let s = g.shots.remove(si);
+        commands.entity(s.ent).despawn();
+    }
+    for (ci, by) in pops {
+        pop_balloon(&mut commands, &mut g, ci, by);
+    }
+}
+
+fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
+    let my = g.my_seat;
+    let net = g.net;
+    {
+        let c = &mut g.chairs[ci];
+        c.balloons -= 1;
+        c.inv_t = 1.5;
+        c.spin_t = 0.8;
+        sfx("boom");
+        let w = world_of(c.pos.x, c.pos.y);
+        popup(commands, "POP!", 18.0, RED, w + Vec2::new(0.0, 26.0));
+        if c.seat == my {
+            stat("balloons_lost", 1);
+        }
+    }
+    // Credit the popper.
+    if let Some(p) = g.chairs.iter_mut().find(|c| c.seat == by) {
+        p.pops += 1;
+        if p.seat == my {
+            g.score += 200;
+            stat("balloons_popped", 1);
+        }
+    }
+    let seat = g.chairs[ci].seat;
+    if net && seat == my {
+        if let Ok(m) = serde_json::to_string(&WPop { t: "pop".into(), by: by as u8 }) {
+            net_send(&m);
+        }
+    }
+    // Elimination and the end of the derby.
+    if g.chairs[ci].balloons <= 0 {
+        let w = world_of(g.chairs[ci].pos.x, g.chairs[ci].pos.y);
+        popup(commands, "OUT!", 22.0, AMBER, w);
+        if seat == my {
+            stat("chairs_lost", 1);
+        }
+    }
+    let alive: Vec<usize> = g.chairs.iter().filter(|c| c.balloons > 0).map(|c| c.seat).collect();
+    if alive.len() <= 1 && g.over.is_none() {
+        finish(commands, g, alive.first().copied());
+    }
+}
+
+fn finish(commands: &mut Commands, g: &mut Garage, winner: Option<usize>) {
+    let my = g.my_seat;
+    let mine = g.chairs.iter().find(|c| c.seat == my);
+    let my_pops = mine.map(|c| c.pops).unwrap_or(0);
+    let survived = mine.map(|c| c.balloons > 0).unwrap_or(false);
+    g.score += my_pops * 200 + if survived { 500 } else { 0 } + if winner == Some(my) { 500 } else { 0 };
+    if winner == Some(my) {
+        stat("floors_taken", 1);
+    }
+    g.result = match winner {
+        Some(w) if w == my => "THE FLOOR IS YOURS.".into(),
+        Some(w) => format!("CHAIR {} TAKES THE FLOOR.", w + 1),
+        None => "EVERYONE'S ON THE CARPET.".into(),
+    };
+    popup(commands, &g.result.clone(), 28.0, GREEN, Vec2::new(0.0, 40.0));
+    g.over = Some(Timer::from_seconds(2.6, TimerMode::Once));
+    sfx(if winner == Some(my) { "win" } else { "over" });
+}
+
+/// Puddles spin chairs; box respawns tick; the round clock can call time.
+fn hazards(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
+    if g.over.is_some() {
+        return;
+    }
+    let dt = time.delta_secs();
+    let net = g.net;
+    let mut expired = Vec::new();
+    let mut pops = Vec::new();
+    for (pi, p) in g.puddles.iter_mut().enumerate() {
+        p.ttl -= dt;
+        if p.ttl <= 0.0 {
+            expired.push(pi);
+        }
+    }
+    for pi in expired.into_iter().rev() {
+        let p = g.puddles.remove(pi);
+        commands.entity(p.ent).despawn();
+    }
+    let puds: Vec<(usize, Vec2)> = g.puddles.iter().map(|p| (p.owner, p.pos)).collect();
+    for (ci, c) in g.chairs.iter_mut().enumerate() {
+        let owned = c.human || (!net && !c.remote);
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 {
+            continue;
+        }
+        for &(owner, pos) in &puds {
+            if owner != c.seat && c.pos.distance(pos) < 0.7 && c.spin_t <= 0.0 {
+                pops.push((ci, owner));
+                break;
+            }
+        }
+    }
+    for (ci, by) in pops {
+        pop_balloon(&mut commands, &mut g, ci, by);
+    }
+    if g.clock <= 0.0 && g.over.is_none() {
+        // Time: most balloons wins; pops break ties.
+        let best = g
+            .chairs
+            .iter()
+            .max_by_key(|c| (c.balloons, c.pops))
+            .map(|c| c.seat);
+        finish(&mut commands, &mut g, best);
+    }
+}
+
+fn boxes_spin(time: Res<Time>, mut g: ResMut<Garage>, mut sprites: Query<&mut Sprite>, mut tfs: Query<&mut Transform>) {
+    let dt = time.delta_secs();
+    for b in g.boxes.iter_mut() {
+        b.up_in = (b.up_in - dt).max(0.0);
+        if let Ok(mut sp) = sprites.get_mut(b.ent) {
+            sp.color = if b.up_in > 0.0 { AMBER.with_alpha(0.12) } else { AMBER };
+        }
+        if let Ok(mut tf) = tfs.get_mut(b.ent) {
+            tf.rotate_z(dt * 1.2);
+        }
+    }
+}
+
+fn net_apply(
+    mut events: EventReader<NetIn>,
+    net: Res<NetMode>,
+    mut commands: Commands,
+    mut g: ResMut<Garage>,
+) {
+    let Some(cfg) = &net.0 else {
+        events.clear();
+        return;
+    };
+    for ev in events.read() {
+        if ev.left {
+            if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == ev.seat as usize) {
+                c.balloons = 0;
+                c.remote = false;
+            }
+            let alive: Vec<usize> =
+                g.chairs.iter().filter(|c| c.balloons > 0).map(|c| c.seat).collect();
+            if alive.len() <= 1 && g.over.is_none() {
+                finish(&mut commands, &mut g, alive.first().copied());
+            }
+            continue;
+        }
+        if ev.seat == cfg.seat {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&ev.data) else { continue };
+        match v.get("t").and_then(|t| t.as_str()) {
+            Some("pos") => {
+                if let Ok(p) = serde_json::from_str::<WPos>(&ev.data) {
+                    if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == ev.seat as usize) {
+                        c.pos = Vec2::new(p.x, p.y);
+                        c.ang = p.a;
+                        c.balloons = p.b;
+                    }
+                }
+            }
+            Some("fire") => {
+                if let Ok(f) = serde_json::from_str::<WFire>(&ev.data) {
+                    if let Some(idx) = g.chairs.iter().position(|c| c.seat == ev.seat as usize) {
+                        let (save_pos, save_ang) = (g.chairs[idx].pos, g.chairs[idx].ang);
+                        g.chairs[idx].pos = Vec2::new(f.x, f.y);
+                        g.chairs[idx].ang = f.a;
+                        fire_item(&mut commands, &mut g, idx, f.k, false);
+                        g.chairs[idx].pos = save_pos;
+                        g.chairs[idx].ang = save_ang;
+                    }
+                }
+            }
+            Some("pop") => {
+                if let Ok(p) = serde_json::from_str::<WPop>(&ev.data) {
+                    // Their balloon count arrives via pos; here we credit.
+                    if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == p.by as usize) {
+                        c.pops += 1;
+                        if c.seat == g.my_seat {
+                            g.score += 200;
+                            stat("balloons_popped", 1);
+                        }
+                    }
+                }
+            }
+            Some("box") => {
+                if let Ok(b) = serde_json::from_str::<WBox>(&ev.data) {
+                    if let Some(bx) = g.boxes.get_mut(b.i as usize) {
+                        bx.up_in = 7.0;
+                    }
+                }
+            }
+            Some("lv") => {
+                // Arrived before we really started: adopt the host's arena
+                // by just restarting our local state from it would be heavy;
+                // instead walls/boxes were already built from OUR rows. The
+                // page hands hosts and guests the same doc via the picker in
+                // the common case; a custom host map redraw is accepted as a
+                // follow-up if the rows differ. For now: adopt collision.
+                if let Ok(lv) = serde_json::from_str::<WLevel>(&ev.data) {
+                    if lv.rows.len() == AH && lv.rows.iter().all(|r| r.chars().count() == AW) {
+                        g.rows = lv.rows;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn hud(g: Res<Garage>, mut hud: Query<&mut Text2d, With<Hud>>) {
+    if let Ok(mut t) = hud.single_mut() {
+        let s = if g.over.is_some() {
+            g.result.clone()
+        } else {
+            let me = g.chairs.iter().find(|c| c.seat == g.my_seat);
+            let item = match me.and_then(|c| c.item) {
+                Some(0) => "  [STAPLER]",
+                Some(1) => "  [COFFEE]",
+                Some(2) => "  [ESPRESSO]",
+                Some(3) => "  [TRIPLE]",
+                _ => "",
+            };
+            let alive = g.chairs.iter().filter(|c| c.balloons > 0).count();
+            format!(
+                "BALLOONS {}   POPS {}   {} ROLLING   {}:{:02}{}",
+                me.map(|c| c.balloons.max(0)).unwrap_or(0),
+                me.map(|c| c.pops).unwrap_or(0),
+                alive,
+                (g.clock.max(0.0) as u32) / 60,
+                (g.clock.max(0.0) as u32) % 60,
+                item
+            )
+        };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+}
+
+fn endgame(
+    time: Res<Time>,
+    mut g: ResMut<Garage>,
+    editor: Option<ResMut<ArenaEditor>>,
+    mut final_score: ResMut<FinalScore>,
+    mut next: ResMut<NextState<Phase>>,
+) {
+    if let Some(t) = g.over.as_mut() {
+        if t.tick(time.delta()).finished() {
+            if let Some(mut e) = editor {
+                if e.testing {
+                    e.testing = false;
+                    e.active = true;
+                    g.over = None;
+                    return;
+                }
+            }
+            final_score.0 = g.score;
+            next.set(Phase::GameOver);
+        }
+    }
+}
+
+// ── the arena editor ─────────────────────────────────────────────────────
+
+#[derive(Component)]
+struct EdTag;
+
+#[derive(Component)]
+struct EdCell(usize, usize);
+
+#[derive(Component)]
+struct EdHud;
+
+const ED_BRUSHES: [(char, &str); 4] = [('#', "WALL"), ('.', "FLOOR"), ('B', "BOX"), ('s', "SPAWN")];
+
+fn ed_color(ch: char) -> Color {
+    match ch {
+        '#' => Color::srgb(0.34, 0.36, 0.42),
+        'B' => AMBER,
+        's' => GREEN,
+        _ => Color::srgb(0.08, 0.09, 0.13),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn editor_update(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    editor: Option<ResMut<ArenaEditor>>,
+    garage: Option<ResMut<Garage>>,
+    canvas: Query<Entity, With<EdTag>>,
+    mut cells: Query<(&EdCell, &mut Sprite)>,
+    mut ed_hud: Query<&mut Text2d, With<EdHud>>,
+    mut next: ResMut<NextState<Phase>>,
+) {
+    let Some(mut editor) = editor else { return };
+    if !editor.active {
+        if editor.testing && keys.just_pressed(KeyCode::KeyX) {
+            editor.testing = false;
+            editor.active = true;
+        }
+        if !editor.active {
+            return;
+        }
+    }
+    let _ = garage;
+    if canvas.is_empty() {
+        commands.spawn((
+            Sprite { color: Color::srgb(0.02, 0.02, 0.05), custom_size: Some(Vec2::new(720.0, 640.0)), ..default() },
+            Transform::from_xyz(0.0, 0.0, 9.5),
+            EdTag,
+            GameTag,
+        ));
+        for y in 0..AH {
+            for x in 0..AW {
+                let p = world_of(x as f32 + 0.5, y as f32 + 0.5);
+                commands.spawn((
+                    Sprite { color: DIM, custom_size: Some(Vec2::splat(ACELL - 2.0)), ..default() },
+                    Transform::from_xyz(p.x, p.y, 10.0),
+                    EdCell(x, y),
+                    EdTag,
+                    GameTag,
+                ));
+            }
+        }
+        let legend = text(&mut commands, "", 12.0, AMBER, Vec3::new(0.0, -300.0, 10.5));
+        commands.entity(legend).insert((EdHud, EdTag, GameTag));
+        return;
+    }
+    for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4].iter().enumerate() {
+        if keys.just_pressed(*key) {
+            editor.brush = ED_BRUSHES[i].0;
+            sfx("tick");
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyS) && keys.pressed(KeyCode::ShiftLeft) {
+        let spawns: usize = editor.rows.iter().map(|r| r.chars().filter(|&c| c == 's').count()).sum();
+        if spawns < 2 {
+            if let Ok(mut t) = ed_hud.single_mut() {
+                t.0 = "!! PLACE AT LEAST TWO SPAWNS (4) !!".into();
+            }
+            sfx("buzz");
+        } else {
+            let doc = ArenaDoc { v: 1, name: String::new(), rows: editor.rows.clone() };
+            if let Ok(json) = serde_json::to_string(&doc) {
+                crate::shell::save_level(&json);
+                sfx("clear");
+            }
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyG) {
+        // Test-play: tear down and restart the Playing phase on this canvas.
+        editor.active = false;
+        editor.testing = true;
+        for e in &canvas {
+            commands.entity(e).despawn();
+        }
+        crate::shell::mark_editor_pending(); // setup would re-open the editor;
+        crate::shell::take_editor_pending(); // consume it: we want a ROUND.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let doc = ArenaDoc { v: 1, name: String::new(), rows: editor.rows.clone() };
+            if let Ok(json) = serde_json::to_string(&doc) {
+                let _ = js_sys::Reflect::set(
+                    &js_sys::global(),
+                    &"__ARCADE_LEVEL".into(),
+                    &json.into(),
+                );
+            }
+        }
+        next.set(Phase::Playing);
+        sfx("coin");
+        return;
+    }
+    let place = buttons.pressed(MouseButton::Left);
+    let erase = buttons.pressed(MouseButton::Right);
+    if place || erase {
+        if let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) {
+            if let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) {
+                let x = ((world.x + 360.0) / ACELL).floor() as i32;
+                let y = ((250.0 - world.y) / ACELL + 1.0).floor() as i32 - 1;
+                if x > 0 && (x as usize) < AW - 1 && y > 0 && (y as usize) < AH - 1 {
+                    let ch = if erase { '.' } else { editor.brush };
+                    let mut chars: Vec<char> = editor.rows[y as usize].chars().collect();
+                    chars[x as usize] = ch;
+                    editor.rows[y as usize] = chars.into_iter().collect();
+                }
+            }
+        }
+    }
+    for (c, mut sp) in &mut cells {
+        let ch = cell_at(&editor.rows, c.0 as i32, c.1 as i32);
+        let want = ed_color(ch);
+        if sp.color != want {
+            sp.color = want;
+        }
+    }
+    if let Ok(mut t) = ed_hud.single_mut() {
+        let name = ED_BRUSHES.iter().find(|(c, _)| *c == editor.brush).map(|(_, n)| *n).unwrap_or("?");
+        let s = format!(
+            "GARAGE EDITOR - BRUSH: {name}\n1 WALL 2 FLOOR 3 BOX 4 SPAWN - LCLICK PAINTS - RCLICK ERASES - SHIFT+S SAVES - G TEST-PLAYS - X RETURNS"
+        );
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+}

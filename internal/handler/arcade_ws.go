@@ -31,6 +31,13 @@ var arcadeNetGames = map[string]struct{ minSeats, maxSeats int }{
 	"interns":      {2, 2},
 	"texas-holdem": {2, 6},
 	"night-audit":  {2, 12},
+	// BUMPER CHAIRS is real-time peer streaming; the three board-game
+	// cabinets are turn-based full-state snapshots. HOMESTEAD's floor of 3
+	// matches the genre's recommended table.
+	"bumper-chairs": {2, 12},
+	"roll-call":     {2, 8},
+	"floor-plan":    {2, 8},
+	"homestead":     {3, 4},
 }
 
 // holdemDealer is the ONE exception to "the server is only a relay": poker

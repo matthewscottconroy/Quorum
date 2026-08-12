@@ -102,6 +102,22 @@ var arcadeStatNames = map[string][]string{
 		"swats", "bugs_swatted", "whiffs", "stings", "multi_kills",
 		"hornets_downed", "waves_cleared", "shifts_cleared",
 	},
+	"bumper-chairs": {
+		"items_used", "staplers_thrown", "boxes_grabbed", "balloons_lost",
+		"balloons_popped", "chairs_lost", "floors_taken",
+	},
+	"roll-call": {
+		"rolls_thrown", "boxes_filled", "five_alikes", "zeroes_taken",
+		"tables_won",
+	},
+	"floor-plan": {
+		"deeds_bought", "desks_built", "rent_paid", "rent_collected",
+		"hr_visits", "laps_completed", "floors_owned",
+	},
+	"homestead": {
+		"halls_built", "outposts_founded", "offices_upgraded", "ideas_drawn",
+		"guards_played", "inspector_moves", "resources_gained", "homesteads_won",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {
