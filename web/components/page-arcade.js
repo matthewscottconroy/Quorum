@@ -258,6 +258,8 @@ const STAT_LABELS = {
   gravity_lessons: 'GRAVITY LESSONS TAUGHT', quits_ordered: 'LOUD QUITS ARRANGED',
   nukes_ordered: 'MASS RESIGNATIONS FILED', climbers_hired: 'CLIMBERS CERTIFIED',
   miners_deployed: 'MINERS SENT DIAGONAL',
+  medals_gold: 'GOLD MEDALS (90%+ SAVED)', medals_silver: 'SILVER MEDALS (75%+ SAVED)',
+  medals_bronze: 'BRONZE MEDALS (QUOTA MET)',
   chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
   bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
   diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
@@ -337,6 +339,7 @@ class PageArcade extends HTMLElement {
           <h1 class="tsx-title">TOP SECRET</h1>
           <div class="tsx-sub">Basement arcade. Credits are play tokens — logged to your account, never billed. You didn't see this room.</div>
         </div>
+        <div class="tsx-head" id="challenge" style="display:none;margin-bottom:1rem"></div>
         <div class="tsx-grid" id="floor">${CABINETS.map(c => `
           <div class="tsx-cab" data-g="${esc(c.id)}" role="button" tabindex="0" aria-label="Play ${esc(c.name)}">
             <h3>${esc(c.name)}</h3>
@@ -356,6 +359,7 @@ class PageArcade extends HTMLElement {
           <div id="rec-cards" class="tsx-grid" style="margin-top:.8rem"></div>
         </div>
       </div>`;
+    this.loadChallenge();
     this.querySelectorAll('.tsx-cab').forEach(el => {
       const open = () => { location.hash = `#/arcade?g=${el.dataset.g}`; };
       el.addEventListener('click', open);
@@ -454,6 +458,13 @@ class PageArcade extends HTMLElement {
                 </label>
                 <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>
                 <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
+              ${cab.id === 'powder-keg' ? `
+                <label class="tsc-note">ROUNDS
+                  <select id="sel-rounds" class="tsc-sel" title="Best-of-3: first to two round wins takes the match (local only)">
+                    <option value="1">SINGLE</option>
+                    <option value="3">BEST OF 3</option>
+                  </select>
+                </label>` : ''}
               ${CLOCKS[cab.id] ? `
                 <label class="tsc-note">CLOCK
                   <select id="sel-clock" class="tsc-sel">
@@ -489,6 +500,39 @@ class PageArcade extends HTMLElement {
 
     this.loadScores(cab.id);
     this.bootCartridge(cab);
+  }
+
+  /** This week's spotlight cabinet and its week-only ladder. */
+  async loadChallenge() {
+    let ch;
+    try { ch = await api('GET', '/arcade/challenge'); } catch { return; }
+    const el = this.querySelector('#challenge');
+    const cab = CABINETS.find(c => c.id === ch.game);
+    if (!el || !cab) return;
+    const rows = (ch.top ?? []).map((s, i) =>
+      `<div style="display:flex;gap:.6rem;font-size:.78rem;color:#cfcfe0">
+         <span style="color:#6d6d88;width:1.1rem">${i + 1}.</span>
+         <span style="flex:1">${esc(s.player_name)}</span>
+         <span style="color:#ffd166;font-variant-numeric:tabular-nums">${Number(s.score).toLocaleString()}</span>
+       </div>`).join('') ||
+      '<div style="font-size:.78rem;color:#6d6d88">No scores yet this week — the ladder is wide open.</div>';
+    el.innerHTML = `
+      <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:240px">
+          <div style="font-size:.68rem;letter-spacing:.25em;color:#ff5577">WEEKLY CHALLENGE · ${esc(ch.week)}</div>
+          <div style="font-size:1.1rem;letter-spacing:.2em;color:#7CFC9A;text-shadow:0 0 6px rgba(124,252,154,.6);margin:.25rem 0">${esc(ch.name)} — ${esc(cab.name)}</div>
+          <div style="font-size:.8rem;color:#9a9ab2">${esc(ch.blurb)} Scores this week only; the ladder resets Monday.</div>
+          <button class="tsc-btn" id="challenge-play" style="margin-top:.6rem">PLAY ${esc(cab.name)} →</button>
+        </div>
+        <div style="min-width:220px">
+          <div style="font-size:.68rem;letter-spacing:.2em;color:#8f8fa8;margin-bottom:.35rem">THIS WEEK'S LADDER</div>
+          ${rows}
+        </div>
+      </div>`;
+    el.style.display = '';
+    el.querySelector('#challenge-play').addEventListener('click', () => {
+      location.hash = `#/arcade?g=${ch.game}`;
+    });
   }
 
   /** The service-record browser: pick any member, read their whole file. */
@@ -563,6 +607,16 @@ class PageArcade extends HTMLElement {
     window.__arcadeStats = async json => {
       try {
         const stats = JSON.parse(json);
+        // Campaign: a medal on a house floor unlocks the next one in the picker.
+        if (cab.id === 'interns' && (stats.medals_gold || stats.medals_silver || stats.medals_bronze)) {
+          const sel = this.querySelector('#sel-level');
+          const m = /^b(\d+)$/.exec(sel?.value ?? '');
+          if (m && Number(m[1]) < 8) {
+            sel.value = `b${Number(m[1]) + 1}`;
+            const medal = stats.medals_gold ? 'GOLD' : stats.medals_silver ? 'SILVER' : 'BRONZE';
+            toast(`${medal} medal — floor cleared! The next floor is loaded in the LEVEL picker.`, 'success');
+          }
+        }
         await api('POST', `/arcade/${cab.id}/stats-report`, { stats });
       } catch { /* the record is decoration; the round still counts */ }
     };
@@ -647,6 +701,8 @@ class PageArcade extends HTMLElement {
         try {
           await this.resolveLevel(cab);
           this.resolveClock();
+          const rounds = this.querySelector('#sel-rounds');
+          if (rounds) window.__ARCADE_ROUNDS = Number(rounds.value); else delete window.__ARCADE_ROUNDS;
           const res = await api('POST', `/arcade/${cab.id}/credit`);
           toast(`Credit ${res.credits} logged. Go!`, 'success');
           mod.arcade_insert_credit(players, humans);

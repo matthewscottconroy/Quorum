@@ -302,6 +302,10 @@ struct Table {
     /// Two humans, one keyboard: every result pays a flat token so nobody
     /// farms the leaderboard by playing both chairs.
     hotseat: bool,
+    /// Coordinate move record ("e2-e4", "f7xg8=Q"), oldest first.
+    moves: Vec<String>,
+    /// Snapshots for U-takeback: (board, last_move) BEFORE each move.
+    history: Vec<(Board, Option<(usize, usize)>)>,
     /// Online per-turn clock: stall past it and you forfeit.
     turn_clock: Timer,
     /// Optional game clock, seconds remaining [White, Black]. The side to
@@ -507,6 +511,8 @@ fn setup(
         bot_think: Timer::from_seconds(0.55, TimerMode::Once),
         search: None,
         hotseat: net.0.is_none() && config.humans >= 2,
+        moves: Vec::new(),
+        history: Vec::new(),
         turn_clock: Timer::from_seconds(TURN_SECS, TimerMode::Once),
         clock,
         result: String::new(),
@@ -540,12 +546,14 @@ fn setup(
     commands.entity(hud).insert((Hud, GameTag));
     let help = text(
         &mut commands,
-        "WHITE: GREEN\nBLACK: MAGENTA\n\nR+R RESIGN",
+        "WHITE: GREEN\nBLACK: MAGENTA\n\nU UNDO (LOCAL)\nR+R RESIGN",
         18.0,
         DIM,
         Vec3::new(275.0, -160.0, 2.0),
     );
     commands.entity(help).insert(GameTag);
+    let ml = text(&mut commands, "", 12.0, DIM, Vec3::new(275.0, 20.0, 2.0));
+    commands.entity(ml).insert((MoveListText, GameTag));
 }
 
 /// Shared mesh handles for the drawn piece silhouettes. The cart font is
@@ -659,6 +667,13 @@ fn spawn_piece(kid: &mut ChildSpawnerCommands, fx: &ChessFx, mat: usize, color: 
     }
 }
 
+#[derive(Component)]
+struct MoveListText;
+
+fn sq_name(sq: usize) -> String {
+    format!("{}{}", (b'a' + file(sq) as u8) as char, rank(sq) + 1)
+}
+
 fn mmss(secs: f32) -> String {
     let s = secs.ceil() as u32;
     format!("{}:{:02}", s / 60, s % 60)
@@ -692,6 +707,20 @@ fn commit_move(table: &mut Table, m: Move, mine: bool) {
     } else if capture {
         stat("pieces_lost", 1);
     }
+    table.history.push((table.board.clone(), table.last_move));
+    table.moves.push(format!(
+        "{}{}{}{}",
+        sq_name(m.from),
+        if capture { "x" } else { "-" },
+        sq_name(m.to),
+        match m.promo {
+            Some(Piece::Queen) => "=Q",
+            Some(Piece::Rook) => "=R",
+            Some(Piece::Bishop) => "=B",
+            Some(Piece::Knight) => "=N",
+            _ => "",
+        }
+    ));
     table.board.apply(m);
     if mine && table.board.in_check(table.board.turn) {
         stat("checks_given", 1);
@@ -960,6 +989,8 @@ fn editor_update(
                 table.hashes = vec![table.board.position_hash()];
                 table.legal = table.board.legal_moves();
                 table.last_move = None;
+                table.moves.clear();
+                table.history.clear();
                 table.over_wait = None;
                 table.result.clear();
                 table.final_score = 0;
@@ -1031,7 +1062,8 @@ fn clicks(
     pieces: Query<Entity, With<PieceSprite>>,
     highlights: Query<Entity, With<Highlight>>,
     promo_buttons: Query<(&PromoButton, &Transform)>,
-    mut hud: Query<&mut Text2d, With<Hud>>,
+    mut hud: Query<&mut Text2d, (With<Hud>, Without<MoveListText>)>,
+    mut movelist: Query<&mut Text2d, (With<MoveListText>, Without<Hud>)>,
 ) {
     if table.dirty {
         table.dirty = false;
@@ -1062,6 +1094,35 @@ fn clicks(
     if let Some(t) = table.resign_arm.as_mut() {
         if t.tick(time.delta()).finished() {
             table.resign_arm = None;
+        }
+    }
+    // U takes back the last move — local rounds only (online it's called
+    // begging). Vs the machine both half-moves come back, so it's your turn.
+    if keys.just_pressed(KeyCode::KeyU)
+        && net.0.is_none()
+        && !editor.active
+        && table.promo.is_none()
+        && table.over_wait.is_none()
+    {
+        let undo_n = if table.bot && table.history.len() >= 2 { 2 } else { 1 };
+        let mut undone = false;
+        for _ in 0..undo_n {
+            if let Some((b, lm)) = table.history.pop() {
+                table.board = b;
+                table.last_move = lm;
+                table.hashes.pop();
+                table.moves.pop();
+                undone = true;
+            }
+        }
+        if undone {
+            table.selected = None;
+            table.legal = table.board.legal_moves();
+            table.search = None;
+            table.bot_think.reset();
+            table.dirty = true;
+            stat("takebacks", 1);
+            sfx("tick");
         }
     }
     if keys.just_pressed(KeyCode::KeyR) && table.over_wait.is_none() && table.promo.is_none() {
@@ -1144,6 +1205,24 @@ fn clicks(
             };
             format!("{turn}\nTO MOVE{check}{whose}{mat_line}{clock}{resign}")
         };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+
+    if let Ok(mut t) = movelist.single_mut() {
+        let n = table.moves.len();
+        let start = n.saturating_sub(12) / 2 * 2;
+        let mut s = String::new();
+        let mut i = start;
+        while i < n {
+            s.push_str(&format!("{}.{}", i / 2 + 1, table.moves[i]));
+            if i + 1 < n {
+                s.push_str(&format!(" {}", table.moves[i + 1]));
+            }
+            s.push('\n');
+            i += 2;
+        }
         if t.0 != s {
             t.0 = s;
         }
@@ -1269,6 +1348,8 @@ fn net_apply(
                         table.selected = None;
                         table.turn_clock.reset();
                         table.clock = (su.time > 0).then(|| [su.time as f32; 2]);
+                        table.moves.clear();
+                        table.history.clear();
                         table.dirty = true;
                     }
                 }

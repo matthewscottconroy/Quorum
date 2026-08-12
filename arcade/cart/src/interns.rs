@@ -1754,9 +1754,28 @@ fn finish(game: &mut Game) {
     game.over_timer.reset();
     if game.players == 1 {
         let ok = game.saved[0] >= game.doc.need;
+        // Campaign medals: bronze clears the floor, silver saves 75%, gold
+        // saves 90%. The page sees the medal in the stats report and loads
+        // the next house floor into the picker.
+        let medal = if ok {
+            let pct = game.saved[0] as f32 / game.doc.count.max(1) as f32;
+            if pct >= 0.9 {
+                stat("medals_gold", 1);
+                " - GOLD MEDAL"
+            } else if pct >= 0.75 {
+                stat("medals_silver", 1);
+                " - SILVER MEDAL"
+            } else {
+                stat("medals_bronze", 1);
+                " - BRONZE MEDAL"
+            }
+        } else {
+            ""
+        };
         game.result = format!(
-            "{}\nSAVED {}/{} (NEED {})",
+            "{}{}\nSAVED {}/{} (NEED {})",
             if ok { "QUOTA MET" } else { "QUOTA MISSED" },
+            medal,
             game.saved[0],
             game.doc.count,
             game.doc.need

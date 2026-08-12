@@ -83,7 +83,7 @@ struct Well {
     rot: usize,
     x: i32,
     y: i32,
-    next: usize,
+    queue: [usize; 3],
     bag: Vec<usize>,
     score: u32,
     lines: u32,
@@ -218,14 +218,18 @@ fn fall_secs(lines: u32) -> f32 {
 fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
     let mut bag = Vec::new();
     let kind = bag_next(&mut rng, &mut bag);
-    let next = bag_next(&mut rng, &mut bag);
+    let queue = [
+        bag_next(&mut rng, &mut bag),
+        bag_next(&mut rng, &mut bag),
+        bag_next(&mut rng, &mut bag),
+    ];
     commands.insert_resource(Well {
         grid: [[false; 10]; 20],
         kind,
         rot: 0,
         x: 3,
         y: 0,
-        next,
+        queue,
         bag,
         score: 0,
         lines: 0,
@@ -270,9 +274,10 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
             well_cells.push(e);
         }
     }
-    let mut preview = Vec::with_capacity(16);
-    for y in 0..4 {
-        for x in 0..4 {
+    let mut preview = Vec::with_capacity(48);
+    for q in 0..3 {
+        for y in 0..4 {
+            for x in 0..4 {
             let e = commands
                 .spawn((
                     Sprite {
@@ -282,7 +287,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
                     },
                     Transform::from_xyz(
                         190.0 + x as f32 * CELL * 0.7,
-                        -20.0 - y as f32 * CELL * 0.7,
+                        -20.0 - q as f32 * 56.0 - y as f32 * CELL * 0.7,
                         2.0,
                     ),
                     Visibility::Hidden,
@@ -291,6 +296,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
                 .id();
             preview.push(e);
         }
+    }
     }
     let mut hold_box = Vec::with_capacity(16);
     for y in 0..4 {
@@ -304,7 +310,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
                     },
                     Transform::from_xyz(
                         190.0 + x as f32 * CELL * 0.7,
-                        -160.0 - y as f32 * CELL * 0.7,
+                        -235.0 - y as f32 * CELL * 0.7,
                         2.0,
                     ),
                     Visibility::Hidden,
@@ -318,7 +324,7 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
     commands.entity(hud).insert(GameTag);
     let nx = text(&mut commands, "NEXT", 20.0, AMBER, Vec3::new(230.0, 20.0, 2.0));
     commands.entity(nx).insert(GameTag);
-    let hl = text(&mut commands, "HOLD", 20.0, AMBER, Vec3::new(230.0, -120.0, 2.0));
+    let hl = text(&mut commands, "HOLD", 20.0, AMBER, Vec3::new(230.0, -195.0, 2.0));
     commands.entity(hl).insert(GameTag);
     commands.insert_resource(CellEnts { well: well_cells, preview, hold_box, hud });
 }
@@ -386,8 +392,9 @@ fn lock_piece(
     }
     // Next piece. Game over only if the SPAWN position itself is blocked —
     // the player always gets the spawn frame to shift or rotate free.
-    w.kind = w.next;
-    w.next = bag_next(rng, &mut w.bag);
+    w.kind = w.queue[0];
+    w.queue.rotate_left(1);
+    w.queue[2] = bag_next(rng, &mut w.bag);
     w.rot = 0;
     w.x = 3;
     w.y = -1;
@@ -457,8 +464,9 @@ fn steer(
         w.kind = match stashed {
             Some(k) => k,
             None => {
-                let n = w.next;
-                w.next = bag_next(&mut rng, &mut w.bag);
+                let n = w.queue[0];
+                w.queue.rotate_left(1);
+                w.queue[2] = bag_next(&mut rng, &mut w.bag);
                 n
             }
         };
@@ -592,15 +600,17 @@ fn paint(
             }
         }
     }
-    let mins = PIECES[w.next][0];
-    for y in 0..4 {
-        for x in 0..4 {
-            if let Ok(mut v) = vis.get_mut(ents.preview[y * 4 + x]) {
-                *v = if mins.contains(&(x as i32, y as i32)) {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
+    for q in 0..3 {
+        let mins = PIECES[w.queue[q]][0];
+        for y in 0..4 {
+            for x in 0..4 {
+                if let Ok(mut v) = vis.get_mut(ents.preview[q * 16 + y * 4 + x]) {
+                    *v = if mins.contains(&(x as i32, y as i32)) {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
             }
         }
     }

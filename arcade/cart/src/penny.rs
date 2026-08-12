@@ -69,6 +69,12 @@ struct Maze {
     respawn_pause: Timer,
     paused_for_death: bool,
     next_extra_life: u32,
+    /// The pursuit rhythm: auditors alternate CHASE with short SCATTER
+    /// breaks (each loops its own corner), the wave that gives maze-chase
+    /// games their breathing room. Flipping waves reverses everyone — the
+    /// classic tell that the mood changed.
+    wave_t: f32,
+    scattering: bool,
 }
 
 impl Maze {
@@ -190,6 +196,8 @@ fn setup(mut commands: Commands) {
         respawn_pause: Timer::from_seconds(1.2, TimerMode::Once),
         paused_for_death: false,
         next_extra_life: 10_000,
+        wave_t: 0.0,
+        scattering: false,
     });
 
     // Our hero: a small green square with a money grin (a lighter inlay).
@@ -319,13 +327,31 @@ fn advance(
 /// turns, 3 patrols corners until the runner is close. Frightened auditors
 /// flee; caught ones walk home to their office.
 fn auditor_brains(
-    maze: Res<Maze>,
+    time: Res<Time>,
+    mut maze: ResMut<Maze>,
     mut rng: ResMut<Rng>,
     players: Query<&Runner, (With<Player>, Without<Auditor>)>,
     mut auditors: Query<(&mut Runner, &Auditor), Without<Player>>,
 ) {
     if maze.paused_for_death {
         return;
+    }
+    // Scatter/chase clock (paused during write-off panic). Scatter windows
+    // shrink as the shifts pile up; from level 6 the auditors never rest.
+    if !maze.frightened {
+        maze.wave_t += time.delta_secs();
+    }
+    let scatter_len = (9.0 - maze.level as f32 * 1.5).max(0.0);
+    let scattering = scatter_len > 0.0 && maze.wave_t % 27.0 < scatter_len;
+    if scattering != maze.scattering {
+        maze.scattering = scattering;
+        // The turn-on-a-dime reversal that announces the wave change.
+        for (mut r, a) in &mut auditors {
+            if !a.dead && r.dir != IVec2::ZERO {
+                r.dir = -r.dir;
+                r.want = r.dir;
+            }
+        }
     }
     let Ok(p) = players.single() else { return };
     for (mut r, a) in &mut auditors {
@@ -345,6 +371,10 @@ fn auditor_brains(
                 .iter()
                 .max_by_key(|c| (c.x - p.tile.x).abs() + (c.y - p.tile.y).abs())
                 .unwrap()
+        } else if maze.scattering {
+            // Every auditor loops its own corner of the office.
+            [IVec2::new(1, 1), IVec2::new(W - 2, 1), IVec2::new(1, H - 2), IVec2::new(W - 2, H - 2)]
+                [a.idx % 4]
         } else {
             match a.idx {
                 0 => p.tile,

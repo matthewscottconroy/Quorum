@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -18,6 +20,7 @@ type arcadeRepo interface {
 	InsertCredit(ctx context.Context, userID, game string) (int, error)
 	SubmitScore(ctx context.Context, userID, game string, score int64) error
 	TopScores(ctx context.Context, game string, n int) ([]model.ArcadeScore, error)
+	TopScoresSince(ctx context.Context, game string, since time.Time, n int) ([]model.ArcadeScore, error)
 	Stats(ctx context.Context, userID string) ([]model.ArcadeGameStats, error)
 	SaveLevel(ctx context.Context, game, name, author, data string) (string, error)
 	ListLevels(ctx context.Context, game string) ([]model.ArcadeLevel, error)
@@ -47,6 +50,7 @@ var arcadeStatNames = map[string][]string{
 		"holds_used", "top_outs", "levels_reached",
 	},
 	"chess": {
+		"takebacks",
 		"moves_played", "captures_made", "pieces_lost", "checks_given",
 		"pawns_promoted", "knight_promotions", "machine_beaten", "beaten_by_machine",
 		"draws", "wins_online", "losses_online", "resignations", "hotseat_rounds",
@@ -70,7 +74,7 @@ var arcadeStatNames = map[string][]string{
 		"interns_saved", "interns_lost", "gravity_lessons", "quits_ordered",
 		"nukes_ordered", "climbers_hired", "chutes_issued", "supervisors_promoted",
 		"bridges_ordered", "bashers_unleashed", "diggers_deployed", "floor_wins",
-		"miners_deployed",
+		"miners_deployed", "medals_gold", "medals_silver", "medals_bronze",
 	},
 	"texas-holdem": {
 		"hands_played", "hands_won", "chips_won", "folds", "raises", "all_ins",
@@ -193,6 +197,47 @@ func (h *ArcadeHandler) TopScores(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, scores)
+}
+
+// The weekly challenge rotation: one cabinet in the spotlight per ISO week,
+// picked deterministically so every browser agrees without any state. The
+// ladder is that game's best scores achieved THIS week — it resets itself.
+var weeklyChallenges = []struct{ Game, Name, Blurb string }{
+	{"comet-buster", "IRON PILOT WEEK", "Chase the score. The saucer is on overtime."},
+	{"brickfall", "STACKING DERBY", "Lines pay double in spirit. Build tall, clear wide."},
+	{"penny-pincher", "COIN QUOTA", "The auditors smell overtime. Sweep every shift."},
+	{"interns", "FLOOR SUPERVISOR", "Save them all. The interns believe in you."},
+	{"powder-keg", "CELLAR CHAMPIONSHIP", "Twelve seats, one crown. Kegs for everyone."},
+	{"texas-holdem", "HIGH ROLLER WEEK", "Fictional chips, immortal glory."},
+	{"hexfection", "DISH DOMINION", "Convert like you mean it."},
+	{"chess", "GRANDMASTER GAUNTLET", "Beat the machine. Blitz clock optional, bragging mandatory."},
+	{"go", "NINE BY NINE", "Territory week on the little board."},
+}
+
+// Challenge returns this week's spotlight cabinet and its week-only ladder.
+func (h *ArcadeHandler) Challenge(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	year, week := now.ISOWeek()
+	pick := weeklyChallenges[(year*53+week)%len(weeklyChallenges)]
+	// Monday 00:00 UTC of the current ISO week.
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).
+		AddDate(0, 0, -(weekday - 1))
+	top, err := h.repo.TopScoresSince(r.Context(), pick.Game, start, 5)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"game":  pick.Game,
+		"name":  pick.Name,
+		"blurb": pick.Blurb,
+		"week":  fmt.Sprintf("%d-W%02d", year, week),
+		"top":   top,
+	})
 }
 
 // Stats returns one summary per cabinet, including the caller's own numbers.

@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -83,6 +84,39 @@ func (r *ArcadeRepo) TopScores(ctx context.Context, game string, n int) ([]model
 		LEFT JOIN members m ON m.id = u.member_id
 		ORDER BY best.score DESC, best.achieved_at
 		LIMIT $2`, game, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.ArcadeScore{}
+	for rows.Next() {
+		var s model.ArcadeScore
+		if err := rows.Scan(&s.PlayerName, &s.Score, &s.AchievedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// TopScoresSince is TopScores restricted to scores achieved on or after
+// `since` — the weekly challenge ladder, which therefore resets itself.
+func (r *ArcadeRepo) TopScoresSince(ctx context.Context, game string, since time.Time, n int) ([]model.ArcadeScore, error) {
+	if n <= 0 || n > 100 {
+		n = 10
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT coalesce(m.display_name, 'MYSTERY PLAYER'), best.score, best.achieved_at
+		FROM (
+			SELECT DISTINCT ON (s.user_id) s.user_id, s.score, s.created_at AS achieved_at
+			FROM arcade_scores s
+			WHERE s.game = $1 AND s.created_at >= $3
+			ORDER BY s.user_id, s.score DESC, s.created_at
+		) best
+		JOIN users u ON u.id = best.user_id
+		LEFT JOIN members m ON m.id = u.member_id
+		ORDER BY best.score DESC, best.achieved_at
+		LIMIT $2`, game, n, since)
 	if err != nil {
 		return nil, err
 	}

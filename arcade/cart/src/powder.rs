@@ -90,6 +90,22 @@ fn clear_spawn_pockets(tiles: &mut [Tile], planted: &mut [Option<Perk>], players
     }
 }
 
+/// The page's ROUNDS picker: 1 (single) or 3 (best-of-3). Local only.
+fn page_rounds() -> u32 {
+    #[cfg(target_arch = "wasm32")]
+    let n = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_ROUNDS".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    let n = 1.0f64;
+    if n >= 3.0 {
+        2 // first to two round wins
+    } else {
+        1
+    }
+}
+
 enum CellarSpec {
     Random,
     Doc(PowderDoc),
@@ -590,6 +606,17 @@ struct Arena {
     /// Once the walls stop, this fuse burns toward a declared draw so two
     /// cowards in the final chamber cannot stall the cabinet forever.
     settle: Timer,
+    /// Best-of-3 (local): first to `match_target` round wins takes the
+    /// match. 1 = the classic single round.
+    match_target: u32,
+    round_wins: Vec<u32>,
+    rounds_played: u32,
+    /// Set when a round (not the match) ends; the next-round system resets
+    /// the field when the banner timer runs out.
+    next_round: bool,
+    /// The freshly-loaded field, kept to restock every match round.
+    initial_tiles: Vec<Tile>,
+    initial_planted: Vec<Option<Perk>>,
 }
 
 impl Arena {
@@ -675,6 +702,7 @@ impl Plugin for PowderPlugin {
                     closing_walls,
                     host_broadcast,
                     finish,
+                    match_next_round,
                     guest_input,
                     guest_apply,
                     guest_smooth,
@@ -843,7 +871,14 @@ fn setup(
     }
 
     let n = (COLS * ROWS) as usize;
+    let match_target = if net.0.is_none() && !editor_mode { page_rounds() } else { 1 };
     commands.insert_resource(Arena {
+        initial_tiles: tiles.clone(),
+        initial_planted: planted.clone(),
+        match_target,
+        round_wins: vec![0; players],
+        rounds_played: 0,
+        next_round: false,
         tiles,
         planted,
         bombs: vec![None; n],
@@ -1648,7 +1683,7 @@ fn finish(
             let rank = seat_rank(&arena, total, 0, me.alive);
             score = placement_score(total, rank, me.kills, me.alive);
         }
-        arena.p1_score = score;
+        arena.p1_score += score;
         // Online: tell the guests how it ended, exactly once.
         if net.0.is_some() && !arena.end_sent {
             arena.end_sent = true;
@@ -1670,15 +1705,39 @@ fn finish(
             None => stat("settle_draws", 1),
             _ => {}
         }
-        match alive.first() {
-            Some(w) => celebrate(&mut commands, &mut rng, w.seat),
-            None => {
-                let e = text(&mut commands, "MUTUAL DESTRUCTION", 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
-                commands.entity(e).insert((GameTag, Banner));
+        // Best-of-3: bank the round and play on unless someone just clinched
+        // (or five rounds of draws exhausted everyone's patience).
+        arena.rounds_played += 1;
+        if let Some(w) = alive.first() {
+            if arena.match_target > 1 {
+                arena.round_wins[w.seat] += 1;
+            }
+        }
+        let clinched = arena.round_wins.iter().any(|&x| x >= arena.match_target);
+        if arena.match_target > 1 && !clinched && arena.rounds_played < 5 {
+            arena.next_round = true;
+            let tally =
+                arena.round_wins.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("-");
+            let line = match alive.first() {
+                Some(w) => format!("SEAT {} TAKES ROUND {}", w.seat + 1, arena.rounds_played),
+                None => format!("ROUND {} - NOBODY", arena.rounds_played),
+            };
+            let e = text(&mut commands, &line, 30.0, AMBER, Vec3::new(0.0, 24.0, 20.0));
+            commands.entity(e).insert((GameTag, Banner));
+            let e2 = text(&mut commands, &format!("WINS {tally} - NEXT ROUND COMING"), 20.0, WHITE, Vec3::new(0.0, -14.0, 20.0));
+            commands.entity(e2).insert((GameTag, Banner));
+            sfx("clear");
+        } else {
+            match alive.first() {
+                Some(w) => celebrate(&mut commands, &mut rng, w.seat),
+                None => {
+                    let e = text(&mut commands, "MUTUAL DESTRUCTION", 34.0, AMBER, Vec3::new(0.0, 0.0, 20.0));
+                    commands.entity(e).insert((GameTag, Banner));
+                }
             }
         }
     }
-    if arena.finished && arena.finish_timer.tick(time.delta()).finished() {
+    if arena.finished && !arena.next_round && arena.finish_timer.tick(time.delta()).finished() {
         // A finished TEST round returns to the editor's canvas — no score,
         // no game over. editor_update owns the scene reset.
         if let Some(mut e) = editor {
@@ -1692,12 +1751,77 @@ fn finish(
     }
 }
 
+/// Between match rounds: when the round banner has had its moment, restock
+/// the field from the loaded layout and stand everyone back up.
+#[allow(clippy::type_complexity)]
+fn match_next_round(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut arena: ResMut<Arena>,
+    net: Res<NetMode>,
+    mut fighters: Query<
+        (&mut Fighter, &mut Transform, &mut Sprite, &mut Visibility),
+        (Without<TileSprite>, Without<FlameSprite>, Without<BombSprite>),
+    >,
+    bombs: Query<Entity, With<BombSprite>>,
+    flames: Query<Entity, With<FlameSprite>>,
+    banners: Query<Entity, With<Banner>>,
+) {
+    if net_guest(&net) || !arena.next_round {
+        return;
+    }
+    if !arena.finish_timer.tick(time.delta()).finished() {
+        return;
+    }
+    arena.next_round = false;
+    let (score, wins, played) =
+        (arena.p1_score, arena.round_wins.clone(), arena.rounds_played);
+    reset_field(&mut arena, &mut commands, &bombs, &flames, &banners);
+    arena.p1_score = score;
+    arena.round_wins = wins;
+    arena.rounds_played = played;
+    arena.tiles = arena.initial_tiles.clone();
+    arena.planted = arena.initial_planted.clone();
+    for (mut f, mut tf, mut sprite, mut vis) in &mut fighters {
+        let (sc, sr) = SPAWNS[f.seat];
+        f.tile = IVec2::new(sc, sr);
+        f.dir = IVec2::ZERO;
+        f.want = IVec2::ZERO;
+        f.progress = 0.0;
+        f.speed = 3.4;
+        f.range = 2;
+        f.max_bombs = 1;
+        f.live_bombs = 0;
+        f.alive = true;
+        f.kills = 0;
+        f.wants_bomb = false;
+        f.kick = false;
+        f.pierce = false;
+        f.vest = false;
+        f.phase = false;
+        f.iframes = 0.0;
+        let p = world(sc, sr);
+        tf.translation.x = p.x;
+        tf.translation.y = p.y;
+        sprite.color.set_alpha(1.0);
+        *vis = Visibility::Inherited;
+    }
+    sfx("coin");
+}
+
 fn hud(arena: Res<Arena>, fighters: Query<&Fighter>, mut hud: Query<&mut Text2d, With<Hud>>) {
     if let Ok(mut t) = hud.single_mut() {
         let alive = fighters.iter().filter(|f| f.alive).count();
         let to_walls = (SUDDEN_DEATH_AT - arena.clock).max(0.0);
+        let ladder = if arena.match_target > 1 {
+            let tally =
+                arena.round_wins.iter().map(|w| w.to_string()).collect::<Vec<_>>().join("-");
+            format!("RD {} [{}]   ", arena.rounds_played + 1, tally)
+        } else {
+            String::new()
+        };
         let s = if to_walls > 0.0 {
-            format!("{alive} STANDING   WALLS IN {to_walls:.0}s")
+            format!("{ladder}{alive} STANDING   WALLS IN {to_walls:.0}s")
         } else if arena.spiral_next >= arena.spiral.len().saturating_sub(9) {
             let settle = (arena.settle.duration().as_secs_f32() - arena.settle.elapsed_secs()).max(0.0);
             format!("{alive} STANDING   SETTLE IT IN {settle:.0}s")

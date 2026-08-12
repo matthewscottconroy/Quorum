@@ -84,6 +84,9 @@ struct Table {
     bot_clock: Timer,
     msg: String,
     showdown_lines: Vec<String>,
+    /// The previous hand's story, pinned in the corner: board, who showed
+    /// what, who dragged the pot. Poker without history is amnesia.
+    last_hand: Vec<String>,
     hand_no: u32,
     bb: u32,
     over: bool,
@@ -162,6 +165,9 @@ struct PotText;
 
 #[derive(Component)]
 struct MsgText;
+
+#[derive(Component)]
+struct RecapText;
 
 #[derive(Component)]
 struct HintText;
@@ -253,6 +259,7 @@ fn setup(
         bot_clock: Timer::from_seconds(0.9, TimerMode::Repeating),
         msg: "SHUFFLING UP...".into(),
         showdown_lines: Vec::new(),
+        last_hand: Vec::new(),
         hand_no: 0,
         bb: START_BB,
         over: false,
@@ -279,6 +286,8 @@ fn setup(
     commands.entity(pot).insert((PotText, GameTag));
     let msg = text(&mut commands, "", 16.0, WHITE, Vec3::new(0.0, -120.0, 5.0));
     commands.entity(msg).insert((MsgText, GameTag));
+    let recap = text(&mut commands, "", 11.0, DIM, Vec3::new(-262.0, 286.0, 2.0));
+    commands.entity(recap).insert((RecapText, GameTag));
     let hint = text(&mut commands, "", 15.0, DIM, Vec3::new(0.0, -286.0, 5.0));
     commands.entity(hint).insert((HintText, GameTag));
     let controls = text(
@@ -300,6 +309,10 @@ fn suit_color(suit: u8) -> Color {
         2 => Color::srgb(0.72, 0.14, 0.45), // diamonds: deep magenta
         _ => Color::srgb(0.05, 0.32, 0.22), // clubs: bottle green
     }
+}
+
+fn card_text(c: Card) -> String {
+    format!("{}{}", rank_label(c), ['S', 'H', 'D', 'C'][c.suit as usize % 4])
 }
 
 fn rank_label(c: Card) -> String {
@@ -615,6 +628,12 @@ fn showdown(table: &mut Table) {
         s.committed_hand = 0;
         s.committed_street = 0;
     }
+    // Pin the story for the corner recap during the next hand.
+    let board_txt =
+        table.board.iter().map(|c| card_text(*c)).collect::<Vec<_>>().join(" ");
+    table.last_hand = vec![format!("HAND {} - {}", table.hand_no, board_txt)];
+    let lines: Vec<String> = table.showdown_lines.clone();
+    table.last_hand.extend(lines);
     table.msg = "SHOWDOWN".into();
     table.dirty = true;
     sfx("clear");
@@ -708,6 +727,10 @@ fn table_run(
                     s.committed_street = 0;
                 }
                 table.msg = format!("{} TAKES {} UNCONTESTED", seat_name_for(&table, w), pot);
+                table.last_hand = vec![
+                    format!("HAND {}", table.hand_no),
+                    format!("{} +{} (ALL FOLDED)", seat_name_for(&table, w), pot),
+                ];
                 table.stage = Stage::NewHand;
                 table.wait = Timer::from_seconds(2.0, TimerMode::Once);
                 table.dirty = true;
@@ -983,10 +1006,11 @@ fn spawn_pip(kid: &mut ChildSpawnerCommands, fx: &CardFx, suit: u8, at: Vec2) {
 #[allow(clippy::type_complexity)]
 fn texts(
     table: Res<Table>,
-    mut seat_texts: Query<(&SeatText, &mut Text2d), (Without<PotText>, Without<MsgText>, Without<HintText>)>,
-    mut pot: Query<&mut Text2d, (With<PotText>, Without<MsgText>, Without<HintText>)>,
-    mut msg: Query<&mut Text2d, (With<MsgText>, Without<PotText>, Without<HintText>)>,
-    mut hint: Query<&mut Text2d, (With<HintText>, Without<PotText>, Without<MsgText>)>,
+    mut seat_texts: Query<(&SeatText, &mut Text2d), (Without<PotText>, Without<MsgText>, Without<HintText>, Without<RecapText>)>,
+    mut pot: Query<&mut Text2d, (With<PotText>, Without<MsgText>, Without<HintText>, Without<RecapText>)>,
+    mut msg: Query<&mut Text2d, (With<MsgText>, Without<PotText>, Without<HintText>, Without<RecapText>)>,
+    mut recap: Query<&mut Text2d, (With<RecapText>, Without<SeatText>, Without<MsgText>, Without<PotText>, Without<HintText>)>,
+    mut hint: Query<&mut Text2d, (With<HintText>, Without<PotText>, Without<MsgText>, Without<RecapText>)>,
 ) {
     for (st, mut t) in &mut seat_texts {
         let i = st.0;
@@ -1023,6 +1047,16 @@ fn texts(
             table.msg.clone()
         } else {
             table.showdown_lines.join("\n")
+        };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    if let Ok(mut t) = recap.single_mut() {
+        let s = if table.last_hand.is_empty() || !table.showdown_lines.is_empty() {
+            String::new()
+        } else {
+            format!("LAST HAND\n{}", table.last_hand.join("\n"))
         };
         if t.0 != s {
             t.0 = s;

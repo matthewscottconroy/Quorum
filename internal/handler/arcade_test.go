@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -31,6 +32,10 @@ func (m *mockArcadeRepo) InsertCredit(ctx context.Context, userID, game string) 
 func (m *mockArcadeRepo) SubmitScore(ctx context.Context, userID, game string, score int64) error {
 	return m.SubmitScoreFn(ctx, userID, game, score)
 }
+func (m *mockArcadeRepo) TopScoresSince(ctx context.Context, game string, since time.Time, n int) ([]model.ArcadeScore, error) {
+	return m.TopScores(ctx, game, n)
+}
+
 func (m *mockArcadeRepo) TopScores(ctx context.Context, game string, n int) ([]model.ArcadeScore, error) {
 	return m.TopScoresFn(ctx, game, n)
 }
