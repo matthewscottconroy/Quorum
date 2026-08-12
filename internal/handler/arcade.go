@@ -90,6 +90,10 @@ var arcadeStatNames = map[string][]string{
 		"coffees_drunk", "servers_bugged", "extractions", "ghost_runs",
 		"audits_failed",
 	},
+	"lucky-penny": {
+		"flips", "bumpers_bounced", "targets_knocked", "boards_climbed",
+		"jackpots", "pennies_lost",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {

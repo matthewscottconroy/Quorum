@@ -14,6 +14,7 @@ mod go_ui;
 mod hex_ui;
 mod holdem;
 mod interns;
+mod lucky_penny;
 mod night_audit;
 mod penny;
 mod powder;
@@ -139,6 +140,9 @@ pub fn run() {
         }
         "night-audit" => {
             app.add_plugins((shell_for("NIGHT AUDIT", night_audit::BLURB), night_audit::NightAuditPlugin));
+        }
+        "lucky-penny" => {
+            app.add_plugins((shell_for("LUCKY PENNY", lucky_penny::BLURB), lucky_penny::LuckyPennyPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

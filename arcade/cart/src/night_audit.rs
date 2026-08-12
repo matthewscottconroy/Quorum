@@ -11,17 +11,26 @@
 //! guards and pickups, occluded against the column depth buffer.
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::retro::{text, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
+use crate::retro::{text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::rng::Rng;
-use crate::shell::{sfx, stat};
-use crate::{FinalScore, GameTag, Phase};
+use crate::shell::{net_send, sfx, stat};
+use crate::{FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "THE BOOKS DON'T SLEEP. NEITHER DO YOU.",
     "WASD WALKS / ARROWS TURN / SPACE DARTS / E INTERACTS",
-    "LIFT THE FILES. BUG THE SERVER. WALK OUT.",
+    "SOLO: LIFT FILES, BUG THE SERVER, WALK OUT.",
+    "ONLINE: OFFICE PARTY - THREE DARTS AND YOU NAP.",
 ];
+
+/// Deathmatch tuning: three darts and you nap, first to ten (or the best
+/// score when the party clock runs out) takes the office.
+const DM_HP: i32 = 3;
+const DM_TARGET: u32 = 10;
+const DM_CLOCK: f32 = 240.0;
+const DM_SPAWNS: [(f32, f32); 4] = [(1.5, 1.5), (22.5, 21.5), (22.5, 1.5), (1.5, 21.5)];
 
 const MW: usize = 24;
 const MH: usize = 24;
@@ -95,6 +104,67 @@ struct Mission {
     result: String,
     score: u32,
     done: bool,
+    /// OFFICE PARTY (online): peers trade positions and hit claims over the
+    /// room relay. Victim-authoritative health, shooter-authoritative aim —
+    /// friendly-arcade honesty, same as every self-reported score here.
+    dm: bool,
+    my_seat: usize,
+    dm_hp: i32,
+    dm_scores: Vec<u32>,
+    dm_clock: f32,
+    nap_t: f32,
+    pos_timer: Timer,
+    fired_flag: bool,
+}
+
+/// A rival auditor as last heard from, eased between updates.
+struct Remote {
+    seat: usize,
+    x: f32,
+    y: f32,
+    px: f32,
+    py: f32,
+    t: f32,
+    napping: bool,
+    heard: bool,
+}
+
+#[derive(Resource, Default)]
+struct Remotes(Vec<Remote>);
+
+#[derive(Serialize, Deserialize)]
+struct WirePos {
+    t: String, // "pos"
+    x: f32,
+    y: f32,
+    a: f32,
+    f: bool, // fired since the last update (remote muzzle pop)
+    n: bool, // napping
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireHit {
+    t: String, // "hit"
+    v: u8,     // victim seat
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireNap {
+    t: String, // "nap"
+    by: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireDoor {
+    t: String, // "door"
+    x: i32,
+    y: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireEnd {
+    t: String, // "end"
+    scores: Vec<u32>,
 }
 
 impl Mission {
@@ -168,17 +238,29 @@ pub struct NightAuditPlugin;
 
 impl Plugin for NightAuditPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
-            Update,
-            (player_move, interact, fire, guards_think, render_view, hud, endgame)
-                .chain()
-                .run_if(in_state(Phase::Playing))
-                .run_if(crate::unpaused),
-        );
+        app.init_resource::<Remotes>()
+            .add_systems(OnEnter(Phase::Playing), setup)
+            .add_systems(
+                Update,
+                (
+                    net_apply,
+                    player_move,
+                    interact,
+                    fire,
+                    guards_think,
+                    dm_run,
+                    render_view,
+                    hud,
+                    endgame,
+                )
+                    .chain()
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
+            );
     }
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, net: Res<NetMode>) {
     let mut grid = vec![Cell::Open; MW * MH];
     let mut guards = Vec::new();
     let mut pickups = Vec::new();
@@ -237,14 +319,54 @@ fn setup(mut commands: Commands) {
             };
         }
     }
+    let dm = net.0.is_some();
+    let my_seat = net.0.as_ref().map(|c| c.seat as usize).unwrap_or(0);
+    let seats = net.0.as_ref().map(|c| c.seats as usize).unwrap_or(1);
+    if dm {
+        // The party starts in opposite corners; guards have the night off.
+        let (sx, sy) = DM_SPAWNS[my_seat % 4];
+        px = sx;
+        py = sy;
+        guards.clear();
+        for p in pickups.iter_mut() {
+            p.taken = true; // deathmatch is dart tag: no pickups, no errands
+        }
+    }
+    let mut remotes = Vec::new();
+    if let Some(cfg) = &net.0 {
+        for (s, present) in cfg.present.iter().enumerate() {
+            if *present && s != my_seat {
+                let (rx, ry) = DM_SPAWNS[s % 4];
+                remotes.push(Remote {
+                    seat: s,
+                    x: rx,
+                    y: ry,
+                    px: rx,
+                    py: ry,
+                    t: 1.0,
+                    napping: false,
+                    heard: false,
+                });
+            }
+        }
+    }
+    commands.insert_resource(Remotes(remotes));
     commands.insert_resource(Mission {
+        dm,
+        my_seat,
+        dm_hp: DM_HP,
+        dm_scores: vec![0; seats.max(1)],
+        dm_clock: DM_CLOCK,
+        nap_t: 0.0,
+        pos_timer: Timer::from_seconds(0.08, TimerMode::Repeating),
+        fired_flag: false,
         grid,
         doors_open: vec![false; MW * MH],
         px,
         py,
         ang: 0.0,
         hp: 100,
-        darts: 24,
+        darts: if dm { 9999 } else { 24 },
         files: 0,
         files_total,
         server_bugged: false,
@@ -338,7 +460,7 @@ fn try_move(m: &Mission, x: f32, y: f32) -> bool {
 }
 
 fn player_move(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>) {
-    if m.over.is_some() {
+    if m.over.is_some() || m.nap_t > 0.0 {
         return;
     }
     let dt = time.delta_secs();
@@ -367,7 +489,7 @@ fn player_move(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<M
 }
 
 fn interact(keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>, mut pickups: ResMut<Pickups>) {
-    if m.over.is_some() {
+    if m.over.is_some() || m.nap_t > 0.0 {
         return;
     }
     // Walk-over pickups need no key at all.
@@ -406,8 +528,17 @@ fn interact(keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>, mut pickups
         if !m.doors_open[idx] {
             m.doors_open[idx] = true;
             sfx("drop");
+            if m.dm {
+                // The whole party shares one office: doors open for everyone.
+                if let Ok(w) = serde_json::to_string(&WireDoor { t: "door".into(), x: tx, y: ty }) {
+                    net_send(&w);
+                }
+            }
             return;
         }
+    }
+    if m.dm {
+        return; // no errands at the office party
     }
     // The server console: stand on the marked tile, plant the bug.
     let (cx, cy) = (m.px.floor() as usize, m.py.floor() as usize);
@@ -417,6 +548,183 @@ fn interact(keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>, mut pickups
         stat("servers_bugged", 1);
         sfx("clear");
     }
+}
+
+/// Applies relay traffic: rival positions, hit claims against ME, naps
+/// (scoreboard), doors opening elsewhere, and the host's final horn.
+fn net_apply(
+    mut events: EventReader<NetIn>,
+    net: Res<NetMode>,
+    mut m: ResMut<Mission>,
+    mut remotes: ResMut<Remotes>,
+) {
+    let Some(cfg) = &net.0 else {
+        events.clear();
+        return;
+    };
+    for ev in events.read() {
+        if ev.left {
+            remotes.0.retain(|r| r.seat != ev.seat as usize);
+            if remotes.0.is_empty() && m.over.is_none() {
+                m.result = "EVERYONE ELSE WENT HOME.\nTHE OFFICE IS YOURS.".into();
+                m.score += m.dm_scores[m.my_seat] * 100 + 500;
+                m.over = Some(Timer::from_seconds(2.2, TimerMode::Once));
+                sfx("win");
+            }
+            continue;
+        }
+        if ev.seat == cfg.seat {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&ev.data) else { continue };
+        match v.get("t").and_then(|t| t.as_str()) {
+            Some("pos") => {
+                if let Ok(p) = serde_json::from_str::<WirePos>(&ev.data) {
+                    if let Some(r) = remotes.0.iter_mut().find(|r| r.seat == ev.seat as usize) {
+                        r.px = if r.heard { r.x } else { p.x };
+                        r.py = if r.heard { r.y } else { p.y };
+                        r.x = p.x;
+                        r.y = p.y;
+                        r.t = 0.0;
+                        r.napping = p.n;
+                        r.heard = true;
+                        if p.f {
+                            sfx("drop"); // a dart pops somewhere in the office
+                        }
+                    }
+                }
+            }
+            Some("hit") => {
+                if let Ok(h) = serde_json::from_str::<WireHit>(&ev.data) {
+                    if h.v == cfg.seat && m.nap_t <= 0.0 && m.over.is_none() {
+                        m.dm_hp -= 1;
+                        m.hurt = 0.4;
+                        sfx("death");
+                        if m.dm_hp <= 0 {
+                            // Down for a nap: tell the office who did it.
+                            m.nap_t = 3.0;
+                            let shooter = ev.seat;
+                            if let Ok(w) =
+                                serde_json::to_string(&WireNap { t: "nap".into(), by: shooter })
+                            {
+                                net_send(&w);
+                            }
+                            if (shooter as usize) < m.dm_scores.len() {
+                                m.dm_scores[shooter as usize] += 1;
+                            }
+                            stat("audits_failed", 1);
+                            sfx("over");
+                        }
+                    }
+                }
+            }
+            Some("nap") => {
+                if let Ok(n) = serde_json::from_str::<WireNap>(&ev.data) {
+                    if (n.by as usize) < m.dm_scores.len() {
+                        m.dm_scores[n.by as usize] += 1;
+                    }
+                    if n.by == cfg.seat {
+                        m.score += 150;
+                        stat("guards_tranqed", 1);
+                        sfx("capture");
+                    }
+                }
+            }
+            Some("door") => {
+                if let Ok(d) = serde_json::from_str::<WireDoor>(&ev.data) {
+                    if d.x >= 0 && d.y >= 0 && (d.x as usize) < MW && (d.y as usize) < MH {
+                        m.doors_open[d.y as usize * MW + d.x as usize] = true;
+                    }
+                }
+            }
+            Some("end") => {
+                if let Ok(e) = serde_json::from_str::<WireEnd>(&ev.data) {
+                    if m.over.is_none() {
+                        finish_party(&mut m, &e.scores);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The party clock, my position broadcasts, naps and respawns, and the
+/// host's whistle when time or the target is reached.
+fn dm_run(
+    time: Res<Time>,
+    net: Res<NetMode>,
+    mut m: ResMut<Mission>,
+    mut remotes: ResMut<Remotes>,
+    mut rng: ResMut<Rng>,
+) {
+    if !m.dm || m.over.is_some() {
+        return;
+    }
+    let dt = time.delta_secs();
+    m.dm_clock -= dt;
+    for r in remotes.0.iter_mut() {
+        r.t = (r.t + dt / 0.08).min(1.0);
+    }
+    // Napping: the room spins gently, then you're back in a random corner.
+    if m.nap_t > 0.0 {
+        m.nap_t -= dt;
+        m.ang += dt * 1.2;
+        if m.nap_t <= 0.0 {
+            let (sx, sy) = DM_SPAWNS[rng.range(4) as usize];
+            m.px = sx;
+            m.py = sy;
+            m.dm_hp = DM_HP;
+            m.hurt = 0.0;
+        }
+    }
+    // Everyone streams their own position; f carries the muzzle pop.
+    if m.pos_timer.tick(time.delta()).just_finished() {
+        let msg = WirePos {
+            t: "pos".into(),
+            x: m.px,
+            y: m.py,
+            a: m.ang,
+            f: m.fired_flag,
+            n: m.nap_t > 0.0,
+        };
+        m.fired_flag = false;
+        if let Ok(w) = serde_json::to_string(&msg) {
+            net_send(&w);
+        }
+    }
+    // The host calls time (or the winning tranq) for everyone.
+    let is_host = net.0.as_ref().map(|c| c.is_host()).unwrap_or(false);
+    if is_host && (m.dm_clock <= 0.0 || m.dm_scores.iter().any(|&s| s >= DM_TARGET)) {
+        let scores = m.dm_scores.clone();
+        if let Ok(w) = serde_json::to_string(&WireEnd { t: "end".into(), scores: scores.clone() }) {
+            net_send(&w);
+        }
+        finish_party(&mut m, &scores);
+    }
+}
+
+/// Standings, my payout, and the horn.
+fn finish_party(m: &mut Mission, scores: &[u32]) {
+    let mine = scores.get(m.my_seat).copied().unwrap_or(0);
+    let best = scores.iter().copied().max().unwrap_or(0);
+    let won = mine == best && best > 0;
+    let lines: Vec<String> = scores
+        .iter()
+        .enumerate()
+        .map(|(s, n)| format!("AUDITOR {}: {} TRANQS{}", s + 1, n, if s == m.my_seat { " (YOU)" } else { "" }))
+        .collect();
+    m.result = format!(
+        "{}\n{}",
+        if won { "THE OFFICE IS YOURS." } else { "PARTY'S OVER." },
+        lines.join("\n")
+    );
+    m.score += mine * 100 + if won { 500 } else { 0 };
+    if won {
+        stat("extractions", 1);
+    }
+    m.over = Some(Timer::from_seconds(3.0, TimerMode::Once));
+    sfx(if won { "win" } else { "over" });
 }
 
 /// A grid ray via DDA: returns (distance, wall kind, vertical-face flag).
@@ -470,8 +778,9 @@ fn fire(
     buttons: Res<ButtonInput<MouseButton>>,
     mut m: ResMut<Mission>,
     mut guards: ResMut<Guards>,
+    remotes: Res<Remotes>,
 ) {
-    if m.over.is_some() {
+    if m.over.is_some() || m.nap_t > 0.0 {
         return;
     }
     let pressed = keys.just_pressed(KeyCode::Space) || buttons.just_pressed(MouseButton::Left);
@@ -485,8 +794,40 @@ fn fire(
     m.darts -= 1;
     m.fire_cd = 0.45;
     m.flash = 0.08;
+    m.fired_flag = true;
     stat("darts_fired", 1);
     sfx("fire");
+    // OFFICE PARTY: the same hitscan, aimed at rival auditors instead.
+    if m.dm {
+        let (wall_d, _, _) = cast(&m, m.px, m.py, m.ang, 24.0);
+        let mut best: Option<(usize, f32)> = None;
+        for r in remotes.0.iter().filter(|r| !r.napping && r.heard) {
+            let rel = Vec2::new(r.x - m.px, r.y - m.py);
+            let d = rel.length();
+            if d > 20.0 || d >= wall_d + 0.3 {
+                continue;
+            }
+            let mut da = rel.y.atan2(rel.x) - m.ang;
+            while da > std::f32::consts::PI {
+                da -= std::f32::consts::TAU;
+            }
+            while da < -std::f32::consts::PI {
+                da += std::f32::consts::TAU;
+            }
+            if da.abs() < (0.05 + 0.25 / d.max(0.5)) && los(&m, m.px, m.py, r.x, r.y) {
+                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                    best = Some((r.seat, d));
+                }
+            }
+        }
+        if let Some((seat, _)) = best {
+            if let Ok(w) = serde_json::to_string(&WireHit { t: "hit".into(), v: seat as u8 }) {
+                net_send(&w);
+            }
+            sfx("rotate"); // the thock of a dart landing
+        }
+        return;
+    }
     // Hitscan: nearest awake guard within a narrow cone and line of sight.
     let (wall_d, _, _) = cast(&m, m.px, m.py, m.ang, 24.0);
     let mut best: Option<(usize, f32)> = None;
@@ -533,7 +874,7 @@ fn guards_think(
     mut m: ResMut<Mission>,
     mut guards: ResMut<Guards>,
 ) {
-    if m.over.is_some() {
+    if m.over.is_some() || m.dm {
         return;
     }
     let dt = time.delta_secs();
@@ -639,6 +980,7 @@ fn render_view(
     m: Res<Mission>,
     guards: Res<Guards>,
     pickups: Res<Pickups>,
+    remotes: Res<Remotes>,
     mut view: ResMut<View>,
     mut sprites: Query<(&mut Sprite, &mut Transform, &mut Visibility), Without<Veil>>,
     mut veil: Query<&mut Sprite, With<Veil>>,
@@ -693,6 +1035,12 @@ fn render_view(
         let (h, dy) = if g.hp <= 0 { (0.35, -0.28) } else { (0.95, 0.0) };
         items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h, color, dy }));
     }
+    for r in remotes.0.iter().filter(|r| r.heard) {
+        let (x, y) = (r.px + (r.x - r.px) * r.t, r.py + (r.y - r.py) * r.t);
+        let color = PLAYER_COLORS[r.seat % 12];
+        let (h, dy) = if r.napping { (0.35, -0.28) } else { (0.95, 0.0) };
+        items.push((0.0, Bill { x, y, w: 0.5, h, color, dy }));
+    }
     for p in pickups.0.iter().filter(|p| !p.taken) {
         let color = match p.kind {
             PickupKind::File => AMBER,
@@ -702,7 +1050,7 @@ fn render_view(
         items.push((0.0, Bill { x: p.x, y: p.y, w: 0.28, h: 0.3, color, dy: -0.3 }));
     }
     // The server console tile glows until bugged — the "go here" beacon.
-    if !m.server_bugged {
+    if !m.server_bugged && !m.dm {
         let (sx, sy) = m.server_cell;
         items.push((0.0, Bill { x: sx as f32 + 0.5, y: sy as f32 + 0.5, w: 0.4, h: 0.2, color: GREEN, dy: -0.35 }));
     }
@@ -749,9 +1097,13 @@ fn render_view(
             *vis = Visibility::Hidden;
         }
     }
-    // Veils: damage red, muzzle white-ish.
+    // Veils: damage red, muzzle pop, and a heavy lid while napping.
     if let Ok(mut sp) = veil.single_mut() {
-        let a = (m.hurt * 0.9).min(0.35) + if m.flash > 0.0 { 0.10 } else { 0.0 };
+        let a = if m.nap_t > 0.0 {
+            0.55
+        } else {
+            (m.hurt * 0.9).min(0.35) + if m.flash > 0.0 { 0.10 } else { 0.0 }
+        };
         sp.color = RED.with_alpha(a);
     }
 }
@@ -764,6 +1116,17 @@ fn hud(
     if let Ok(mut t) = hud.single_mut() {
         let s = if m.over.is_some() {
             m.result.clone()
+        } else if m.dm {
+            if m.nap_t > 0.0 {
+                format!("NAPPING... BACK IN {:.0}", m.nap_t.max(0.0) + 0.99)
+            } else {
+                format!(
+                    "HITS LEFT {}   FIRST TO {}   {}",
+                    m.dm_hp.max(0),
+                    DM_TARGET,
+                    fmt_clock(m.dm_clock.max(0.0))
+                )
+            }
         } else {
             format!("HEALTH {}   DARTS {}   {}", m.hp.max(0), m.darts, fmt_clock(m.clock))
         };
@@ -772,6 +1135,21 @@ fn hud(
         }
     }
     if let Ok(mut t) = obj.single_mut() {
+        if m.dm {
+            let s = m
+                .dm_scores
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    format!("A{}{}: {}", i + 1, if i == m.my_seat { "*" } else { "" }, n)
+                })
+                .collect::<Vec<_>>()
+                .join("   ");
+            if t.0 != s {
+                t.0 = s;
+            }
+            return;
+        }
         let tick = |b: bool| if b { "x" } else { "-" };
         let s = format!(
             "[{}] LIFT THE FILES ({}/{})   [{}] BUG THE SERVER   [{}] EXTRACT (GREEN DOOR)",

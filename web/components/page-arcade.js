@@ -61,7 +61,11 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P · one mission', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
+    players: '1P mission · 2-4 online deathmatch', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. ONLINE: the OFFICE PARTY — no guards, no errands, three darts and you nap; first to 10 tranqs (or best at the horn) wins. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
+  },
+  {
+    id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
+    players: '1P', controls: '← → (or Z and /) flip · Space launches. Knock the amber targets to open the ceiling hatch, ride up: BASEMENT → LOBBY → BOARDROOM. Five hits crack the VAULT for the jackpot. Falling through a floor only drops you a board — the basement drain costs a penny. Three pennies.',
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
@@ -74,7 +78,7 @@ const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min:
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 4 } };
 // Level-capable cabinets: house options, the editor's blank-canvas label,
 // and the toast shown when the editor opens.
 const LEVELS = {
@@ -278,6 +282,10 @@ const STAT_LABELS = {
   coffees_drunk: 'MIDNIGHT COFFEES', servers_bugged: 'SERVERS BUGGED',
   extractions: 'CLEAN EXTRACTIONS', ghost_runs: 'GHOST RUNS (NEVER SEEN)',
   audits_failed: 'NIGHTS THAT WENT LOUD',
+  // LUCKY PENNY
+  flips: 'FLIPPER FLIPS', bumpers_bounced: 'BUMPERS RUNG',
+  targets_knocked: 'TARGETS FLATTENED', boards_climbed: 'FLOORS ASCENDED',
+  jackpots: 'VAULTS CRACKED', pennies_lost: 'PENNIES DOWN THE DRAIN',
   chutes_issued: 'PARACHUTES ISSUED', supervisors_promoted: 'SUPERVISORS PROMOTED',
   bridges_ordered: 'BRIDGES COMMISSIONED', bashers_unleashed: 'WALLS EXPENSED',
   diggers_deployed: 'FLOORS EXCAVATED', floor_wins: 'QUOTAS CRUSHED',
@@ -294,7 +302,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';

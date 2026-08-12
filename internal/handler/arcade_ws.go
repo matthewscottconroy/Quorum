@@ -30,6 +30,7 @@ var arcadeNetGames = map[string]struct{ minSeats, maxSeats int }{
 	"hexfection":   {2, 12},
 	"interns":      {2, 2},
 	"texas-holdem": {2, 6},
+	"night-audit":  {2, 4},
 }
 
 // holdemDealer is the ONE exception to "the server is only a relay": poker
