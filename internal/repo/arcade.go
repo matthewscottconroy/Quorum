@@ -22,7 +22,7 @@ var (
 // (API, DB CHECKs). Order here is the display order on the arcade floor.
 var ArcadeGames = []string{
 	"chess", "go", "comet-buster", "penny-pincher", "brickfall", "powder-keg", "hexfection", "interns",
-	"texas-holdem", "red-tape", "night-audit", "lucky-penny",
+	"texas-holdem", "red-tape", "night-audit", "lucky-penny", "off-the-roof", "pest-control",
 }
 
 // ArcadeRepo records credit insertions and high scores for the Top Secret

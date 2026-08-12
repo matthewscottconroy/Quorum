@@ -30,7 +30,22 @@ pub const BLURB: &[&str] = &[
 const DM_HP: i32 = 3;
 const DM_TARGET: u32 = 10;
 const DM_CLOCK: f32 = 240.0;
-const DM_SPAWNS: [(f32, f32); 4] = [(1.5, 1.5), (22.5, 21.5), (22.5, 1.5), (1.5, 21.5)];
+/// Fallback party spawns (used when a map carries no 's' markers): corners,
+/// mid-edges, and inner corners — twelve seats, spread wide.
+const DM_SPAWNS: [(f32, f32); 12] = [
+    (1.5, 1.5),
+    (22.5, 21.5),
+    (22.5, 1.5),
+    (1.5, 21.5),
+    (12.5, 1.5),
+    (12.5, 21.5),
+    (1.5, 9.5),
+    (22.5, 9.5),
+    (7.5, 7.5),
+    (16.5, 17.5),
+    (16.5, 7.5),
+    (7.5, 17.5),
+];
 
 const MW: usize = 24;
 const MH: usize = 24;
@@ -81,6 +96,148 @@ enum Cell {
     Wall(u8), // 1 concrete, 2 wood, 3 server, 4 door(open=walkable? no: closed), 5 exit
 }
 
+/// Everything a parsed office yields. One parser serves the built-in map,
+/// the editor's canvas, and maps arriving over the relay.
+struct Parsed {
+    grid: Vec<Cell>,
+    guards: Vec<Guard>,
+    pickups: Vec<Pickup>,
+    px: f32,
+    py: f32,
+    server_cell: (usize, usize),
+    exit_cell: (usize, usize),
+    files_total: u32,
+    spawns: Vec<(f32, f32)>,
+}
+
+fn parse_office(rows: &[String]) -> Parsed {
+    let mut out = Parsed {
+        grid: vec![Cell::Open; MW * MH],
+        guards: Vec::new(),
+        pickups: Vec::new(),
+        px: 1.5,
+        py: 1.5,
+        server_cell: (0, 0),
+        exit_cell: (0, 0),
+        files_total: 0,
+        spawns: Vec::new(),
+    };
+    for (y, row) in rows.iter().enumerate().take(MH) {
+        for (x, ch) in row.chars().enumerate().take(MW) {
+            let fx = x as f32 + 0.5;
+            let fy = y as f32 + 0.5;
+            out.grid[y * MW + x] = match ch {
+                '#' => Cell::Wall(1),
+                'W' => Cell::Wall(2),
+                'S' => Cell::Wall(3),
+                'D' => Cell::Wall(4),
+                'X' => {
+                    out.exit_cell = (x, y);
+                    Cell::Wall(5)
+                }
+                'p' => {
+                    out.px = fx;
+                    out.py = fy;
+                    Cell::Open
+                }
+                's' => {
+                    out.spawns.push((fx, fy));
+                    Cell::Open
+                }
+                'g' => {
+                    out.guards.push(Guard {
+                        x: fx,
+                        y: fy,
+                        hp: GUARD_HP,
+                        alert: false,
+                        shoot_cd: 0.0,
+                        wander_cd: 0.0,
+                        dir: Vec2::X,
+                    });
+                    Cell::Open
+                }
+                'f' => {
+                    out.files_total += 1;
+                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::File, taken: false });
+                    Cell::Open
+                }
+                'a' => {
+                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Darts, taken: false });
+                    Cell::Open
+                }
+                'c' => {
+                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Coffee, taken: false });
+                    Cell::Open
+                }
+                'v' => {
+                    out.server_cell = (x, y);
+                    Cell::Open
+                }
+                _ => Cell::Open,
+            };
+        }
+    }
+    // The border always holds, whatever a document claims.
+    for y in 0..MH {
+        for x in 0..MW {
+            if (x == 0 || y == 0 || x == MW - 1 || y == MH - 1) && out.grid[y * MW + x] == Cell::Open {
+                out.grid[y * MW + x] = Cell::Wall(1);
+            }
+        }
+    }
+    // Twelve party spawns, padding from the classics when the map is shy.
+    let mut i = 0;
+    while out.spawns.len() < 12 {
+        out.spawns.push(DM_SPAWNS[i % DM_SPAWNS.len()]);
+        i += 1;
+    }
+    out
+}
+
+/// A shareable office: 24 rows of 24 characters, the MAP alphabet verbatim.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct OfficeDoc {
+    v: u32,
+    #[serde(default)]
+    name: String,
+    rows: Vec<String>,
+}
+
+fn page_level() -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct BlankRef {
+        blank: bool,
+    }
+    #[cfg(target_arch = "wasm32")]
+    let raw = js_sys::Reflect::get(&js_sys::global(), &"__ARCADE_LEVEL".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    #[cfg(not(target_arch = "wasm32"))]
+    let raw: Option<String> = None;
+    if let Some(raw) = raw {
+        if serde_json::from_str::<BlankRef>(&raw).map(|b| b.blank).unwrap_or(false) {
+            // The editor's empty canvas: a bare shell with the essentials.
+            let mut rows: Vec<String> = (0..MH)
+                .map(|y| {
+                    (0..MW)
+                        .map(|x| if x == 0 || y == 0 || x == MW - 1 || y == MH - 1 { '#' } else { '.' })
+                        .collect()
+                })
+                .collect();
+            rows[1].replace_range(1..2, "p");
+            rows[MH - 2].replace_range(MW - 3..MW - 2, "v");
+            rows[MH - 1].replace_range(MW / 2..MW / 2 + 1, "X");
+            return Some(rows);
+        }
+        if let Ok(doc) = serde_json::from_str::<OfficeDoc>(&raw) {
+            if doc.rows.len() == MH && doc.rows.iter().all(|r| r.chars().count() == MW) {
+                return Some(doc.rows);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Resource)]
 struct Mission {
     grid: Vec<Cell>,
@@ -104,6 +261,10 @@ struct Mission {
     result: String,
     score: u32,
     done: bool,
+    /// The map as text, kept for the editor and for handing to guests.
+    rows: Vec<String>,
+    /// Party spawn points parsed from the map ('s'), padded to twelve.
+    spawns: Vec<(f32, f32)>,
     /// OFFICE PARTY (online): peers trade positions and hit claims over the
     /// room relay. Victim-authoritative health, shooter-authoritative aim —
     /// friendly-arcade honesty, same as every self-reported score here.
@@ -165,6 +326,25 @@ struct WireDoor {
 struct WireEnd {
     t: String, // "end"
     scores: Vec<u32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireLevel {
+    t: String, // "lv"
+    rows: Vec<String>,
+}
+
+/// The office map editor: a top-down canvas painted with the MAP alphabet.
+#[derive(Resource)]
+struct OfficeEditor {
+    active: bool,
+    testing: bool,
+    rows: Vec<String>,
+    brush: char,
+}
+
+fn editor_off(editor: Option<Res<OfficeEditor>>) -> bool {
+    editor.map(|e| !e.active).unwrap_or(true)
 }
 
 impl Mission {
@@ -242,6 +422,14 @@ impl Plugin for NightAuditPlugin {
             .add_systems(OnEnter(Phase::Playing), setup)
             .add_systems(
                 Update,
+                poll_editor_start.run_if(in_state(Phase::Attract).or(in_state(Phase::GameOver))),
+            )
+            .add_systems(
+                Update,
+                editor_update.run_if(in_state(Phase::Playing)).run_if(crate::unpaused),
+            )
+            .add_systems(
+                Update,
                 (
                     net_apply,
                     player_move,
@@ -255,88 +443,76 @@ impl Plugin for NightAuditPlugin {
                 )
                     .chain()
                     .run_if(in_state(Phase::Playing))
-                    .run_if(crate::unpaused),
+                    .run_if(crate::unpaused)
+                    .run_if(editor_off),
             );
     }
 }
 
-fn setup(mut commands: Commands, net: Res<NetMode>) {
-    let mut grid = vec![Cell::Open; MW * MH];
-    let mut guards = Vec::new();
-    let mut pickups = Vec::new();
-    let (mut px, mut py) = (1.5f32, 1.5f32);
-    let mut server_cell = (0usize, 0usize);
-    let mut exit_cell = (0usize, 0usize);
-    let mut files_total = 0u32;
-    for (y, row) in MAP.iter().enumerate() {
-        for (x, ch) in row.chars().enumerate() {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
-            grid[y * MW + x] = match ch {
-                '#' => Cell::Wall(1),
-                'W' => Cell::Wall(2),
-                'S' => Cell::Wall(3),
-                'D' => Cell::Wall(4),
-                'X' => {
-                    exit_cell = (x, y);
-                    Cell::Wall(5)
-                }
-                'p' => {
-                    px = fx;
-                    py = fy;
-                    Cell::Open
-                }
-                'g' => {
-                    guards.push(Guard {
-                        x: fx,
-                        y: fy,
-                        hp: GUARD_HP,
-                        alert: false,
-                        shoot_cd: 0.0,
-                        wander_cd: 0.0,
-                        dir: Vec2::X,
-                    });
-                    Cell::Open
-                }
-                'f' => {
-                    files_total += 1;
-                    pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::File, taken: false });
-                    Cell::Open
-                }
-                'a' => {
-                    pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Darts, taken: false });
-                    Cell::Open
-                }
-                'c' => {
-                    pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Coffee, taken: false });
-                    Cell::Open
-                }
-                'v' => {
-                    server_cell = (x, y);
-                    Cell::Open
-                }
-                _ => Cell::Open, // '.', 'd' and friends are open floor
-            };
+fn setup(
+    mut commands: Commands,
+    net: Res<NetMode>,
+    existing_editor: Option<ResMut<OfficeEditor>>,
+) {
+    let editor_mode = crate::shell::take_editor_pending();
+    let base_rows: Vec<String> = MAP.iter().map(|r| r.to_string()).collect();
+    let rows = page_level().unwrap_or(base_rows);
+    // The editor survives rounds, same pattern as every other cabinet.
+    match (existing_editor, editor_mode) {
+        (Some(mut e), true) => {
+            e.active = true;
+            e.testing = false;
+            e.rows = rows.clone();
+        }
+        (Some(mut e), false) => {
+            e.active = false;
+            e.testing = false;
+        }
+        (None, editing) => {
+            commands.insert_resource(OfficeEditor {
+                active: editing,
+                testing: false,
+                rows: rows.clone(),
+                brush: '#',
+            });
         }
     }
-    let dm = net.0.is_some();
+    let parsed = parse_office(&rows);
+    let Parsed {
+        grid,
+        mut guards,
+        mut pickups,
+        mut px,
+        mut py,
+        server_cell,
+        exit_cell,
+        files_total,
+        spawns,
+    } = parsed;
+    let dm = net.0.is_some() && !editor_mode;
     let my_seat = net.0.as_ref().map(|c| c.seat as usize).unwrap_or(0);
     let seats = net.0.as_ref().map(|c| c.seats as usize).unwrap_or(1);
     if dm {
-        // The party starts in opposite corners; guards have the night off.
-        let (sx, sy) = DM_SPAWNS[my_seat % 4];
+        // The party spreads across the map's spawn markers; guards are off.
+        let (sx, sy) = spawns[my_seat % spawns.len()];
         px = sx;
         py = sy;
         guards.clear();
         for p in pickups.iter_mut() {
             p.taken = true; // deathmatch is dart tag: no pickups, no errands
         }
+        // The host hands the room its map before anyone moves.
+        if net.0.as_ref().map(|c| c.is_host()).unwrap_or(false) {
+            if let Ok(w) = serde_json::to_string(&WireLevel { t: "lv".into(), rows: rows.clone() }) {
+                net_send(&w);
+            }
+        }
     }
     let mut remotes = Vec::new();
     if let Some(cfg) = &net.0 {
         for (s, present) in cfg.present.iter().enumerate() {
             if *present && s != my_seat {
-                let (rx, ry) = DM_SPAWNS[s % 4];
+                let (rx, ry) = spawns[s % spawns.len()];
                 remotes.push(Remote {
                     seat: s,
                     x: rx,
@@ -352,13 +528,15 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
     }
     commands.insert_resource(Remotes(remotes));
     commands.insert_resource(Mission {
+        rows,
+        spawns,
         dm,
         my_seat,
         dm_hp: DM_HP,
         dm_scores: vec![0; seats.max(1)],
         dm_clock: DM_CLOCK,
         nap_t: 0.0,
-        pos_timer: Timer::from_seconds(0.08, TimerMode::Repeating),
+        pos_timer: Timer::from_seconds(0.1, TimerMode::Repeating),
         fired_flag: false,
         grid,
         doors_open: vec![false; MW * MH],
@@ -644,6 +822,32 @@ fn net_apply(
                     }
                 }
             }
+            Some("lv") => {
+                // The host's map, before anyone has really moved: rebuild the
+                // grid in place and stand everyone on its spawn markers.
+                if let Ok(lv) = serde_json::from_str::<WireLevel>(&ev.data) {
+                    if lv.rows.len() == MH
+                        && lv.rows.iter().all(|r| r.chars().count() == MW)
+                        && lv.rows != m.rows
+                    {
+                        let parsed = parse_office(&lv.rows);
+                        m.grid = parsed.grid;
+                        m.doors_open = vec![false; MW * MH];
+                        m.spawns = parsed.spawns;
+                        m.rows = lv.rows;
+                        let (sx, sy) = m.spawns[m.my_seat % m.spawns.len()];
+                        m.px = sx;
+                        m.py = sy;
+                        for r in remotes.0.iter_mut() {
+                            let (rx, ry) = m.spawns[r.seat % m.spawns.len()];
+                            r.x = rx;
+                            r.y = ry;
+                            r.px = rx;
+                            r.py = ry;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -664,14 +868,15 @@ fn dm_run(
     let dt = time.delta_secs();
     m.dm_clock -= dt;
     for r in remotes.0.iter_mut() {
-        r.t = (r.t + dt / 0.08).min(1.0);
+        r.t = (r.t + dt / 0.1).min(1.0);
     }
     // Napping: the room spins gently, then you're back in a random corner.
     if m.nap_t > 0.0 {
         m.nap_t -= dt;
         m.ang += dt * 1.2;
         if m.nap_t <= 0.0 {
-            let (sx, sy) = DM_SPAWNS[rng.range(4) as usize];
+            let idx = rng.range(m.spawns.len() as u32) as usize;
+            let (sx, sy) = m.spawns[idx];
             m.px = sx;
             m.py = sy;
             m.dm_hp = DM_HP;
@@ -1173,13 +1378,338 @@ fn fmt_clock(secs: f32) -> String {
 fn endgame(
     time: Res<Time>,
     mut m: ResMut<Mission>,
+    editor: Option<ResMut<OfficeEditor>>,
     mut final_score: ResMut<FinalScore>,
     mut next: ResMut<NextState<Phase>>,
 ) {
     if let Some(t) = m.over.as_mut() {
         if t.tick(time.delta()).finished() {
+            // A finished TEST run returns to the canvas: no score, no exit.
+            if let Some(mut e) = editor {
+                if e.testing {
+                    e.testing = false;
+                    e.active = true;
+                    m.over = None;
+                    m.score = 0;
+                    return;
+                }
+            }
             final_score.0 = m.score;
             next.set(Phase::GameOver);
+        }
+    }
+}
+
+// ── the office map editor ────────────────────────────────────────────────
+
+#[derive(Component)]
+struct EditorTag;
+
+#[derive(Component)]
+struct EditorCell(usize, usize);
+
+#[derive(Component)]
+struct EditorHud;
+
+const BRUSHES: [(char, &str); 10] = [
+    ('#', "WALL"),
+    ('W', "WOOD"),
+    ('S', "RACKS"),
+    ('D', "DOOR"),
+    ('.', "FLOOR"),
+    ('f', "FILE"),
+    ('a', "DARTS"),
+    ('c', "COFFEE"),
+    ('g', "GUARD"),
+    ('s', "SPAWN"),
+];
+
+fn cell_color(ch: char) -> Color {
+    match ch {
+        '#' => Color::srgb(0.34, 0.36, 0.42),
+        'W' => Color::srgb(0.42, 0.30, 0.16),
+        'S' => Color::srgb(0.16, 0.30, 0.44),
+        'D' => Color::srgb(0.55, 0.48, 0.30),
+        'X' => Color::srgb(0.10, 0.55, 0.22),
+        'f' => AMBER,
+        'a' => CYAN,
+        'c' => MAGENTA,
+        'g' => RED,
+        's' => Color::srgb(0.30, 0.75, 0.35),
+        'v' => WHITE,
+        'p' => GREEN,
+        _ => Color::srgb(0.07, 0.08, 0.12),
+    }
+}
+
+const ED_CELL: f32 = 22.0;
+const ED_X0: f32 = -264.0;
+const ED_Y0: f32 = 282.0;
+
+fn ed_cell_pos(x: usize, y: usize) -> Vec2 {
+    Vec2::new(
+        ED_X0 + x as f32 * ED_CELL + ED_CELL / 2.0,
+        ED_Y0 - y as f32 * ED_CELL - ED_CELL / 2.0,
+    )
+}
+
+fn row_get(rows: &[String], x: usize, y: usize) -> char {
+    rows[y].chars().nth(x).unwrap_or('.')
+}
+
+fn row_set(rows: &mut [String], x: usize, y: usize, ch: char) {
+    let mut chars: Vec<char> = rows[y].chars().collect();
+    if x < chars.len() {
+        chars[x] = ch;
+        rows[y] = chars.into_iter().collect();
+    }
+}
+
+/// Removes every instance of a single-placement marker (p, v, X).
+fn clear_marker(rows: &mut [String], ch: char) {
+    for y in 0..rows.len() {
+        for x in 0..MW {
+            if row_get(rows, x, y) == ch {
+                row_set(rows, x, y, if ch == 'X' { '#' } else { '.' });
+            }
+        }
+    }
+}
+
+fn validate_office(rows: &[String]) -> Option<String> {
+    let count = |ch: char| -> usize {
+        rows.iter().map(|r| r.chars().filter(|&c| c == ch).count()).sum()
+    };
+    if count('p') != 1 {
+        return Some("PLACE THE START (P)".into());
+    }
+    if count('X') == 0 {
+        return Some("PLACE THE EXIT DOOR (X)".into());
+    }
+    if count('v') == 0 {
+        return Some("PLACE THE SERVER CONSOLE (V)".into());
+    }
+    if count('f') == 0 {
+        return Some("PLACE AT LEAST ONE INTEL FILE (6)".into());
+    }
+    None
+}
+
+/// Opens the editor from the page (no credit needed — it's a tool).
+fn poll_editor_start(
+    mut next: ResMut<NextState<Phase>>,
+    mut net: ResMut<NetMode>,
+    mut cfg: ResMut<crate::CabinetConfig>,
+) {
+    if crate::shell::take_editor_start() {
+        net.0 = None;
+        cfg.players = 1;
+        cfg.humans = 1;
+        crate::shell::mark_editor_pending();
+        next.set(Phase::Playing);
+    }
+}
+
+/// The whole editor: canvas lifecycle, painting, brushes, save, test-play.
+#[allow(clippy::too_many_arguments)]
+fn editor_update(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    editor: Option<ResMut<OfficeEditor>>,
+    mission: Option<ResMut<Mission>>,
+    guards: Option<ResMut<Guards>>,
+    pickups: Option<ResMut<Pickups>>,
+    canvas: Query<Entity, With<EditorTag>>,
+    mut cells: Query<(&EditorCell, &mut Sprite)>,
+    mut ed_hud: Query<&mut Text2d, With<EditorHud>>,
+) {
+    let Some(mut editor) = editor else { return };
+    let (Some(mut m), Some(mut guards), Some(mut pickups)) = (mission, guards, pickups) else {
+        return;
+    };
+
+    // Returning from a test round: X bails back to the canvas.
+    if !editor.active {
+        if editor.testing && keys.just_pressed(KeyCode::KeyX) {
+            editor.testing = false;
+            editor.active = true;
+        }
+        if !editor.active {
+            return;
+        }
+    }
+
+    // Canvas lifecycle: build the overlay once per activation.
+    if canvas.is_empty() {
+        commands.spawn((
+            Sprite { color: Color::srgb(0.02, 0.02, 0.05), custom_size: Some(Vec2::new(720.0, 640.0)), ..default() },
+            Transform::from_xyz(0.0, 0.0, 9.5),
+            EditorTag,
+            GameTag,
+        ));
+        for y in 0..MH {
+            for x in 0..MW {
+                let p = ed_cell_pos(x, y);
+                commands.spawn((
+                    Sprite { color: DIM, custom_size: Some(Vec2::splat(ED_CELL - 2.0)), ..default() },
+                    Transform::from_xyz(p.x, p.y, 10.0),
+                    EditorCell(x, y),
+                    EditorTag,
+                    GameTag,
+                ));
+            }
+        }
+        let legend = text(
+            &mut commands,
+            "",
+            11.0,
+            AMBER,
+            Vec3::new(0.0, -296.0, 10.5),
+        );
+        commands.entity(legend).insert((EditorHud, EditorTag, GameTag));
+        return; // paint next frame, once the cells exist
+    }
+
+    // Brush keys 1-0, then the single-placement markers.
+    for (i, key) in [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+        KeyCode::Digit0,
+    ]
+    .iter()
+    .enumerate()
+    {
+        if keys.just_pressed(*key) {
+            editor.brush = BRUSHES[i].0;
+            sfx("tick");
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        editor.brush = 'X';
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::KeyV) {
+        editor.brush = 'v';
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        editor.brush = 'p';
+        sfx("tick");
+    }
+
+    // Save to the community shelf.
+    if keys.just_pressed(KeyCode::KeyS) && keys.pressed(KeyCode::ShiftLeft) {
+        // Shift+S so plain S stays free for a future brush; muscle memory
+        // from the other editors is close enough.
+        if let Some(problem) = validate_office(&editor.rows) {
+            if let Ok(mut t) = ed_hud.single_mut() {
+                t.0 = format!("!! {problem} !!");
+            }
+            sfx("buzz");
+        } else {
+            let doc = OfficeDoc { v: 1, name: String::new(), rows: editor.rows.clone() };
+            if let Ok(json) = serde_json::to_string(&doc) {
+                crate::shell::save_level(&json);
+                sfx("clear");
+            }
+        }
+        return;
+    }
+
+    // Test-play the canvas in place.
+    if keys.just_pressed(KeyCode::KeyG) {
+        if let Some(problem) = validate_office(&editor.rows) {
+            if let Ok(mut t) = ed_hud.single_mut() {
+                t.0 = format!("!! {problem} !!");
+            }
+            sfx("buzz");
+            return;
+        }
+        let rows = editor.rows.clone();
+        let parsed = parse_office(&rows);
+        m.grid = parsed.grid;
+        m.doors_open = vec![false; MW * MH];
+        m.spawns = parsed.spawns;
+        m.px = parsed.px;
+        m.py = parsed.py;
+        m.ang = 0.0;
+        m.hp = 100;
+        m.darts = 24;
+        m.files = 0;
+        m.files_total = parsed.files_total;
+        m.server_bugged = false;
+        m.server_cell = parsed.server_cell;
+        m.exit_cell = parsed.exit_cell;
+        m.spotted = 0;
+        m.clock = 0.0;
+        m.over = None;
+        m.done = false;
+        m.result.clear();
+        m.rows = rows;
+        guards.0 = parsed.guards;
+        pickups.0 = parsed.pickups;
+        editor.active = false;
+        editor.testing = true;
+        for e in &canvas {
+            commands.entity(e).despawn();
+        }
+        sfx("coin");
+        return;
+    }
+
+    // Paint. The border is immutable; single markers relocate themselves.
+    let place = buttons.pressed(MouseButton::Left);
+    let erase = buttons.pressed(MouseButton::Right);
+    if place || erase {
+        if let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) {
+            if let Some(world) = crate::retro::cursor_world(window, camera, cam_tf) {
+                let x = ((world.x - ED_X0) / ED_CELL).floor() as i32;
+                let y = ((ED_Y0 - world.y) / ED_CELL).floor() as i32;
+                if x > 0 && (x as usize) < MW - 1 && y > 0 && (y as usize) < MH - 1 {
+                    let ch = if erase { '.' } else { editor.brush };
+                    if matches!(ch, 'p' | 'v' | 'X') && buttons.just_pressed(MouseButton::Left) {
+                        clear_marker(&mut editor.rows, ch);
+                        row_set(&mut editor.rows, x as usize, y as usize, ch);
+                    } else if !matches!(ch, 'p' | 'v' | 'X') {
+                        row_set(&mut editor.rows, x as usize, y as usize, ch);
+                    }
+                }
+            }
+        }
+    }
+
+    // Repaint cells + legend.
+    for (c, mut sp) in &mut cells {
+        let want = cell_color(row_get(&editor.rows, c.0, c.1));
+        if sp.color != want {
+            sp.color = want;
+        }
+    }
+    if let Ok(mut t) = ed_hud.single_mut() {
+        let brush_name = BRUSHES
+            .iter()
+            .find(|(c, _)| *c == editor.brush)
+            .map(|(_, n)| *n)
+            .unwrap_or(match editor.brush {
+                'X' => "EXIT",
+                'v' => "CONSOLE",
+                _ => "START",
+            });
+        let s = format!(
+            "OFFICE EDITOR - BRUSH: {brush_name}\n1 WALL 2 WOOD 3 RACKS 4 DOOR 5 FLOOR 6 FILE 7 DARTS 8 COFFEE 9 GUARD 0 SPAWN - X EXIT V CONSOLE P START\nLCLICK PAINTS - RCLICK ERASES - SHIFT+S SAVES - G TEST-PLAYS - X RETURNS FROM A TEST"
+        );
+        if t.0 != s {
+            t.0 = s;
         }
     }
 }

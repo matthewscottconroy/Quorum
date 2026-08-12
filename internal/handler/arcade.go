@@ -94,6 +94,14 @@ var arcadeStatNames = map[string][]string{
 		"flips", "bumpers_bounced", "targets_knocked", "boards_climbed",
 		"jackpots", "pennies_lost",
 	},
+	"off-the-roof": {
+		"gobs_hocked", "splats", "bullseyes", "mega_gobs", "manholes",
+		"chains_maxed",
+	},
+	"pest-control": {
+		"swats", "bugs_swatted", "whiffs", "stings", "multi_kills",
+		"hornets_downed", "waves_cleared", "shifts_cleared",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {

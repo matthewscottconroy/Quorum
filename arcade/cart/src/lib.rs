@@ -16,7 +16,9 @@ mod holdem;
 mod interns;
 mod lucky_penny;
 mod night_audit;
+mod off_the_roof;
 mod penny;
+mod pest_control;
 mod powder;
 mod red_tape;
 mod retro;
@@ -143,6 +145,12 @@ pub fn run() {
         }
         "lucky-penny" => {
             app.add_plugins((shell_for("LUCKY PENNY", lucky_penny::BLURB), lucky_penny::LuckyPennyPlugin));
+        }
+        "off-the-roof" => {
+            app.add_plugins((shell_for("OFF THE ROOF", off_the_roof::BLURB), off_the_roof::RoofPlugin));
+        }
+        "pest-control" => {
+            app.add_plugins((shell_for("PEST CONTROL", pest_control::BLURB), pest_control::PestPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

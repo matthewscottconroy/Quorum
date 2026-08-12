@@ -61,11 +61,19 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P mission · 2-4 online deathmatch', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. ONLINE: the OFFICE PARTY — no guards, no errands, three darts and you nap; first to 10 tranqs (or best at the horn) wins. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
+    players: '1P mission · 2-12 online deathmatch · editor', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. ONLINE: the OFFICE PARTY — no guards, no errands, three darts and you nap; first to 10 tranqs (or best at the horn) wins. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
   },
   {
     id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
     players: '1P', controls: '← → (or Z and /) flip · Space launches. Knock the amber targets to open the ceiling hatch, ride up: BASEMENT → LOBBY → BOARDROOM. Five hits crack the VAULT for the jackpot. Falling through a floor only drops you a board — the basement drain costs a penny. Three pennies.',
+  },
+  {
+    id: 'off-the-roof', name: 'OFF THE ROOF', tag: 'Fifteen gobs. One street. No witnesses.',
+    players: '1P', controls: 'Mouse aims (cursor height sets the arc) · hold LEFT to charge, release to fire — past the red line it dribbles · RIGHT-CLICK arms the MEGA GOB (costs 3, splashes wide). Scoring: base × distance band (×1/×2/×3) × hit chain (up to ×5, a miss resets) — bullseyes double. The manhole pays 500 and refills 3 gobs.',
+  },
+  {
+    id: 'pest-control', name: 'PEST CONTROL', tag: 'Somebody left a donut out. Now it\'s your problem.',
+    players: '1P', controls: 'Mouse moves the swatter · click swats (short recovery — no flailing). Streak ×1-×5 for consecutive connecting swats; a whiff resets it. Two bugs under one swat = double each. WASPS: swat only during the calm amber beat — red means sting. After three waves, THE HORNET: dodge its dive, swat it dazed (green) for double damage.',
   },
   {
     id: 'interns', name: 'INTERNS', tag: 'The new hires walk. That\u2019s all they know. Save the quota.',
@@ -78,7 +86,7 @@ const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min:
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 4 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 12 } };
 // Level-capable cabinets: house options, the editor's blank-canvas label,
 // and the toast shown when the editor opens.
 const LEVELS = {
@@ -96,6 +104,11 @@ const LEVELS = {
     house: [['std', 'HOUSE: STANDARD DISH']],
     blank: 'EDITOR: PUNCH HOLES', playFallback: null, localOnly: true,
     toast: 'Editor: click punches or fills holes (starting blobs stay), S saves, G test-plays 12 seats, X returns',
+  },
+  'night-audit': {
+    house: [['std', 'MISSION: THE LEDGER JOB']],
+    blank: 'EDITOR: EMPTY OFFICE', playFallback: null,
+    toast: 'Editor: 1-0 pick brushes (walls, doors, files, guards, spawns), X/V/P place exit/console/start, click paints, right-click erases, Shift+S saves, G test-plays, X returns',
   },
   chess: {
     house: [['std', 'STANDARD GAME'], ['fischer', 'FISCHER RANDOM']],
@@ -282,6 +295,13 @@ const STAT_LABELS = {
   coffees_drunk: 'MIDNIGHT COFFEES', servers_bugged: 'SERVERS BUGGED',
   extractions: 'CLEAN EXTRACTIONS', ghost_runs: 'GHOST RUNS (NEVER SEEN)',
   audits_failed: 'NIGHTS THAT WENT LOUD',
+  // OFF THE ROOF
+  gobs_hocked: 'GOBS HOCKED', splats: 'DIRECT HITS', bullseyes: 'DEAD-CENTER BULLSEYES',
+  mega_gobs: 'MEGA GOBS UNLEASHED', manholes: 'MANHOLE SWISHES', chains_maxed: 'CHAINS MAXED (X5)',
+  // PEST CONTROL
+  swats: 'SWATS TAKEN', bugs_swatted: 'BUGS DISPATCHED', whiffs: 'AIR SWATTED (WHIFFS)',
+  stings: 'STINGS ABSORBED', multi_kills: 'TWO-FOR-ONES', hornets_downed: 'HORNETS DOWNED',
+  shifts_cleared: 'SHIFTS SURVIVED (PESTS)',
   // LUCKY PENNY
   flips: 'FLIPPER FLIPS', bumpers_bounced: 'BUMPERS RUNG',
   targets_knocked: 'TARGETS FLATTENED', boards_climbed: 'FLOORS ASCENDED',
@@ -302,7 +322,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';
