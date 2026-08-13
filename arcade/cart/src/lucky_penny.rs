@@ -225,7 +225,12 @@ fn build_board(commands: &mut Commands, table: &mut Table, board: usize) {
     table.board_ents.push(label);
 }
 
-fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
+fn setup(
+    mut commands: Commands,
+    mut rng: ResMut<Rng>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<ColorMaterial>>,
+) {
     let mut table = Table {
         board: 0,
         segs: Vec::new(),
@@ -247,11 +252,13 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
     commands.insert_resource(table);
     let _ = &mut rng;
 
-    // The penny herself: a coin with a face. Children give her the grin.
+    // The penny herself: an actual round coin with a face. Children give
+    // her the rim and the grin.
     commands
         .spawn((
-            Sprite { color: AMBER, custom_size: Some(Vec2::splat(BALL_R * 2.0)), ..default() },
-            Transform::from_xyz(0.0, -60.0, 5.0).with_rotation(Quat::from_rotation_z(0.785)),
+            Mesh2d(meshes.add(Circle::new(BALL_R))),
+            MeshMaterial2d(mats.add(ColorMaterial::from(AMBER))),
+            Transform::from_xyz(0.0, -60.0, 5.0),
             Penny,
             GameTag,
         ))
@@ -259,12 +266,12 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
             for ex in [-4.0, 4.0] {
                 kid.spawn((
                     Sprite { color: Color::srgb(0.1, 0.08, 0.02), custom_size: Some(Vec2::splat(3.0)), ..default() },
-                    Transform::from_xyz(ex, 2.5, 0.1).with_rotation(Quat::from_rotation_z(-0.785)),
+                    Transform::from_xyz(ex, 2.5, 0.1),
                 ));
             }
             kid.spawn((
                 Sprite { color: Color::srgb(0.1, 0.08, 0.02), custom_size: Some(Vec2::new(8.0, 2.2)), ..default() },
-                Transform::from_xyz(0.0, -3.5, 0.1).with_rotation(Quat::from_rotation_z(-0.785)),
+                Transform::from_xyz(0.0, -3.5, 0.1),
             ));
         });
     // Flipper visuals (the physics lives in Table's angles).

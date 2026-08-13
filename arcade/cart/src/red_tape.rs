@@ -24,7 +24,10 @@ const BALL_SPEED: f32 = 330.0;
 const COLS: i32 = 12;
 const BRICK_W: f32 = 56.0;
 const BRICK_H: f32 = 22.0;
-const FIELD_TOP: f32 = 268.0;
+// Leave a real channel between the ceiling and the top row: breaking
+// through and letting the ball rattle along the top IS the game's best
+// moment, so the gap fits the ball with room to spare.
+const FIELD_TOP: f32 = 240.0;
 const WALL_X: f32 = 352.0;
 const CEIL_Y: f32 = 296.0;
 const FLOOR_Y: f32 = -318.0;

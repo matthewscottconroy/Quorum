@@ -17,6 +17,7 @@ mod go_ui;
 mod hex_ui;
 mod holdem;
 mod interns;
+mod lemonade;
 mod lucky_penny;
 mod night_audit;
 mod off_the_roof;
@@ -27,6 +28,7 @@ mod red_tape;
 mod retro;
 mod rng;
 mod roll_call;
+mod sub_basement;
 mod shell;
 
 /// Every cabinet shares one lifecycle. Games implement only `Playing`;
@@ -167,6 +169,12 @@ pub fn run() {
         }
         "homestead" => {
             app.add_plugins((shell_for("HOMESTEAD", homestead::BLURB), homestead::HomesteadPlugin));
+        }
+        "lemonade" => {
+            app.add_plugins((shell_for("LEMONADE", lemonade::BLURB), lemonade::LemonadePlugin));
+        }
+        "sub-basement" => {
+            app.add_plugins((shell_for("SUB-BASEMENT", sub_basement::BLURB), sub_basement::BasementPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

@@ -38,6 +38,9 @@ var arcadeNetGames = map[string]struct{ minSeats, maxSeats int }{
 	"roll-call":     {2, 8},
 	"floor-plan":    {2, 8},
 	"homestead":     {3, 4},
+	// SUB-BASEMENT is host-simulated: the host's client runs the world and
+	// the relay carries commands down, room text back up.
+	"sub-basement": {2, 12},
 }
 
 // holdemDealer is the ONE exception to "the server is only a relay": poker

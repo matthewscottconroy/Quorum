@@ -92,6 +92,14 @@ const CABINETS = [
     players: '1P vs 3 bots · 2-8 online', controls: 'R rolls · B buys the deed, N passes · click a wing you own (full color set) to build desks · E ends the turn. HR REVIEW: P pays 50 or R rolls for doubles — three doubles sends you there. Bankrupt the floor, or be richest when the fiscal year ends.',
   },
   {
+    id: 'lemonade', name: 'LEMONADE', tag: 'Fourteen days of summer. One pitcher. No mercy from the sky.',
+    players: '1P', controls: 'The classic corner-stand sim. Each morning: read the FORECAST, then ↑/↓ pick a line, ←/→ adjust (Shift ×10) — glasses to mix, signs to post, price per glass — and Enter opens the stand. Scorchers forgive high prices; overcast does not; thunderstorms forgive nothing. Unsold glasses spoil. Score is the cash box after day 14.',
+  },
+  {
+    id: 'sub-basement', name: 'SUB-BASEMENT', tag: 'There is a floor below the basement. It knows your name.',
+    players: '1P · 2-12 online (co-op-ish)', controls: 'A MUD in a cabinet — click the screen and TYPE: N/E/S/W move · LOOK · GET <thing> · INV · USE <thing> · HIT <thing> · SAY <words> · WHO · HELP. Arm yourself (the RED STAPLER is famous), pocket penny piles, get the keycard into the ARCHIVE, drop THE AUDITOR, take the PAYROLL LEDGER to the FREIGHT ELEVATOR and USE LEDGER. First one out ends the shift for everyone and banks +500. Online, the host runs the world.',
+  },
+  {
     id: 'homestead', name: 'HOMESTEAD', tag: 'Nineteen lots. Five supplies. One inspector.',
     players: '1P vs 3 bots · 3-4 online', controls: 'Draft two outposts, then R rolls each turn — lots pay COFFEE, PAPER, TONER, SNACKS, and STAPLES. Click corners for outposts (click yours again for an office), edges for halls · I buys an idea · G plays a guard · T trades 4:1 · E ends. A 7 wakes THE INSPECTOR. First to 10 points owns the park.',
   },
@@ -102,7 +110,7 @@ const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min:
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
-const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 12 }, 'bumper-chairs': { min: 2, max: 12 }, 'roll-call': { min: 2, max: 8 }, 'floor-plan': { min: 2, max: 8 }, homestead: { min: 3, max: 4 } };
+const NET = { chess: { min: 2, max: 2 }, go: { min: 2, max: 2 }, 'powder-keg': { min: 2, max: 12 }, hexfection: { min: 2, max: 12 }, interns: { min: 2, max: 2 }, 'texas-holdem': { min: 2, max: 6 }, 'night-audit': { min: 2, max: 12 }, 'bumper-chairs': { min: 2, max: 12 }, 'roll-call': { min: 2, max: 8 }, 'floor-plan': { min: 2, max: 8 }, homestead: { min: 3, max: 4 }, 'sub-basement': { min: 2, max: 12 } };
 // Level-capable cabinets: house options, the editor's blank-canvas label,
 // and the toast shown when the editor opens.
 const LEVELS = {
@@ -349,6 +357,15 @@ const STAT_LABELS = {
   offices_upgraded: 'OFFICES OPENED', ideas_drawn: 'IDEAS FILED',
   guards_played: 'GUARDS DEPLOYED', inspector_moves: 'INSPECTOR RELOCATIONS',
   resources_gained: 'SUPPLIES COLLECTED', homesteads_won: 'PARKS OWNED',
+  // LEMONADE
+  days_open: 'DAYS OPEN FOR BUSINESS', glasses_sold: 'GLASSES SOLD',
+  glasses_spoiled: 'GLASSES SPOILED (AMBITION)', signs_posted: 'SIGNS POSTED',
+  rainouts: 'THUNDERSTORM WASHOUTS', sellouts: 'SOLD-OUT DAYS',
+  stands_retired: 'SEASONS PLAYED',
+  // SUB-BASEMENT
+  rooms_explored: 'ROOMS MAPPED', pests_bopped: 'PESTS FLATTENED',
+  pennies_pocketed: 'PENNIES POCKETED (MUD)', ledgers_lifted: 'LEDGERS LIFTED',
+  floors_escaped: 'ESCAPES UP THE FREIGHT ELEVATOR', naps_taken: 'BEIGE-OUTS (KO\'D)',
 };
 function statLabel(key) {
   return STAT_LABELS[key] ?? key.replace(/_/g, ' ').toUpperCase();
@@ -362,7 +379,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control', 'bumper-chairs', 'roll-call', 'floor-plan', 'homestead']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control', 'bumper-chairs', 'roll-call', 'floor-plan', 'homestead', 'lemonade', 'sub-basement']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';

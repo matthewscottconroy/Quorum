@@ -994,13 +994,15 @@ fn human_input(keys: Res<ButtonInput<KeyCode>>, net: Res<NetMode>, mut fighters:
     }
 }
 
-/// Cells currently dangerous: flame now, or bomb blast arriving within `soon`.
-fn danger_map(arena: &Arena, soon: f32) -> Vec<bool> {
+/// Graded danger: 0 = safe, 1 = a blast will arrive eventually, 2 = lethal
+/// RIGHT NOW (standing flame, or a fuse about to blow). Bots may sprint
+/// across grade-1 cells when cornered; grade 2 is never crossed.
+fn danger_map(arena: &Arena, soon: f32) -> Vec<u8> {
     let n = (COLS * ROWS) as usize;
-    let mut danger = vec![false; n];
+    let mut danger = vec![0u8; n];
     for i in 0..n {
         if arena.flames[i] > 0.0 {
-            danger[i] = true;
+            danger[i] = 2;
         }
     }
     for (i, b) in arena.bombs.iter().enumerate() {
@@ -1008,20 +1010,22 @@ fn danger_map(arena: &Arena, soon: f32) -> Vec<bool> {
         if *fuse > soon {
             continue;
         }
-        danger[i] = true;
+        let grade = if *fuse < 0.55 { 2 } else { 1 };
+        danger[i] = danger[i].max(grade);
         for (j, _) in blast_cells(&arena.tiles, i, *range, *pierce) {
-            danger[j] = true;
+            danger[j] = danger[j].max(grade);
         }
     }
     danger
 }
 
-/// BFS from `from` to the nearest cell satisfying `goal`; returns first step.
+/// BFS from `from` to the nearest cell satisfying `goal`; returns first
+/// step. Cells with danger above `max_danger` are never entered.
 fn bfs_step(
     arena: &Arena,
-    danger: &[bool],
+    danger: &[u8],
     from: IVec2,
-    allow_danger_transit: bool,
+    max_danger: u8,
     goal: impl Fn(usize) -> bool,
 ) -> Option<IVec2> {
     let n = (COLS * ROWS) as usize;
@@ -1053,7 +1057,7 @@ fn bfs_step(
             if arena.tiles[j] != Tile::Empty || arena.bombs[j].is_some() {
                 continue;
             }
-            if !allow_danger_transit && danger[j] {
+            if danger[j] > max_danger {
                 continue;
             }
             prev[j] = cur;
@@ -1082,16 +1086,32 @@ fn bot_brains(
         if f.human.is_some() || f.remote || !f.alive {
             continue;
         }
+        // Reflex, every frame: never walk into a cell that kills right now.
+        if f.want != IVec2::ZERO {
+            let t = f.tile + f.want;
+            if t.x >= 0
+                && t.x < COLS
+                && t.y >= 0
+                && t.y < ROWS
+                && danger[Arena::idx(t.x, t.y)] == 2
+            {
+                f.want = IVec2::ZERO;
+            }
+        }
         if !f.think.tick(time.delta()).just_finished() {
             continue;
         }
         let here = Arena::idx(f.tile.x, f.tile.y);
 
-        // 1. In danger: sprint to the nearest safe cell, danger transit
-        // allowed. Cornered WITH the kick perk: shove the keg in the way —
-        // the shove clears a lane the pathfinder can't see.
-        if danger[here] {
-            if let Some(step) = bfs_step(&arena, &danger, f.tile, true, |i| !danger[i]) {
+        // 1. In danger: sprint out. Prefer a route through clean cells;
+        // only cross not-yet-burning blast lanes when truly cornered, and
+        // never cross standing flame. Cornered WITH the kick perk: shove
+        // the keg in the way — the shove clears a lane the pathfinder
+        // can't see.
+        if danger[here] > 0 {
+            if let Some(step) = bfs_step(&arena, &danger, f.tile, 0, |i| danger[i] == 0) {
+                f.want = step;
+            } else if let Some(step) = bfs_step(&arena, &danger, f.tile, 1, |i| danger[i] == 0) {
                 f.want = step;
             } else if f.kick {
                 for d in [IVec2::new(1, 0), IVec2::new(-1, 0), IVec2::new(0, 1), IVec2::new(0, -1)] {
@@ -1118,22 +1138,23 @@ fn bot_brains(
             }
         });
         if worth_bombing && f.live_bombs < f.max_bombs {
-            // Simulate our own blast: is there still a safe cell to reach?
-            let mut sim = vec![false; danger.len()];
-            sim.copy_from_slice(&danger);
-            sim[here] = true;
+            // Simulate our own blast: only plant when a CLEAN escape route
+            // exists — no betting your chassis on sprinting through some
+            // other keg's blast lane.
+            let mut sim = danger.clone();
+            sim[here] = sim[here].max(1);
             for (j, _) in blast_cells(&arena.tiles, here, f.range, f.pierce) {
-                sim[j] = true;
+                sim[j] = sim[j].max(1);
             }
-            if bfs_step(&arena, &sim, f.tile, true, |i| !sim[i]).is_some() {
+            if bfs_step(&arena, &sim, f.tile, 0, |i| sim[i] == 0).is_some() {
                 f.wants_bomb = true;
                 continue;
             }
         }
         // 3. Otherwise walk toward loot, then toward the nearest rival.
-        let target_step = bfs_step(&arena, &danger, f.tile, false, |i| arena.perks[i].is_some())
+        let target_step = bfs_step(&arena, &danger, f.tile, 0, |i| arena.perks[i].is_some())
             .or_else(|| {
-                bfs_step(&arena, &danger, f.tile, false, |i| {
+                bfs_step(&arena, &danger, f.tile, 0, |i| {
                     let cell = IVec2::new((i as i32) % COLS, (i as i32) / COLS);
                     positions.iter().any(|&(s, t, alive)| {
                         alive && s != f.seat && (t - cell).abs().element_sum() <= 1
@@ -1144,7 +1165,16 @@ fn bot_brains(
             f.want = step;
         } else if rng.chance(0.3) {
             let dirs = [IVec2::new(1, 0), IVec2::new(-1, 0), IVec2::new(0, 1), IVec2::new(0, -1)];
-            f.want = dirs[rng.range(4) as usize];
+            let d = dirs[rng.range(4) as usize];
+            let t = f.tile + d;
+            if t.x >= 0
+                && t.x < COLS
+                && t.y >= 0
+                && t.y < ROWS
+                && danger[Arena::idx(t.x, t.y)] == 0
+            {
+                f.want = d;
+            }
         }
     }
 }

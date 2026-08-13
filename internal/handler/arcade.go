@@ -118,6 +118,14 @@ var arcadeStatNames = map[string][]string{
 		"halls_built", "outposts_founded", "offices_upgraded", "ideas_drawn",
 		"guards_played", "inspector_moves", "resources_gained", "homesteads_won",
 	},
+	"lemonade": {
+		"days_open", "glasses_sold", "glasses_spoiled", "signs_posted",
+		"rainouts", "sellouts", "stands_retired",
+	},
+	"sub-basement": {
+		"rooms_explored", "pests_bopped", "pennies_pocketed", "ledgers_lifted",
+		"floors_escaped", "naps_taken",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {

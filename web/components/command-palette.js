@@ -47,9 +47,11 @@ class CommandPalette extends HTMLElement {
     if (this._open && e.key === 'Escape') { this.close(); return; }
     if (this._open) return;
 
-    // Bare-key shortcuts only when not typing in a field and no modifier held.
+    // Bare-key shortcuts only when not typing in a field and no modifier
+    // held. A focused CANVAS counts as typing: the arcade cabinets read
+    // the keyboard (SUB-BASEMENT is literally a text game).
     const el = document.activeElement;
-    const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+    const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.tagName === 'CANVAS' || el.isContentEditable);
     if (typing || mod || e.altKey) return;
 
     if (e.key === '/') { e.preventDefault(); this.open(); return; }

@@ -636,12 +636,20 @@ fn spawn_piece(kid: &mut ChildSpawnerCommands, fx: &ChessFx, mat: usize, color: 
             }
         }
         Piece::Knight => {
-            // Horse profile facing left: chest, leaning neck, head, muzzle, ear.
-            rect(kid, 3.5, -6.0, 13.0, 14.0, 0.0);
-            rect(kid, 0.0, 2.0, 11.0, 18.0, 0.45);
-            rect(kid, -4.5, 10.0, 14.0, 8.5, 0.0);
-            rect(kid, -11.5, 8.5, 7.0, 5.5, 0.0);
-            blob(kid, &fx.spike, 1.0, 17.0);
+            // A proper horse profile facing left: low haunches, a chest
+            // riser, an arched neck leaning forward, a head that slopes
+            // down to a squared-off muzzle, pricked ears, mane tufts along
+            // the back, and a rounded jaw at the throat.
+            rect(kid, 4.5, -9.5, 15.0, 9.0, 0.0); // haunches
+            rect(kid, -1.0, -5.0, 10.0, 12.0, 0.15); // chest
+            rect(kid, 2.0, 3.0, 8.5, 18.0, 0.55); // arched neck
+            rect(kid, -7.0, 10.5, 12.0, 6.0, -0.30); // head, nose down
+            rect(kid, -13.0, 7.5, 5.0, 3.6, -0.30); // muzzle
+            blob(kid, &fx.ball, -3.5, 7.5); // jaw
+            blob(kid, &fx.spike, -3.5, 15.5); // ears
+            blob(kid, &fx.spike, 0.5, 16.5);
+            blob(kid, &fx.spike, 6.5, 9.0); // mane tufts
+            blob(kid, &fx.spike, 8.5, 3.5);
         }
         Piece::Bishop => {
             blob(kid, &fx.bishop_body, 0.0, -1.5);

@@ -269,13 +269,47 @@ fn send_state(b: &Board, line: &str) {
 struct OwnerMark(usize);
 
 #[derive(Component)]
-struct DeskText(usize);
+struct DeskPip(usize, u8);
 
 #[derive(Component)]
-struct Hud;
+struct TurnText;
+
+#[derive(Component)]
+struct CardBar;
+
+#[derive(Component)]
+struct CardText;
+
+#[derive(Component)]
+struct RosterChip(usize);
+
+#[derive(Component)]
+struct RosterText(usize);
+
+#[derive(Component)]
+struct DieFace(usize);
+
+#[derive(Component)]
+struct DiePip(usize, usize);
+
+#[derive(Component)]
+struct TurnRing;
 
 #[derive(Component)]
 struct LogText;
+
+/// Standard die faces on a 3x3 pip grid (row-major, top row first).
+fn die_pips(v: u8) -> [bool; 9] {
+    match v {
+        1 => [false, false, false, false, true, false, false, false, false],
+        2 => [true, false, false, false, false, false, false, false, true],
+        3 => [true, false, false, false, true, false, false, false, true],
+        4 => [true, false, true, false, false, false, true, false, true],
+        5 => [true, false, true, false, true, false, true, false, true],
+        6 => [true, false, true, true, false, true, true, false, true],
+        _ => [false; 9],
+    }
+}
 
 pub struct FloorPlanPlugin;
 
@@ -283,7 +317,7 @@ impl Plugin for FloorPlanPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
             Update,
-            (net_apply, input, bots, paint, endgame)
+            (net_apply, input, bots, paint, ring_pulse, endgame)
                 .chain()
                 .run_if(in_state(Phase::Playing))
                 .run_if(crate::unpaused),
@@ -342,55 +376,119 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
             Kind::Start | Kind::Lounge => GREEN.with_alpha(0.6),
             _ => Color::srgb(0.25, 0.25, 0.3),
         };
+        // Ownership ring: a frame around the space in the owner's color —
+        // one glance says whose block of the board this is.
         commands.spawn((
-            Sprite { color, custom_size: Some(Vec2::splat(46.0)), ..default() },
+            Sprite { color: Color::NONE, custom_size: Some(Vec2::splat(52.0)), ..default() },
+            Transform::from_translation(xy.extend(0.8)),
+            OwnerMark(i),
+            GameTag,
+        ));
+        commands.spawn((
+            Sprite { color, custom_size: Some(Vec2::splat(44.0)), ..default() },
             Transform::from_translation(xy.extend(1.0)),
             GameTag,
         ));
         let label = text(
             &mut commands,
             def.name,
-            7.0,
+            8.0,
             WHITE,
             (xy + inward(i) * 38.0).extend(2.0),
         );
         commands.entity(label).insert(GameTag);
-        let mark = commands
-            .spawn((
-                Sprite {
-                    color: Color::NONE,
-                    custom_size: Some(Vec2::new(40.0, 5.0)),
-                    ..default()
-                },
-                Transform::from_translation((xy - inward(i) * 20.0).extend(2.5)),
-                OwnerMark(i),
+        // Desk pips: up to four bright studs along the space's lower edge.
+        for k in 0..4u8 {
+            commands.spawn((
+                Sprite { color: Color::NONE, custom_size: Some(Vec2::splat(7.0)), ..default() },
+                Transform::from_translation(
+                    (xy + Vec2::new(-15.0 + k as f32 * 10.0, -15.0)).extend(2.6),
+                ),
+                DeskPip(i, k),
                 GameTag,
-            ))
-            .id();
-        let _ = mark;
-        let dt = text(&mut commands, "", 9.0, WHITE, (xy + Vec2::new(0.0, 14.0)).extend(3.0));
-        commands.entity(dt).insert((DeskText(i), GameTag));
+            ));
+        }
     }
-    // Player tokens.
+    // The active player's space glows.
+    commands.spawn((
+        Sprite { color: AMBER.with_alpha(0.0), custom_size: Some(Vec2::splat(56.0)), ..default() },
+        Transform::from_translation(space_xy(0).extend(0.7)),
+        TurnRing,
+        GameTag,
+    ));
+    // Player tokens: bordered so they pop against any space color.
     let mut tokens = Vec::new();
     for (i, p) in players.iter().enumerate() {
-        let off = Vec2::new((i % 3) as f32 * 12.0 - 12.0, (i / 3) as f32 * 12.0 - 6.0);
+        let off = Vec2::new((i % 4) as f32 * 13.0 - 19.5, (i / 4) as f32 * 13.0 - 6.5);
         let e = commands
             .spawn((
-                Sprite {
-                    color: PLAYER_COLORS[p.seat % PLAYER_COLORS.len()],
-                    custom_size: Some(Vec2::splat(11.0)),
-                    ..default()
-                },
+                Sprite { color: WHITE, custom_size: Some(Vec2::splat(15.0)), ..default() },
                 Transform::from_translation((space_xy(0) + off).extend(4.0)),
                 GameTag,
             ))
+            .with_children(|kid| {
+                kid.spawn((
+                    Sprite {
+                        color: PLAYER_COLORS[p.seat % PLAYER_COLORS.len()],
+                        custom_size: Some(Vec2::splat(11.0)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 0.0, 0.1),
+                ));
+            })
             .id();
         tokens.push(e);
     }
-    let hud = text(&mut commands, "", 13.0, WHITE, Vec3::new(0.0, 110.0, 5.0));
-    commands.entity(hud).insert((Hud, GameTag));
-    let log = text(&mut commands, "", 11.0, CYAN, Vec3::new(0.0, -110.0, 5.0));
+    // ── the center dashboard ─────────────────────────────────────────────
+    // Turn banner + what-to-press, up top.
+    let turn_t = text(&mut commands, "", 16.0, WHITE, Vec3::new(0.0, 172.0, 5.0));
+    commands.entity(turn_t).insert((TurnText, GameTag));
+    // Two real dice with pips.
+    for die in 0..2usize {
+        let x = -30.0 + die as f32 * 60.0;
+        commands.spawn((
+            Sprite { color: Color::srgb(0.9, 0.9, 0.92), custom_size: Some(Vec2::splat(36.0)), ..default() },
+            Transform::from_xyz(x, 104.0, 5.0),
+            DieFace(die),
+            GameTag,
+        ));
+        for k in 0..9usize {
+            let (col, row) = ((k % 3) as f32, (k / 3) as f32);
+            commands.spawn((
+                Sprite { color: Color::NONE, custom_size: Some(Vec2::splat(6.0)), ..default() },
+                Transform::from_xyz(x + (col - 1.0) * 9.5, 104.0 + (1.0 - row) * 9.5, 5.2),
+                DiePip(die, k),
+                GameTag,
+            ));
+        }
+    }
+    // The current-space card: a color bar with the name on it, detail below.
+    commands.spawn((
+        Sprite { color: DIM, custom_size: Some(Vec2::new(230.0, 24.0)), ..default() },
+        Transform::from_xyz(0.0, 52.0, 4.8),
+        CardBar,
+        GameTag,
+    ));
+    let card = text(&mut commands, "", 12.0, WHITE, Vec3::new(0.0, 44.0, 5.0));
+    commands.entity(card).insert((CardText, GameTag));
+    // Roster: one row per player — color chip, cash, deeds.
+    for (i, p) in players.iter().enumerate() {
+        let y = -16.0 - i as f32 * 21.0;
+        commands.spawn((
+            Sprite {
+                color: PLAYER_COLORS[p.seat % PLAYER_COLORS.len()],
+                custom_size: Some(Vec2::splat(13.0)),
+                ..default()
+            },
+            Transform::from_xyz(-108.0, y, 5.0),
+            RosterChip(i),
+            GameTag,
+        ));
+        let row = text(&mut commands, "", 12.0, WHITE, Vec3::new(14.0, y, 5.0));
+        commands.entity(row).insert((RosterText(i), GameTag));
+    }
+    let log_y = -26.0 - players.len() as f32 * 21.0 - 24.0;
+    let log = text(&mut commands, "", 10.0, CYAN, Vec3::new(0.0, log_y, 5.0));
     commands.entity(log).insert((LogText, GameTag));
     commands.insert_resource(Board {
         players,
@@ -878,94 +976,186 @@ fn net_apply(mut events: EventReader<NetIn>, net: Res<NetMode>, mut b: ResMut<Bo
     }
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn paint(
     mut b: ResMut<Board>,
-    mut marks: Query<(&OwnerMark, &mut Sprite)>,
-    mut desks: Query<(&DeskText, &mut Text2d), (Without<Hud>, Without<LogText>)>,
-    mut hud: Query<&mut Text2d, (With<Hud>, Without<LogText>, Without<DeskText>)>,
-    mut logq: Query<&mut Text2d, (With<LogText>, Without<Hud>, Without<DeskText>)>,
+    mut sprites: ParamSet<(
+        Query<(&OwnerMark, &mut Sprite)>,
+        Query<(&DeskPip, &mut Sprite)>,
+        Query<&mut Sprite, With<CardBar>>,
+        Query<(&RosterChip, &mut Sprite)>,
+        Query<(&DieFace, &mut Sprite)>,
+        Query<(&DiePip, &mut Sprite)>,
+    )>,
+    mut texts: ParamSet<(
+        Query<(&mut Text2d, &mut TextColor), With<TurnText>>,
+        Query<&mut Text2d, With<CardText>>,
+        Query<(&RosterText, &mut Text2d, &mut TextColor)>,
+        Query<&mut Text2d, With<LogText>>,
+    )>,
     mut tfs: Query<&mut Transform>,
 ) {
     if !b.dirty {
         return;
     }
     b.dirty = false;
-    for (m, mut s) in &mut marks {
-        s.color = if b.owner[m.0] >= 0 {
-            let idx = b.owner[m.0] as usize;
-            PLAYER_COLORS[b.players[idx].seat % PLAYER_COLORS.len()]
+    let seat_color = |b: &Board, idx: usize| PLAYER_COLORS[b.players[idx].seat % PLAYER_COLORS.len()];
+    // Ownership rings.
+    for (m, mut s) in sprites.p0().iter_mut() {
+        s.color = if b.owner[m.0] >= 0 { seat_color(&b, b.owner[m.0] as usize) } else { Color::NONE };
+    }
+    // Desk pips.
+    for (d, mut s) in sprites.p1().iter_mut() {
+        s.color = if b.desks[d.0] > d.1 { GREEN } else { Color::NONE };
+    }
+    // Dice.
+    let dice = [b.dice.0, b.dice.1];
+    for (f, mut s) in sprites.p4().iter_mut() {
+        s.color = if dice[f.0] == 0 {
+            Color::srgba(0.9, 0.9, 0.92, 0.25)
         } else {
-            Color::NONE
+            Color::srgb(0.9, 0.9, 0.92)
         };
     }
-    for (d, mut t) in &mut desks {
-        let n = b.desks[d.0];
-        let s = if n > 0 { format!("D{n}") } else { String::new() };
+    for (p, mut s) in sprites.p5().iter_mut() {
+        let on = die_pips(dice[p.0])[p.1];
+        s.color = if on { Color::srgb(0.08, 0.08, 0.12) } else { Color::NONE };
+    }
+    // The current-space card.
+    let cur_pos = b.cur().pos;
+    let space = &SPACES[cur_pos];
+    let bar_color = match space.kind {
+        Kind::Prop(g) => GROUP_COLORS[g as usize],
+        Kind::Elev => Color::srgb(0.6, 0.6, 0.65),
+        Kind::Util => Color::srgb(0.4, 0.55, 0.55),
+        Kind::Hr | Kind::GoHr => RED.with_alpha(0.8),
+        Kind::Start | Kind::Lounge => GREEN.with_alpha(0.8),
+        _ => Color::srgb(0.3, 0.3, 0.38),
+    };
+    if let Ok(mut s) = sprites.p2().single_mut() {
+        s.color = bar_color;
+    }
+    let detail = match space.kind {
+        Kind::Prop(_) | Kind::Elev | Kind::Util => match b.owner[cur_pos] {
+            o if o < 0 => format!("UNCLAIMED - PRICE {}", space.price),
+            o if o as usize == b.turn => {
+                let d = b.desks[cur_pos];
+                if d > 0 { format!("YOURS - {d} DESKS") } else { "YOURS".into() }
+            }
+            o => format!("P{}'S - RENT {}", b.players[o as usize].seat + 1, calc_rent(&b, cur_pos)),
+        },
+        Kind::Tax(a) => format!("FEES DUE: {a}"),
+        Kind::Memo => "DRAW A MEMO".into(),
+        Kind::Rumor => "DRAW A RUMOR".into(),
+        Kind::Start => "PAYDAY: +200 EVERY LAP".into(),
+        Kind::Lounge => "BREATHER. NOTHING HAPPENS".into(),
+        Kind::Hr => "HR REVIEW".into(),
+        Kind::GoHr => "STRAIGHT TO HR".into(),
+    };
+    if let Ok(mut t) = texts.p1().single_mut() {
+        let s = format!("{}\n{}", space.name, detail);
         if t.0 != s {
             t.0 = s;
         }
     }
-    for (i, &e) in b.tokens.iter().enumerate() {
-        if let Ok(mut tf) = tfs.get_mut(e) {
-            if !b.players[i].alive {
-                tf.translation = Vec3::new(9999.0, 9999.0, 4.0);
-            } else {
-                let off =
-                    Vec2::new((i % 3) as f32 * 12.0 - 12.0, (i / 3) as f32 * 12.0 - 6.0);
-                tf.translation = (space_xy(b.players[i].pos) + off).extend(4.0);
-            }
-        }
-    }
-    if let Ok(mut h) = hud.single_mut() {
-        let s = if b.over.is_some() {
-            b.result.clone()
+    // Turn banner + prompt.
+    if let Ok((mut t, mut tc)) = texts.p0().single_mut() {
+        let (line, color) = if b.over.is_some() {
+            (b.result.clone(), AMBER)
         } else {
             let cur = b.cur();
-            let space = &SPACES[cur.pos];
-            let whose = if b.me_acting() && cur.human {
+            let who = if b.me_acting() && cur.human {
                 "YOUR TURN".to_string()
             } else {
-                format!("P{}", cur.seat + 1)
+                format!("P{}'S TURN", cur.seat + 1)
             };
             let prompt = if !b.me_acting() || !cur.human {
-                String::new()
+                format!("YEAR {}/{}", b.round, ROUND_CAP)
             } else if b.tphase == 1 {
-                format!("  BUY {} FOR {}? B/N", space.name, space.price)
+                format!("BUY FOR {}?  B YES / N NO", space.price)
             } else if b.tphase == 2 {
-                "  E ENDS TURN".to_string()
+                "E ENDS TURN - CLICK A FULL-SET WING TO BUILD".into()
             } else if cur.hr > 0 {
-                "  HR: P PAY 50 / R ROLL".to_string()
+                "HR HOLDS YOU: P PAY 50 / R ROLL DOUBLES".into()
             } else {
-                "  R ROLLS".to_string()
+                "R ROLLS - CLICK A FULL-SET WING TO BUILD".into()
             };
-            let money: Vec<String> = b
-                .players
-                .iter()
-                .filter(|p| p.alive)
-                .map(|p| format!("P{}:{}", p.seat + 1, p.money))
-                .collect();
+            (format!("{who}\n{prompt}"), seat_color(&b, b.turn))
+        };
+        if t.0 != line {
+            t.0 = line;
+        }
+        tc.0 = color;
+    }
+    // Roster rows.
+    for (r, mut t, mut tc) in texts.p2().iter_mut() {
+        let Some(p) = b.players.get(r.0) else { continue };
+        let deeds = (0..40).filter(|&i| b.owner[i] == r.0 as i8).count();
+        let line = if !p.alive {
+            format!("P{}  BANKRUPT", p.seat + 1)
+        } else {
             format!(
-                "{whose} AT {}{prompt}\nDICE {} {}   YEAR {}/{}\n{}",
-                space.name,
-                b.dice.0,
-                b.dice.1,
-                b.round,
-                ROUND_CAP,
-                money.join("  ")
+                "{}P{}  ${}  {} DEEDS{}",
+                if r.0 == b.turn { "> " } else { "" },
+                p.seat + 1,
+                p.money,
+                deeds,
+                if p.hr > 0 { "  [HR]" } else { "" }
             )
         };
-        if h.0 != s {
-            h.0 = s;
+        if t.0 != line {
+            t.0 = line;
+        }
+        tc.0 = if !p.alive {
+            DIM
+        } else if r.0 == b.turn {
+            WHITE
+        } else {
+            Color::srgb(0.75, 0.75, 0.82)
+        };
+    }
+    for (c, mut s) in sprites.p3().iter_mut() {
+        if let Some(p) = b.players.get(c.0) {
+            let col = seat_color(&b, c.0);
+            s.color = if p.alive { col } else { col.with_alpha(0.15) };
         }
     }
-    if let Ok(mut l) = logq.single_mut() {
+    if let Ok(mut l) = texts.p3().single_mut() {
         let s = b.log.join("\n");
         if l.0 != s {
             l.0 = s;
         }
     }
-    let _ = (AMBER, DIM);
+    // Tokens.
+    for (i, &e) in b.tokens.iter().enumerate() {
+        if let Ok(mut tf) = tfs.get_mut(e) {
+            if !b.players[i].alive {
+                tf.translation = Vec3::new(9999.0, 9999.0, 4.0);
+            } else {
+                let off = Vec2::new((i % 4) as f32 * 13.0 - 19.5, (i / 4) as f32 * 13.0 - 6.5);
+                tf.translation = (space_xy(b.players[i].pos) + off).extend(4.0);
+            }
+        }
+    }
+}
+
+/// The active player's space breathes so your eye finds the action.
+fn ring_pulse(
+    time: Res<Time>,
+    b: Res<Board>,
+    mut ring: Query<(&mut Sprite, &mut Transform), With<TurnRing>>,
+) {
+    if let Ok((mut sp, mut tf)) = ring.single_mut() {
+        if b.over.is_some() {
+            sp.color = AMBER.with_alpha(0.0);
+            return;
+        }
+        let pos = space_xy(b.cur().pos);
+        tf.translation.x = pos.x;
+        tf.translation.y = pos.y;
+        let a = 0.18 + 0.16 * (time.elapsed_secs() * 4.0).sin().abs();
+        sp.color = AMBER.with_alpha(a);
+    }
 }
 
 fn endgame(
