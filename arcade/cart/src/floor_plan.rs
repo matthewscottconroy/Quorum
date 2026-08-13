@@ -9,6 +9,7 @@
 //! Deliberate scope: no trading, no auctions, no mortgages.
 
 use bevy::prelude::*;
+use bevy::sprite::Anchor;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{cursor_world, text, AMBER, CYAN, DIM, GREEN, PLAYER_COLORS, RED, WHITE};
@@ -90,6 +91,11 @@ const SPACES: [SpaceDef; 40] = [
     pr("SKY TERRACE", 7, 350),
     sp("PLANT FEE", Kind::Tax(100), 0),
     pr("PENTHOUSE", 7, 400),
+];
+
+const GROUP_NAMES: [&str; 8] = [
+    "MAILROOM WING", "SUPPLY WING", "CUBICLE WING", "SNACK WING",
+    "CONFERENCE WING", "MARKETING WING", "EXECUTIVE WING", "PENTHOUSE WING",
 ];
 
 const GROUP_COLORS: [Color; 8] = [
@@ -190,6 +196,9 @@ struct Board {
     dirty: bool,
     bot_t: Timer,
     tokens: Vec<Entity>,
+    /// Where each token is DRAWN, as a continuous lap position — it hops
+    /// square to square until it catches up with the real position.
+    shown: Vec<f32>,
 }
 
 impl Board {
@@ -296,6 +305,9 @@ struct DiePip(usize, usize);
 struct TurnRing;
 
 #[derive(Component)]
+struct DeedsText;
+
+#[derive(Component)]
 struct LogText;
 
 /// Standard die faces on a 3x3 pip grid (row-major, top row first).
@@ -317,7 +329,7 @@ impl Plugin for FloorPlanPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(Phase::Playing), setup).add_systems(
             Update,
-            (net_apply, input, bots, paint, ring_pulse, endgame)
+            (net_apply, input, bots, paint, ring_pulse, tokens_hop, endgame)
                 .chain()
                 .run_if(in_state(Phase::Playing))
                 .run_if(crate::unpaused),
@@ -439,6 +451,7 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
             .id();
         tokens.push(e);
     }
+    let n_players = players.len();
     // ── the center dashboard ─────────────────────────────────────────────
     // Turn banner + what-to-press, up top.
     let turn_t = text(&mut commands, "", 16.0, WHITE, Vec3::new(0.0, 172.0, 5.0));
@@ -473,7 +486,7 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
     commands.entity(card).insert((CardText, GameTag));
     // Roster: one row per player — color chip, cash, deeds.
     for (i, p) in players.iter().enumerate() {
-        let y = -16.0 - i as f32 * 21.0;
+        let y = -44.0 - i as f32 * 21.0;
         commands.spawn((
             Sprite {
                 color: PLAYER_COLORS[p.seat % PLAYER_COLORS.len()],
@@ -487,9 +500,20 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
         let row = text(&mut commands, "", 12.0, WHITE, Vec3::new(14.0, y, 5.0));
         commands.entity(row).insert((RosterText(i), GameTag));
     }
-    let log_y = -26.0 - players.len() as f32 * 21.0 - 24.0;
+    let log_y = -54.0 - players.len() as f32 * 21.0 - 20.0;
     let log = text(&mut commands, "", 10.0, CYAN, Vec3::new(0.0, log_y, 5.0));
     commands.entity(log).insert((LogText, GameTag));
+    // Your deed portfolio, on the right rail outside the board.
+    commands.spawn((
+        Text2d::new(""),
+        TextFont { font_size: 9.0, ..default() },
+        TextColor(WHITE),
+        TextLayout::new_with_justify(JustifyText::Left),
+        Anchor::TopLeft,
+        Transform::from_xyz(290.0, 235.0, 5.0),
+        DeedsText,
+        GameTag,
+    ));
     commands.insert_resource(Board {
         players,
         owner: [-1; 40],
@@ -507,6 +531,7 @@ fn setup(mut commands: Commands, net: Res<NetMode>) {
         dirty: true,
         bot_t: Timer::from_seconds(0.8, TimerMode::Repeating),
         tokens,
+        shown: vec![0.0; n_players],
     });
 }
 
@@ -989,11 +1014,11 @@ fn paint(
     )>,
     mut texts: ParamSet<(
         Query<(&mut Text2d, &mut TextColor), With<TurnText>>,
-        Query<&mut Text2d, With<CardText>>,
+        Query<(&mut Text2d, &mut Transform), With<CardText>>,
         Query<(&RosterText, &mut Text2d, &mut TextColor)>,
         Query<&mut Text2d, With<LogText>>,
+        Query<&mut Text2d, With<DeedsText>>,
     )>,
-    mut tfs: Query<&mut Transform>,
 ) {
     if !b.dirty {
         return;
@@ -1035,28 +1060,66 @@ fn paint(
     if let Ok(mut s) = sprites.p2().single_mut() {
         s.color = bar_color;
     }
-    let detail = match space.kind {
-        Kind::Prop(_) | Kind::Elev | Kind::Util => match b.owner[cur_pos] {
-            o if o < 0 => format!("UNCLAIMED - PRICE {}", space.price),
-            o if o as usize == b.turn => {
-                let d = b.desks[cur_pos];
-                if d > 0 { format!("YOURS - {d} DESKS") } else { "YOURS".into() }
+    // Buying? Show the whole deed card, like holding it in your hand.
+    let buying = b.tphase == 1 && b.me_acting();
+    let detail = if buying {
+        match space.kind {
+            Kind::Prop(g) => {
+                let base = space.price / 10;
+                let mine = (0..40)
+                    .filter(|&i| matches!(SPACES[i].kind, Kind::Prop(pg) if pg == g))
+                    .filter(|&i| b.owner[i] == b.turn as i8)
+                    .count();
+                let rents: Vec<String> =
+                    (1..=4).map(|d| (base * 2 * (1 + d * 3)).to_string()).collect();
+                format!(
+                    "{}\nPRICE {}   RENT {}\nFULL WING RENT {}\nWITH DESKS {}\nDESK COST {}   YOU HOLD {}/{} OF THE WING",
+                    GROUP_NAMES[g as usize],
+                    space.price,
+                    base,
+                    base * 2,
+                    rents.join("/"),
+                    space.price / 2,
+                    mine,
+                    group_size(g)
+                )
             }
-            o => format!("P{}'S - RENT {}", b.players[o as usize].seat + 1, calc_rent(&b, cur_pos)),
-        },
-        Kind::Tax(a) => format!("FEES DUE: {a}"),
-        Kind::Memo => "DRAW A MEMO".into(),
-        Kind::Rumor => "DRAW A RUMOR".into(),
-        Kind::Start => "PAYDAY: +200 EVERY LAP".into(),
-        Kind::Lounge => "BREATHER. NOTHING HAPPENS".into(),
-        Kind::Hr => "HR REVIEW".into(),
-        Kind::GoHr => "STRAIGHT TO HR".into(),
+            Kind::Elev => format!(
+                "TRANSIT\nPRICE {}\nRENT 25 / 50 / 100 / 200\nBY ELEVATORS OWNED",
+                space.price
+            ),
+            Kind::Util => format!(
+                "UTILITY\nPRICE {}\nRENT 4 X DICE ROLL\n10 X WITH BOTH UTILITIES",
+                space.price
+            ),
+            _ => String::new(),
+        }
+    } else {
+        match space.kind {
+            Kind::Prop(_) | Kind::Elev | Kind::Util => match b.owner[cur_pos] {
+                o if o < 0 => format!("UNCLAIMED - PRICE {}", space.price),
+                o if o as usize == b.turn => {
+                    let d = b.desks[cur_pos];
+                    if d > 0 { format!("YOURS - {d} DESKS") } else { "YOURS".into() }
+                }
+                o => format!("P{}'S - RENT {}", b.players[o as usize].seat + 1, calc_rent(&b, cur_pos)),
+            },
+            Kind::Tax(a) => format!("FEES DUE: {a}"),
+            Kind::Memo => "DRAW A MEMO".into(),
+            Kind::Rumor => "DRAW A RUMOR".into(),
+            Kind::Start => "PAYDAY: +200 EVERY LAP".into(),
+            Kind::Lounge => "BREATHER. NOTHING HAPPENS".into(),
+            Kind::Hr => "HR REVIEW".into(),
+            Kind::GoHr => "STRAIGHT TO HR".into(),
+        }
     };
-    if let Ok(mut t) = texts.p1().single_mut() {
+    if let Ok((mut t, mut tf)) = texts.p1().single_mut() {
         let s = format!("{}\n{}", space.name, detail);
         if t.0 != s {
             t.0 = s;
         }
+        // The tall buy card hangs lower so it never fights the roster.
+        tf.translation.y = if buying { 8.0 } else { 44.0 };
     }
     // Turn banner + prompt.
     if let Ok((mut t, mut tc)) = texts.p0().single_mut() {
@@ -1126,16 +1189,54 @@ fn paint(
             l.0 = s;
         }
     }
-    // Tokens.
-    for (i, &e) in b.tokens.iter().enumerate() {
-        if let Ok(mut tf) = tfs.get_mut(e) {
-            if !b.players[i].alive {
-                tf.translation = Vec3::new(9999.0, 9999.0, 4.0);
-            } else {
-                let off = Vec2::new((i % 4) as f32 * 13.0 - 19.5, (i / 4) as f32 * 13.0 - 6.5);
-                tf.translation = (space_xy(b.players[i].pos) + off).extend(4.0);
+    // Your deed portfolio, named, with desk counts.
+    if let Ok(mut t) = texts.p4().single_mut() {
+        let me = b.my_idx;
+        let mut lines = vec!["MY DEEDS".to_string()];
+        for i in 0..40 {
+            if b.owner[i] == me as i8 {
+                let d = b.desks[i];
+                let desks = if d > 0 { format!(" D{d}") } else { String::new() };
+                // Truncated to fit the narrow right rail.
+                let name: String = SPACES[i].name.chars().take(11).collect();
+                lines.push(format!("{}{}", name, desks));
             }
         }
+        if lines.len() == 1 {
+            lines.push("(NONE YET)".into());
+        }
+        let s = lines.join("\n");
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+}
+
+/// Tokens hop square to square until they catch up with the real position —
+/// you SEE the move happen instead of teleporting.
+fn tokens_hop(time: Res<Time>, mut b: ResMut<Board>, mut tfs: Query<&mut Transform>) {
+    let dt = time.delta_secs();
+    for i in 0..b.players.len() {
+        let Some(&e) = b.tokens.get(i) else { continue };
+        let Ok(mut tf) = tfs.get_mut(e) else { continue };
+        if !b.players[i].alive {
+            tf.translation = Vec3::new(9999.0, 9999.0, 4.0);
+            continue;
+        }
+        let target = b.players[i].pos as f32;
+        let mut shown = b.shown[i];
+        let gap = (target - shown).rem_euclid(40.0);
+        if gap > 0.001 {
+            let step = (7.0 * dt).min(gap);
+            shown = (shown + step).rem_euclid(40.0);
+            b.shown[i] = shown;
+        }
+        let s0 = shown.floor() as usize % 40;
+        let frac = shown - shown.floor();
+        let base = space_xy(s0).lerp(space_xy((s0 + 1) % 40), frac);
+        let hop = (std::f32::consts::PI * frac).sin() * 14.0;
+        let off = Vec2::new((i % 4) as f32 * 13.0 - 19.5, (i / 4) as f32 * 13.0 - 6.5);
+        tf.translation = (base + off + Vec2::new(0.0, hop)).extend(4.0);
     }
 }
 

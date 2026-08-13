@@ -5,8 +5,9 @@
 //! far sidewalk — and pedestrians, cars, and one smug pigeon cross it.
 //!
 //! HOLD the left button to wind up: the longer the hold, the farther the
-//! gob carries (a marker crawls up the street showing where it will land)
-//! and the heavier it hits — heavier gobs score more. Hold too long and it
+//! gob carries and the heavier it hits — heavier gobs score more. The only
+//! tell is a small gauge on the right that fills proportionally; where the
+//! gob actually comes down stays a judgment call. Hold too long and it
 //! dribbles down the ledge. RIGHT button winds up a MEGA GOB: costs three,
 //! splashes wide, triple weight. Fifteen gobs; make them count.
 //!
@@ -93,7 +94,6 @@ struct Roof {
     over: Option<Timer>,
     result: String,
     player: Entity,
-    marker: Entity,
     meter: Entity,
 }
 
@@ -209,18 +209,28 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
             ));
         })
         .id();
-    // The landing marker (shown while winding up) and the charge meter.
-    let marker = commands
-        .spawn((
-            Sprite { color: GREEN.with_alpha(0.0), custom_size: Some(Vec2::new(22.0, 14.0)), ..default() },
-            Transform::from_xyz(0.0, STREET_NEAR, 4.0),
-            GameTag,
-        ))
-        .id();
+    // The wind-up gauge: a small vertical bar tucked against the right
+    // edge. It reads distance PROPORTIONALLY — where the gob actually
+    // comes down stays a judgment call, which is the whole sport.
+    commands.spawn((
+        Sprite { color: Color::srgba(1.0, 1.0, 1.0, 0.4), custom_size: Some(Vec2::new(22.0, 216.0)), ..default() },
+        Transform::from_xyz(344.0, -164.0, 3.7),
+        GameTag,
+    ));
+    commands.spawn((
+        Sprite { color: Color::srgb(0.05, 0.05, 0.08), custom_size: Some(Vec2::new(16.0, 210.0)), ..default() },
+        Transform::from_xyz(344.0, -164.0, 3.8),
+        GameTag,
+    ));
+    commands.spawn((
+        Sprite { color: WHITE.with_alpha(0.7), custom_size: Some(Vec2::new(22.0, 3.0)), ..default() },
+        Transform::from_xyz(344.0, -66.0, 3.9), // the full-wind tick
+        GameTag,
+    ));
     let meter = commands
         .spawn((
-            Sprite { color: GREEN.with_alpha(0.0), custom_size: Some(Vec2::new(4.0, 4.0)), ..default() },
-            Transform::from_xyz(0.0, LEDGE_Y - 18.0, 4.0),
+            Sprite { color: GREEN.with_alpha(0.0), custom_size: Some(Vec2::new(10.0, 4.0)), ..default() },
+            Transform::from_xyz(366.0, -268.0, 4.0),
             GameTag,
         ))
         .id();
@@ -246,7 +256,6 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         over: None,
         result: String::new(),
         player,
-        marker,
         meter,
     });
     let hud = text(&mut commands, "", 16.0, WHITE, Vec3::new(0.0, 308.0, 6.0));
@@ -272,7 +281,7 @@ fn aim(
     let mut px = 0.0;
     if let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), cameras.single()) {
         if let Some(world) = cursor_world(window, camera, cam_tf) {
-            px = world.x.clamp(-350.0, 350.0);
+            px = world.x.clamp(-340.0, 340.0);
         } else if let Ok(tf) = tfs.get(r.player) {
             px = tf.translation.x;
         }
@@ -302,32 +311,19 @@ fn aim(
         if !buttons.pressed(button) {
             release = Some((*held, mega));
         }
-        // Marker crawls up the street; meter fills under your feet.
-        if let Ok(mut tf) = tfs.get_mut(r.marker) {
-            tf.translation.x = px;
-            tf.translation.y = land_y(frac);
-        }
-        if let Ok(mut sp) = sprites.get_mut(r.marker) {
-            let c = if over { RED } else if mega { CYAN } else { GREEN };
-            sp.color = c.with_alpha(0.85);
-            let w = if mega { 60.0 } else { 22.0 };
-            sp.custom_size = Some(Vec2::new(w, w * 0.6));
-        }
+        // The side gauge fills bottom-up with the wind.
+        let h = 4.0 + frac * 198.0;
         if let Ok(mut sp) = sprites.get_mut(r.meter) {
-            let c = if over { RED } else if frac > 0.95 { AMBER } else { GREEN };
+            let c = if over { RED } else if mega { CYAN } else if frac > 0.95 { AMBER } else { GREEN };
             sp.color = c;
-            sp.custom_size = Some(Vec2::new(6.0 + frac * 120.0, 5.0));
+            sp.custom_size = Some(Vec2::new(14.0, h));
         }
-    } else {
-        if let Ok(mut sp) = sprites.get_mut(r.marker) {
-            sp.color = sp.color.with_alpha(0.0);
+        if let Ok(mut tf) = tfs.get_mut(r.meter) {
+            tf.translation.x = 344.0;
+            tf.translation.y = -266.0 + h / 2.0;
         }
-        if let Ok(mut sp) = sprites.get_mut(r.meter) {
-            sp.color = sp.color.with_alpha(0.0);
-        }
-    }
-    if let Ok(mut tf) = tfs.get_mut(r.meter) {
-        tf.translation.x = px;
+    } else if let Ok(mut sp) = sprites.get_mut(r.meter) {
+        sp.color = sp.color.with_alpha(0.0);
     }
     let Some((held, mega)) = release else { return };
     r.charge = None;

@@ -14,20 +14,41 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::retro::{popup, text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, RED, WHITE};
+use crate::retro::{popup, text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
 use crate::shell::{net_send, sfx, stat};
 use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "THREE BALLOONS. ONE GARAGE. NO BRAKES WORTH USING.",
-    "UP DRIVES - LEFT/RIGHT STEER - SPACE FIRES THE ITEM.",
-    "YOU RIDE BEHIND YOUR CHAIR; THE MAP TOP-RIGHT SEES EVERYTHING.",
-    "LAST CHAIR ROLLING TAKES THE FLOOR.",
+    "UP DRIVES - LEFT/RIGHT STEER - SPACE USES THE ITEM IN THE BOX (TOP LEFT).",
+    "CRATES HOLD: STAPLER, TRIPLE, SMART, COFFEE, ESPRESSO, OVERTIME,",
+    "EJECTOR, BLACKOUT, AND THE GHOST VENDOR. LAST CHAIR ROLLING WINS.",
 ];
 
 const AW: usize = 24; // arena cells
 const AH: usize = 18;
 const ACELL: f32 = 30.0;
+/// Everything a supply crate can hold — the full battle kit:
+/// 0 STAPLER (straight, bounces once)     4 SMART STAPLER (seeks a rival)
+/// 1 COFFEE (puddle: spins whoever)       5 OVERTIME (untouchable rush)
+/// 2 ESPRESSO (speed burst)               6 EJECTOR (hop a wall)
+/// 3 TRIPLE STAPLER                       7 BLACKOUT (spins every rival)
+///                                        8 GHOST VENDOR (steals a balloon)
+fn item_icon(k: u8) -> (Color, &'static str) {
+    match k {
+        0 => (CYAN, "STAPLER"),
+        1 => (Color::srgb(0.5, 0.32, 0.12), "COFFEE"),
+        2 => (GREEN, "ESPRESSO"),
+        3 => (CYAN, "TRIPLE"),
+        4 => (MAGENTA, "SMART"),
+        5 => (AMBER, "OVERTIME"),
+        6 => (WHITE, "EJECTOR"),
+        7 => (Color::srgb(0.45, 0.5, 1.0), "BLACKOUT"),
+        8 => (Color::srgb(0.85, 0.9, 1.0), "GHOST"),
+        _ => (DIM, ""),
+    }
+}
+
 const TURN_RATE: f32 = 3.4;
 const ACCEL: f32 = 260.0;
 const MAX_SPEED: f32 = 240.0;
@@ -117,6 +138,7 @@ struct Chair {
     spin_t: f32,
     boost_t: f32,
     inv_t: f32,
+    star_t: f32, // OVERTIME: untouchable, fast, pops on contact
     pops: u32,
     think: f32,
     ent: Entity,
@@ -128,6 +150,7 @@ struct Shot {
     vel: Vec2,
     owner: usize,
     bounces: i32,
+    homing: bool,
     ent: Entity,
 }
 
@@ -160,6 +183,10 @@ struct Garage {
     result: String,
     mini: Vec<Entity>, // minimap dots, parallel to chairs
     rig: Entity,       // your own chair, fixed at the bottom of the screen
+    my_balloons: Vec<Entity>, // balloons drawn above your rig, up to five
+    slot_icon: Entity, // the item box's window
+    slot_label: Entity,
+    slot_spin: f32, // the slot machine wobble after grabbing a crate
 }
 
 #[derive(Component)]
@@ -172,6 +199,8 @@ struct WPos {
     y: f32,
     a: f32,
     b: i32,
+    #[serde(default)]
+    s: bool, // OVERTIME running
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,6 +216,8 @@ struct WFire {
 struct WPop {
     t: String, // "pop": MY balloon went; credit `by`
     by: u8,
+    #[serde(default)]
+    g: bool, // a GHOST theft: `by` gains the balloon instead of a pop
 }
 
 #[derive(Serialize, Deserialize)]
@@ -450,6 +481,7 @@ fn setup(
             spin_t: 0.0,
             boost_t: 0.0,
             inv_t: 0.0,
+            star_t: 0.0,
             pops: 0,
             think: seat as f32 * 0.1,
             ent,
@@ -500,6 +532,55 @@ fn setup(
             ));
         })
         .id();
+    // YOUR balloons, big and countable, floating over your chair. Ghost
+    // vendors can take you to five.
+    let mut my_balloons = Vec::new();
+    for i in 0..5 {
+        let x = (i as f32 - 2.0) * 24.0;
+        let e = commands
+            .spawn((
+                Sprite { color: my_color.with_alpha(0.95), custom_size: Some(Vec2::new(18.0, 22.0)), ..default() },
+                Transform::from_xyz(x, -178.0, 24.5),
+                Visibility::Hidden,
+                FixedView,
+                GameTag,
+            ))
+            .with_children(|kid| {
+                kid.spawn((
+                    Sprite { color: WHITE.with_alpha(0.5), custom_size: Some(Vec2::new(2.0, 14.0)), ..default() },
+                    Transform::from_xyz(0.0, -17.0, -0.1),
+                ));
+            })
+            .id();
+        my_balloons.push(e);
+    }
+    // The item box, slot-machine style, top left.
+    commands.spawn((
+        Sprite { color: Color::srgba(0.0, 0.0, 0.0, 0.6), custom_size: Some(Vec2::new(62.0, 62.0)), ..default() },
+        Transform::from_xyz(-322.0, 244.0, 27.0),
+        Visibility::Hidden,
+        FixedView,
+        GameTag,
+    ));
+    commands.spawn((
+        Sprite { color: WHITE.with_alpha(0.25), custom_size: Some(Vec2::new(68.0, 68.0)), ..default() },
+        Transform::from_xyz(-322.0, 244.0, 26.9),
+        Visibility::Hidden,
+        FixedView,
+        GameTag,
+    ));
+    let slot_icon = commands
+        .spawn((
+            Sprite { color: Color::NONE, custom_size: Some(Vec2::new(38.0, 38.0)), ..default() },
+            Transform::from_xyz(-322.0, 244.0, 27.2),
+            Visibility::Hidden,
+            FixedView,
+            GameTag,
+        ))
+        .id();
+    let slot_label = text(&mut commands, "", 11.0, WHITE, Vec3::new(-322.0, 204.0, 27.2));
+    commands.entity(slot_label).insert((FixedView, GameTag));
+    commands.entity(slot_label).insert(Visibility::Hidden);
     commands.insert_resource(Garage {
         rows,
         chairs,
@@ -515,6 +596,10 @@ fn setup(
         result: String::new(),
         mini,
         rig,
+        my_balloons,
+        slot_icon,
+        slot_label,
+        slot_spin: 0.0,
     });
     let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 30.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -543,17 +628,115 @@ fn fire_item(
             let ent = bill(commands, back, 0.95, 0.0, 0.0, true, Color::srgb(0.32, 0.2, 0.08));
             g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
         }
+        4 => {
+            // The SMART stapler: slower off the line, but it steers.
+            let dir = Vec2::new(ang.cos(), -ang.sin());
+            let start = pos + dir * 0.8;
+            let ent = bill(commands, start, 0.30, 0.30, 0.40, false, MAGENTA);
+            g.shots.push(Shot { pos: start, vel: dir * 7.5, owner: seat, bounces: 0, homing: true, ent });
+        }
         _ => {
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
             let ent = bill(commands, start, 0.26, 0.26, 0.40, false, CYAN);
-            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 1, ent });
+            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 1, homing: false, ent });
         }
     }
     sfx(if kind == 1 { "drop" } else { "fire" });
     if broadcast && g.net {
         if let Ok(m) = serde_json::to_string(&WFire { t: "fire".into(), k: kind, x: pos.x, y: pos.y, a: ang }) {
             net_send(&m);
+        }
+    }
+}
+
+/// EJECTOR SEAT: hop forward over whatever is in the way.
+fn eject_hop(rows: &[String], g: &mut Garage, i: usize) {
+    let (pos, ang) = (g.chairs[i].pos, g.chairs[i].ang);
+    let dir = Vec2::new(ang.cos(), -ang.sin());
+    for dist in [2.3f32, 1.6, 1.0] {
+        let t = pos + dir * dist;
+        if t.x > 1.0 && t.x < AW as f32 - 1.0 && t.y > 1.0 && t.y < AH as f32 - 1.0 && !solid_at(rows, t) {
+            g.chairs[i].pos = t;
+            sfx("power");
+            return;
+        }
+    }
+    sfx("buzz");
+}
+
+/// BLACKOUT: every rival chair this machine simulates goes into a spin.
+/// Online, everyone else's client does the same to their own chair when
+/// the flash arrives on the wire.
+fn blackout(g: &mut Garage, by_idx: usize, broadcast: bool) {
+    let by_seat = g.chairs[by_idx].seat;
+    let net = g.net;
+    for c in g.chairs.iter_mut() {
+        let owned = c.human || (!net && !c.remote);
+        if owned && c.seat != by_seat && c.balloons > 0 && c.star_t <= 0.0 {
+            c.spin_t = 1.6;
+            c.speed *= 0.3;
+        }
+    }
+    sfx("boom");
+    if broadcast && net {
+        if let Ok(m) = serde_json::to_string(&WFire { t: "fire".into(), k: 7, x: 0.0, y: 0.0, a: 0.0 }) {
+            net_send(&m);
+        }
+    }
+}
+
+/// GHOST VENDOR: lifts a balloon off the nearest rival and ties it to your
+/// chair. Online the victim's own client concedes the theft (same
+/// victim-authoritative rule as every pop).
+fn ghost_steal(commands: &mut Commands, g: &mut Garage, i: usize, broadcast: bool) {
+    let (pos, my_seat_of_thief) = (g.chairs[i].pos, g.chairs[i].seat);
+    let target = g
+        .chairs
+        .iter()
+        .enumerate()
+        .filter(|(j, c)| *j != i && c.balloons > 0 && c.star_t <= 0.0)
+        .min_by(|a, b| {
+            a.1.pos
+                .distance(pos)
+                .partial_cmp(&b.1.pos.distance(pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(j, c)| (j, c.seat, c.remote));
+    let Some((vj, vseat, remote)) = target else {
+        sfx("buzz");
+        return;
+    };
+    sfx("eat");
+    if remote {
+        // Ask the wire: the victim's client will send the pop back.
+        if broadcast && g.net {
+            if let Ok(m) = serde_json::to_string(&WFire {
+                t: "fire".into(),
+                k: 8,
+                x: vseat as f32,
+                y: 0.0,
+                a: 0.0,
+            }) {
+                net_send(&m);
+            }
+        }
+    } else {
+        // Local victim: settle it here.
+        g.chairs[vj].balloons -= 1;
+        g.chairs[i].balloons = (g.chairs[i].balloons + 1).min(5);
+        if g.chairs[i].human {
+            popup(commands, "+1 BALLOON (STOLEN)", 16.0, GREEN, Vec2::new(0.0, 110.0));
+            stat("balloons_popped", 1);
+        }
+        if g.chairs[vj].human {
+            popup(commands, "A GHOST TOOK A BALLOON!", 18.0, RED, Vec2::new(0.0, -100.0));
+            stat("balloons_lost", 1);
+        }
+        let alive: Vec<usize> = g.chairs.iter().filter(|c| c.balloons > 0).map(|c| c.seat).collect();
+        let _ = my_seat_of_thief;
+        if alive.len() <= 1 && g.over.is_none() {
+            finish(commands, g, alive.first().copied());
         }
     }
 }
@@ -612,13 +795,20 @@ fn drive(
                             sfx("power");
                         }
                         3 => fire_req = Some((i, 10)), // triple
+                        5 => {
+                            c.star_t = 5.0; // OVERTIME
+                            sfx("power");
+                        }
+                        6 => fire_req = Some((i, 20)), // ejector hop
+                        7 => fire_req = Some((i, 7)),  // blackout
+                        8 => fire_req = Some((i, 8)),  // ghost vendor
                         k => fire_req = Some((i, k)),
                     }
                     stat("items_used", 1);
                 }
             }
         }
-        let max = if c.boost_t > 0.0 { MAX_SPEED * 1.55 } else { MAX_SPEED };
+        let max = if c.boost_t > 0.0 || c.star_t > 0.0 { MAX_SPEED * 1.55 } else { MAX_SPEED };
         c.speed = c.speed.clamp(-max * 0.45, max);
         c.speed -= c.speed * FRICTION * dt;
         let dir = Vec2::new(c.ang.cos(), -c.ang.sin());
@@ -644,17 +834,23 @@ fn drive(
         }
     }
     if let Some((i, kind)) = fire_req {
-        if kind == 10 {
-            for spread in [-0.25f32, 0.0, 0.25] {
-                g.chairs[i].ang += spread;
-                fire_item(&mut commands, &mut g, i, 0, true);
-                g.chairs[i].ang -= spread;
+        match kind {
+            10 => {
+                for spread in [-0.25f32, 0.0, 0.25] {
+                    g.chairs[i].ang += spread;
+                    fire_item(&mut commands, &mut g, i, 0, true);
+                    g.chairs[i].ang -= spread;
+                }
+                stat("staplers_thrown", 3);
             }
-            stat("staplers_thrown", 3);
-        } else {
-            fire_item(&mut commands, &mut g, i, kind, true);
-            if kind == 0 {
-                stat("staplers_thrown", 1);
+            20 => eject_hop(&rows, &mut g, i),
+            7 => blackout(&mut g, i, true),
+            8 => ghost_steal(&mut commands, &mut g, i, true),
+            _ => {
+                fire_item(&mut commands, &mut g, i, kind, true);
+                if kind == 0 || kind == 4 {
+                    stat("staplers_thrown", 1);
+                }
             }
         }
     }
@@ -669,19 +865,26 @@ fn drive(
         let bpos = Vec2::new(bc.0 as f32 + 0.5, bc.1 as f32 + 0.5);
         let clock = g.clock;
         let mut taken = false;
+        let mut mine = false;
         for c in g.chairs.iter_mut() {
             let local = c.human || (!net && !c.remote && !c.human);
             let alive = c.balloons > 0;
             if local && alive && c.item.is_none() && c.pos.distance(bpos) < 0.8 {
-                let roll = ((c.pos.x * 13.7 + c.pos.y * 7.3 + clock * 31.0) as u32) % 10;
+                let roll = ((c.pos.x * 13.7 + c.pos.y * 7.3 + clock * 31.0) as u32) % 12;
                 c.item = Some(match roll {
-                    0..=3 => 0,
-                    4 | 5 => 1,
-                    6 | 7 => 2,
-                    _ => 3,
+                    0 | 1 => 0,  // stapler
+                    2 | 3 => 1,  // coffee
+                    4 | 5 => 2,  // espresso
+                    6 => 3,      // triple
+                    7 => 4,      // smart
+                    8 => 5,      // overtime
+                    9 => 6,      // ejector
+                    10 => 7,     // blackout
+                    _ => 8,      // ghost
                 });
                 taken = true;
                 if c.human {
+                    mine = true;
                     stat("boxes_grabbed", 1);
                     sfx("coin");
                 }
@@ -691,6 +894,9 @@ fn drive(
         if taken {
             g.boxes[bi].up_in = 7.0;
             claims.push(bi as u32);
+        }
+        if mine {
+            g.slot_spin = 1.0; // the box spins before it settles
         }
     }
     if net {
@@ -713,6 +919,7 @@ fn drive(
                     y: c.pos.y,
                     a: c.ang,
                     b: c.balloons,
+                    s: c.star_t > 0.0,
                 }) {
                     net_send(&m);
                 }
@@ -737,7 +944,7 @@ fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
         .filter(|b| b.up_in <= 0.0)
         .map(|b| Vec2::new(b.cell.0 as f32 + 0.5, b.cell.1 as f32 + 0.5))
         .collect();
-    let mut fire_req: Vec<usize> = Vec::new();
+    let mut fire_req: Vec<(usize, u8)> = Vec::new();
     for i in 0..g.chairs.len() {
         let c = &mut g.chairs[i];
         if c.human || c.balloons <= 0 {
@@ -772,15 +979,23 @@ fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
         if c.item.is_some() && da.abs() < 0.25 && c.think <= 0.0 && t.distance(c.pos) < 9.0 {
             c.think = 0.8;
             let kind = c.item.take().unwrap();
-            if kind == 2 {
-                c.boost_t = 1.2;
-            } else {
-                fire_req.push(i);
+            match kind {
+                2 => c.boost_t = 1.2,
+                5 => c.star_t = 4.0,
+                k => fire_req.push((i, k)),
             }
         }
     }
-    for i in fire_req {
-        fire_item(&mut commands, &mut g, i, 0, false);
+    let rows = g.rows.clone();
+    for (i, kind) in fire_req {
+        match kind {
+            6 => eject_hop(&rows, &mut g, i),
+            7 => blackout(&mut g, i, false),
+            8 => ghost_steal(&mut commands, &mut g, i, false),
+            1 => fire_item(&mut commands, &mut g, i, 1, false),
+            4 => fire_item(&mut commands, &mut g, i, 4, false),
+            _ => fire_item(&mut commands, &mut g, i, 0, false),
+        }
     }
 }
 
@@ -794,8 +1009,23 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     let net = g.net;
     let mut pops: Vec<(usize, usize)> = Vec::new(); // chair idx, by-seat
     let mut dead_shots = Vec::new();
+    // Homing shots steer toward the nearest rival first.
+    let chair_spots: Vec<(usize, Vec2, i32)> =
+        g.chairs.iter().map(|c| (c.seat, c.pos, c.balloons)).collect();
     for si in 0..g.shots.len() {
         let s = &mut g.shots[si];
+        if s.homing {
+            if let Some((_, tpos, _)) = chair_spots
+                .iter()
+                .filter(|(seat, _, b)| *seat != s.owner && *b > 0)
+                .min_by(|a, b| {
+                    a.1.distance(s.pos).partial_cmp(&b.1.distance(s.pos)).unwrap_or(std::cmp::Ordering::Equal)
+                })
+            {
+                let want = (*tpos - s.pos).normalize_or_zero() * s.vel.length();
+                s.vel = (s.vel + (want - s.vel) * (3.5 * dt).min(1.0)).normalize_or_zero() * s.vel.length();
+            }
+        }
         let next = s.pos + s.vel * dt;
         if solid_at(&rows, next) {
             if s.bounces > 0 {
@@ -815,10 +1045,11 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
             s.pos = next;
         }
     }
-    // Hits: only chairs this machine owns decide they were hit.
+    // Hits: only chairs this machine owns decide they were hit. OVERTIME
+    // chairs cannot be popped by anything.
     for (ci, c) in g.chairs.iter().enumerate() {
         let owned = c.human || (!net && !c.remote);
-        if !owned || c.balloons <= 0 || c.inv_t > 0.0 {
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 {
             continue;
         }
         for (si, s) in g.shots.iter().enumerate() {
@@ -865,7 +1096,7 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
     }
     let seat = g.chairs[ci].seat;
     if net && seat == my {
-        if let Ok(m) = serde_json::to_string(&WPop { t: "pop".into(), by: by as u8 }) {
+        if let Ok(m) = serde_json::to_string(&WPop { t: "pop".into(), by: by as u8, g: false }) {
             net_send(&m);
         }
     }
@@ -922,15 +1153,32 @@ fn hazards(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
         let p = g.puddles.remove(pi);
         commands.entity(p.ent).despawn();
     }
+    // OVERTIME clocks tick down for everyone (remotes get refreshed by wire).
+    for c in g.chairs.iter_mut() {
+        c.star_t = (c.star_t - dt).max(0.0);
+    }
     let puds: Vec<(usize, Vec2)> = g.puddles.iter().map(|p| (p.owner, p.pos)).collect();
+    let stars: Vec<(usize, Vec2)> = g
+        .chairs
+        .iter()
+        .filter(|c| c.star_t > 0.0 && c.balloons > 0)
+        .map(|c| (c.seat, c.pos))
+        .collect();
     for (ci, c) in g.chairs.iter_mut().enumerate() {
         let owned = c.human || (!net && !c.remote);
-        if !owned || c.balloons <= 0 || c.inv_t > 0.0 {
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 {
             continue;
         }
         for &(owner, pos) in &puds {
             if owner != c.seat && c.pos.distance(pos) < 0.7 && c.spin_t <= 0.0 {
                 pops.push((ci, owner));
+                break;
+            }
+        }
+        // Brushing an OVERTIME chair pops you, credited to the rusher.
+        for &(sseat, spos) in &stars {
+            if sseat != c.seat && c.pos.distance(spos) < 0.75 {
+                pops.push((ci, sseat));
                 break;
             }
         }
@@ -990,25 +1238,78 @@ fn net_apply(
                         c.pos = Vec2::new(p.x, p.y);
                         c.ang = p.a;
                         c.balloons = p.b;
+                        c.star_t = if p.s { 0.5 } else { 0.0 };
                     }
                 }
             }
             Some("fire") => {
                 if let Ok(f) = serde_json::from_str::<WFire>(&ev.data) {
-                    if let Some(idx) = g.chairs.iter().position(|c| c.seat == ev.seat as usize) {
-                        let (save_pos, save_ang) = (g.chairs[idx].pos, g.chairs[idx].ang);
-                        g.chairs[idx].pos = Vec2::new(f.x, f.y);
-                        g.chairs[idx].ang = f.a;
-                        fire_item(&mut commands, &mut g, idx, f.k, false);
-                        g.chairs[idx].pos = save_pos;
-                        g.chairs[idx].ang = save_ang;
+                    match f.k {
+                        7 => {
+                            // BLACKOUT: my own chair concedes the spin.
+                            let my = g.my_seat;
+                            if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == my) {
+                                if c.balloons > 0 && c.star_t <= 0.0 {
+                                    c.spin_t = 1.6;
+                                    c.speed *= 0.3;
+                                    popup(&mut commands, "BLACKOUT!", 18.0, RED, Vec2::new(0.0, -100.0));
+                                    sfx("boom");
+                                }
+                            }
+                        }
+                        8 => {
+                            // GHOST: if it picked me, I concede the balloon.
+                            let my = g.my_seat;
+                            if f.x as usize == my {
+                                let mut conceded = false;
+                                if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == my) {
+                                    if c.balloons > 0 && c.star_t <= 0.0 {
+                                        c.balloons -= 1;
+                                        conceded = true;
+                                    }
+                                }
+                                if conceded {
+                                    popup(&mut commands, "A GHOST TOOK A BALLOON!", 18.0, RED, Vec2::new(0.0, -100.0));
+                                    stat("balloons_lost", 1);
+                                    sfx("eat");
+                                    if let Ok(m) = serde_json::to_string(&WPop { t: "pop".into(), by: ev.seat, g: true }) {
+                                        net_send(&m);
+                                    }
+                                    let alive: Vec<usize> =
+                                        g.chairs.iter().filter(|c| c.balloons > 0).map(|c| c.seat).collect();
+                                    if alive.len() <= 1 && g.over.is_none() {
+                                        finish(&mut commands, &mut g, alive.first().copied());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(idx) = g.chairs.iter().position(|c| c.seat == ev.seat as usize) {
+                                let (save_pos, save_ang) = (g.chairs[idx].pos, g.chairs[idx].ang);
+                                g.chairs[idx].pos = Vec2::new(f.x, f.y);
+                                g.chairs[idx].ang = f.a;
+                                fire_item(&mut commands, &mut g, idx, f.k, false);
+                                g.chairs[idx].pos = save_pos;
+                                g.chairs[idx].ang = save_ang;
+                            }
+                        }
                     }
                 }
             }
             Some("pop") => {
                 if let Ok(p) = serde_json::from_str::<WPop>(&ev.data) {
-                    // Their balloon count arrives via pos; here we credit.
-                    if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == p.by as usize) {
+                    if p.g {
+                        // A conceded GHOST theft: the thief ties on a balloon.
+                        let my = g.my_seat;
+                        if p.by as usize == my {
+                            if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == my) {
+                                c.balloons = (c.balloons + 1).min(5);
+                            }
+                            popup(&mut commands, "+1 BALLOON (STOLEN)", 16.0, GREEN, Vec2::new(0.0, 110.0));
+                            stat("balloons_popped", 1);
+                        }
+                    } else if let Some(c) = g.chairs.iter_mut().find(|c| c.seat == p.by as usize) {
+                        // Their balloon count arrives via pos; here we credit.
                         c.pops += 1;
                         if c.seat == g.my_seat {
                             g.score += 200;
@@ -1047,11 +1348,14 @@ fn net_apply(
 /// canvas (it hides the whole view layer there, so the canvas stays clean).
 #[allow(clippy::type_complexity)]
 fn project(
-    g: Option<Res<Garage>>,
+    time: Res<Time>,
+    g: Option<ResMut<Garage>>,
     editor: Option<Res<ArenaEditor>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut bills: Query<(&mut Bill, &mut Transform, &mut Sprite, &mut Visibility)>,
     mut fixed: Query<(&mut Visibility, &mut Transform), (With<FixedView>, Without<Bill>)>,
+    mut fixed_sprites: Query<&mut Sprite, (With<FixedView>, Without<Bill>)>,
+    mut texts: Query<&mut Text2d>,
 ) {
     let editing = editor.map(|e| e.active).unwrap_or(false);
     if editing || g.is_none() {
@@ -1063,13 +1367,21 @@ fn project(
         }
         return;
     }
-    let g = g.unwrap();
+    let mut g = g.unwrap();
+    // The slot machine settles.
+    let was = g.slot_spin;
+    g.slot_spin = (g.slot_spin - time.delta_secs()).max(0.0);
+    if was > 0.0 && g.slot_spin == 0.0 {
+        sfx("place");
+    }
+    let g = &*g;
     // Camera: my chair.
     let me = g.chairs.iter().find(|c| c.seat == g.my_seat);
     let (cam, ang) = me.map(|c| (c.pos, c.ang)).unwrap_or((Vec2::new(12.0, 9.0), 0.0));
     let fwd = Vec2::new(ang.cos(), -ang.sin());
     let rt = Vec2::new(-fwd.y, fwd.x);
     // Sync dynamic billboards from the sim.
+    let flicker = (g.clock * 12.0) as i32 % 2 == 0;
     for c in &g.chairs {
         let base = PLAYER_COLORS[c.seat % 12];
         let behind = c.seat == g.my_seat; // your chair is the fixed rig instead
@@ -1078,6 +1390,8 @@ fn project(
             b.pos = pos;
             b.base = if c.balloons <= 0 {
                 base.with_alpha(0.22)
+            } else if c.star_t > 0.0 && flicker {
+                WHITE // OVERTIME strobe
             } else if c.inv_t > 0.0 {
                 base.with_alpha(0.5)
             } else {
@@ -1158,6 +1472,34 @@ fn project(
             as f32;
         tf.rotation = Quat::from_rotation_z(lean * 0.09);
     }
+    // Your balloon rack: what you can still afford to lose.
+    let my_balloons_now = me.map(|c| c.balloons.max(0)).unwrap_or(0);
+    for (i, &e) in g.my_balloons.iter().enumerate() {
+        if let Ok((mut vis, _)) = fixed.get_mut(e) {
+            *vis = if (i as i32) < my_balloons_now { Visibility::Inherited } else { Visibility::Hidden };
+        }
+    }
+    // The item box: spinning, held, or empty.
+    let held = me.and_then(|c| c.item);
+    let (icon, label) = if g.slot_spin > 0.0 {
+        let k = ((g.clock * 14.0).abs() as u32 % 9) as u8;
+        (item_icon(k).0, "? ? ?".to_string())
+    } else if let Some(k) = held {
+        let (c, n) = item_icon(k);
+        (c, n.to_string())
+    } else if me.map(|c| c.star_t > 0.0).unwrap_or(false) {
+        (if flicker { AMBER } else { WHITE }, "OVERTIME!".to_string())
+    } else {
+        (Color::NONE, String::new())
+    };
+    if let Ok(mut sp) = fixed_sprites.get_mut(g.slot_icon) {
+        sp.color = icon;
+    }
+    if let Ok(mut t) = texts.get_mut(g.slot_label) {
+        if t.0 != label {
+            t.0 = label;
+        }
+    }
 }
 
 fn hud(g: Res<Garage>, mut hud: Query<&mut Text2d, With<Hud>>) {
@@ -1171,6 +1513,11 @@ fn hud(g: Res<Garage>, mut hud: Query<&mut Text2d, With<Hud>>) {
                 Some(1) => "  [COFFEE]",
                 Some(2) => "  [ESPRESSO]",
                 Some(3) => "  [TRIPLE]",
+                Some(4) => "  [SMART]",
+                Some(5) => "  [OVERTIME]",
+                Some(6) => "  [EJECTOR]",
+                Some(7) => "  [BLACKOUT]",
+                Some(8) => "  [GHOST]",
                 _ => "",
             };
             let alive = g.chairs.iter().filter(|c| c.balloons > 0).count();

@@ -1,8 +1,12 @@
 //! LEMONADE — the classic corner-stand business sim, rebuilt original for
-//! the Top Secret floor. Fourteen days of summer: read the forecast, decide
-//! how many glasses to mix, how many signs to post, and what to charge —
-//! then open the stand and watch the street decide. Lemons cost what they
-//! cost. Rain forgives nothing. Tokens only, never money.
+//! the Top Secret floor, with the ECONOMY MODELED ON THE 1979 SOURCE: base
+//! demand of 30 glasses against a 10-cent anchor price (linear gain below
+//! it, inverse-square collapse above it), diminishing sign returns
+//! (1 - e^(-signs/2)), heat waves that double the street, cloudy days that
+//! roll for a washout thunderstorm, street-crew days that kill traffic or
+//! buy you out at lunch, and a cost of goods that climbs as the summer
+//! wears on. Every morning starts with an empty pitcher — you decide the
+//! mix fresh each day. Cents only, and they are fictional cents.
 //!
 //! UP/DOWN pick a line, LEFT/RIGHT adjust (SHIFT jumps by 10), ENTER opens
 //! the stand. Final score is the cash box after day fourteen.
@@ -17,19 +21,29 @@ use crate::{FinalScore, GameTag, Phase};
 pub const BLURB: &[&str] = &[
     "FOURTEEN DAYS. ONE PITCHER. NO MERCY FROM THE SKY.",
     "UP/DOWN PICK A LINE - LEFT/RIGHT ADJUST (SHIFT x10) - ENTER OPENS.",
-    "MIX TOO MUCH AND IT SPOILS. CHARGE TOO MUCH AND THEY WALK.",
+    "TEN CENTS IS THE STREET'S IDEA OF FAIR. STRAY FAR AND LEARN.",
 ];
 
 const DAYS: u32 = 14;
 const SIGN_COST: i32 = 15;
 
-const WEATHER_NAMES: [&str; 4] = ["SUNNY", "SCORCHER", "OVERCAST", "RAIN"];
+const WEATHER_NAMES: [&str; 4] = ["SUNNY", "HOT AND DRY", "CLOUDY", "THUNDERSTORM"];
 const SKY: [Color; 4] = [
     Color::srgb(0.25, 0.55, 0.85),
     Color::srgb(0.95, 0.65, 0.25),
     Color::srgb(0.45, 0.48, 0.55),
-    Color::srgb(0.20, 0.24, 0.35),
+    Color::srgb(0.16, 0.18, 0.28),
 ];
+
+/// Cost of goods climbs across the summer, like the original's sugar
+/// squeeze: 2 cents early, 4 from day three, 5 from day seven.
+fn glass_cost(day: u32) -> i32 {
+    match day {
+        0..=2 => 2,
+        3..=6 => 4,
+        _ => 5,
+    }
+}
 
 #[derive(Resource)]
 struct Stand {
@@ -40,10 +54,13 @@ struct Stand {
     glasses: i32,
     signs: i32,
     price: i32,
-    forecast: u8,
-    actual: u8,
+    sky: u8,       // 0 sunny, 1 hot+dry, 2 cloudy (3 = storm, mid-day only)
+    rain_pct: u32,  // cloudy days announce their odds
+    street: bool,   // the street department is tearing up the block
+    storm: bool,    // resolved at open: the washout happened
+    crews: bool,    // resolved at close: the crews bought everything
+    notice: String, // morning paper: cost hikes, roadwork
     cost_glass: i32,
-    event: u8, // 0 none, 1 street crew (crowd!), 2 thunderstorm (washout)
     run_t: f32,
     demand: i32,
     made: i32,
@@ -81,14 +98,30 @@ impl Plugin for LemonadePlugin {
 }
 
 fn roll_day(rng: &mut Rng, s: &mut Stand) {
-    s.forecast = match rng.range(10) {
-        0..=3 => 0,
-        4 | 5 => 1,
-        6 | 7 => 2,
-        _ => 3,
+    // Original odds: mostly sunny, sometimes cloudy, sometimes a scorcher.
+    let roll = rng.range(10);
+    s.sky = if roll < 6 { 0 } else if roll < 8 { 2 } else { 1 };
+    s.rain_pct = if s.sky == 2 { 30 + rng.range(41) } else { 0 };
+    s.street = rng.chance(0.18);
+    s.storm = false;
+    s.crews = false;
+    s.cost_glass = glass_cost(s.day);
+    s.notice = match s.day {
+        3 => "(YOUR MOTHER QUIT GIVING YOU FREE SUGAR: 4 CENTS A GLASS NOW.)".into(),
+        7 => "(THE PRICE OF LEMONADE MIX WENT UP: 5 CENTS A GLASS NOW.)".into(),
+        _ => String::new(),
     };
-    s.cost_glass = 3 + rng.range(4) as i32; // lemons and sugar drift
-    s.event = 0;
+    if s.street {
+        let road = "THE STREET DEPARTMENT IS TEARING UP THE BLOCK TODAY.";
+        if s.notice.is_empty() {
+            s.notice = road.into();
+        } else {
+            s.notice = format!("{}\n{road}", s.notice);
+        }
+    }
+    // Fresh pitcher every morning, like the original prompts.
+    s.glasses = 0;
+    s.signs = 0;
     s.dirty = true;
 }
 
@@ -139,13 +172,16 @@ fn setup(mut commands: Commands, mut rng: ResMut<Rng>) {
         money: 200,
         phase: 0,
         field: 0,
-        glasses: 30,
-        signs: 1,
+        glasses: 0,
+        signs: 0,
         price: 10,
-        forecast: 0,
-        actual: 0,
-        cost_glass: 4,
-        event: 0,
+        sky: 0,
+        rain_pct: 0,
+        street: false,
+        storm: false,
+        crews: false,
+        notice: String::new(),
+        cost_glass: 2,
         run_t: 0.0,
         demand: 0,
         made: 0,
@@ -165,7 +201,7 @@ fn open_stand(commands: &mut Commands, rng: &mut Rng, s: &mut Stand) {
     s.glasses = s.glasses.min(max_glasses);
     let spend = s.glasses * s.cost_glass + s.signs * SIGN_COST;
     if s.glasses <= 0 {
-        s.report = "NOTHING MIXED. THE STREET SHRUGS.".into();
+        s.report = "NOTHING MIXED. THE STREET SHRUGS AND WALKS ON.".into();
         s.phase = 2;
         s.dirty = true;
         return;
@@ -173,29 +209,32 @@ fn open_stand(commands: &mut Commands, rng: &mut Rng, s: &mut Stand) {
     s.money -= spend;
     stat("days_open", 1);
     stat("signs_posted", s.signs.max(0) as u64);
-    // The sky commits: forecast usually holds, sometimes swings.
-    s.actual = if rng.chance(0.75) { s.forecast } else { rng.range(4) as u8 };
-    // Events.
-    s.event = 0;
-    if s.actual == 3 && rng.chance(0.35) {
-        s.event = 2; // thunderstorm: total washout
-    } else if rng.chance(0.15) {
-        s.event = 1; // street crew doubles the foot traffic
-    }
-    let crowd = match s.actual {
-        1 => 130.0,
-        0 => 90.0,
-        2 => 55.0,
-        _ => 18.0,
-    } * if s.event == 1 { 1.8 } else { 1.0 };
-    let ad = 1.0 + 0.4 * (s.signs.max(0) as f32).sqrt();
-    let tolerance = if s.actual == 1 { 48.0 } else { 30.0 };
-    let price_f = if s.price <= 8 {
-        1.0
+    // The 1979 demand curve: 30 glasses is the street's appetite at the
+    // 10-cent anchor. Cheaper climbs gently (up to +80%); dearer collapses
+    // by the inverse square. Signs multiply by 1 + (1 - e^(-signs/2)).
+    let p = s.price.max(1) as f32;
+    let n1 = if s.price <= 10 {
+        (10.0 - p) / 10.0 * 0.8 * 30.0 + 30.0
     } else {
-        (1.0 - (s.price - 8) as f32 / tolerance).max(0.0)
+        (10.0 * 10.0 * 30.0) / (p * p)
     };
-    s.demand = if s.event == 2 { 0 } else { (crowd * ad * price_f) as i32 };
+    let v = 1.0 - (-(s.signs.max(0) as f32) * 0.5).exp();
+    let mut n2 = n1 * (1.0 + v);
+    if s.sky == 1 {
+        n2 *= 2.0; // heat wave: everyone is thirsty
+    }
+    if s.sky == 2 && rng.range(100) < s.rain_pct {
+        s.storm = true; // the clouds meant it
+        n2 = 0.0;
+    }
+    if s.street && !s.storm {
+        if rng.chance(0.5) {
+            s.crews = true; // thirsty crews buy the lot at lunch
+        } else {
+            n2 *= 0.1; // dug-up street: no foot traffic
+        }
+    }
+    s.demand = if s.crews { s.glasses } else { n2 as i32 };
     s.made = s.glasses;
     s.sold_shown = 0;
     s.run_t = 0.0;
@@ -232,32 +271,42 @@ fn close_day(commands: &mut Commands, s: &mut Stand) {
     s.money += revenue;
     stat("glasses_sold", sold.max(0) as u64);
     stat("glasses_spoiled", spoiled.max(0) as u64);
-    if s.event == 2 {
+    if s.storm {
         stat("rainouts", 1);
     }
-    if sold >= s.made && s.demand > s.made {
+    if sold >= s.made && (s.demand > s.made || s.crews) {
         stat("sellouts", 1);
     }
-    let sky_line = format!(
-        "{}{}",
-        WEATHER_NAMES[s.actual as usize],
-        match s.event {
-            1 => " + STREET CREW CROWDS",
-            2 => " - THUNDERSTORM WASHOUT",
-            _ => "",
-        }
-    );
-    let verdict = if s.event == 2 {
-        "EVERYTHING DOWN THE DRAIN."
+    let sky_line = if s.storm {
+        "THUNDERSTORM".to_string()
+    } else {
+        format!(
+            "{}{}",
+            WEATHER_NAMES[s.sky as usize],
+            if s.crews {
+                " - THE CREWS BOUGHT THE LOT AT LUNCH!"
+            } else if s.street {
+                " - TORN-UP STREET, NO TRAFFIC"
+            } else {
+                ""
+            }
+        )
+    };
+    let verdict = if s.storm {
+        "A WALL OF RAIN. EVERYTHING DOWN THE DRAIN."
+    } else if s.crews {
+        "BLESS THE STREET DEPARTMENT."
     } else if s.demand > s.made {
         "SOLD OUT - THE LINE WANTED MORE."
     } else if spoiled > s.made / 2 {
         "MOSTLY SPOILED. AMBITION HAS A PRICE."
-    } else {
+    } else if revenue > s.made * s.cost_glass {
         "A FAIR DAY'S TRADE."
+    } else {
+        "YOU PAID THE STREET FOR THE PRIVILEGE."
     };
     s.report = format!(
-        "DAY {} - {sky_line}\nSOLD {sold}/{} AT {} EA - TOOK IN {revenue}\n{verdict}",
+        "DAY {} - {sky_line}\nSOLD {sold}/{} AT {} CENTS - TOOK IN {revenue}\n{verdict}",
         s.day, s.made, s.price
     );
     for (e, _) in s.customers.drain(..) {
@@ -324,7 +373,7 @@ fn input(
                     s.report = if broke {
                         format!("OUT OF LEMONS AND LUCK ON DAY {}.", s.day)
                     } else {
-                        format!("SEASON CLOSED. CASH BOX: {}.", s.money)
+                        format!("SEASON CLOSED. CASH BOX: {} CENTS.", s.money)
                     };
                     stat("stands_retired", 1);
                     s.over = Some(Timer::from_seconds(2.6, TimerMode::Once));
@@ -389,7 +438,7 @@ fn paint(
         return;
     }
     s.dirty = false;
-    let shown_weather = if s.phase == 0 { s.forecast } else { s.actual };
+    let shown_weather = if s.phase != 0 && s.storm { 3 } else { s.sky };
     if let Ok(mut sp) = sky.single_mut() {
         sp.color = SKY[shown_weather as usize];
     }
@@ -400,13 +449,14 @@ fn paint(
         };
     }
     if let Ok(mut t) = hud.single_mut() {
+        let rain = if s.sky == 2 { format!(" ({}% CHANCE OF RAIN)", s.rain_pct) } else { String::new() };
         let line = format!(
-            "DAY {}/{}   CASH BOX {}   {}: {}   LEMONS {}/GLASS",
+            "DAY {}/{}   CASH BOX {} CENTS   SKY: {}{}   COST {} CENTS/GLASS",
             s.day,
             DAYS,
             s.money,
-            if s.phase == 0 { "FORECAST" } else { "SKY" },
             WEATHER_NAMES[shown_weather as usize],
+            rain,
             s.cost_glass
         );
         if t.0 != line {
@@ -417,8 +467,9 @@ fn paint(
         let line = match s.phase {
             0 => {
                 let mark = |f: u8| if s.field == f { ">" } else { " " };
+                let notice = if s.notice.is_empty() { String::new() } else { format!("{}\n", s.notice) };
                 format!(
-                    "{} GLASSES TO MIX  {:>3}   (COSTS {})\n{} SIGNS TO POST   {:>3}   (COSTS {})\n{} PRICE PER GLASS {:>3}\nUP/DOWN PICK - LEFT/RIGHT ADJUST (SHIFT x10) - ENTER OPENS THE STAND",
+                    "{notice}{} GLASSES TO MIX  {:>3}   (COSTS {})\n{} SIGNS TO POST   {:>3}   (COSTS {})\n{} PRICE PER GLASS {:>3} CENTS\nUP/DOWN PICK - LEFT/RIGHT ADJUST (SHIFT x10) - ENTER OPENS THE STAND",
                     mark(0),
                     s.glasses,
                     s.glasses * s.cost_glass,

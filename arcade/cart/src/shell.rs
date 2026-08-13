@@ -391,6 +391,7 @@ fn game_over_in(
     score: Res<FinalScore>,
     time: Res<Time>,
     clock: Res<RoundClock>,
+    mut banner: ResMut<crate::EndBanner>,
 ) {
     sfx("over");
     report_score(score.0);
@@ -407,7 +408,12 @@ fn game_over_in(
         Transform::from_xyz(0.0, 0.0, 40.0),
         ShellTag,
     ));
-    let over = text(&mut commands, "GAME OVER", 56.0, MAGENTA, Vec3::new(0.0, 90.0, 50.0));
+    let (label, color) = match banner.0.take() {
+        Some(win) => (win, GREEN),
+        None => ("GAME OVER".to_string(), MAGENTA),
+    };
+    let size = if label.len() > 14 { 34.0 } else { 56.0 };
+    let over = text(&mut commands, &label, size, color, Vec3::new(0.0, 90.0, 50.0));
     commands.entity(over).insert(ShellTag);
     let sc = text(
         &mut commands,

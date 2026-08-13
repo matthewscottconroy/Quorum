@@ -69,7 +69,7 @@ const CABINETS = [
   },
   {
     id: 'off-the-roof', name: 'OFF THE ROOF', tag: 'Fifteen gobs. One street. No witnesses.',
-    players: '1P', controls: 'Overhead view: you shuffle along the ledge at the bottom — the mouse slides you left and right. HOLD LEFT to wind up: a marker crawls up the street showing where the gob lands; longer holds carry farther AND hit heavier (more points) — hold too long and it dribbles. RIGHT button winds up the MEGA GOB (costs 3, wide splash, triple weight). Scoring: base × lane (×1 near / ×2 road / ×3 far) × weight × chain (up to ×5) — bullseyes double. The manhole swish pays 500 and refunds 3 gobs.',
+    players: '1P', controls: 'Overhead view: you shuffle along the ledge at the bottom — the mouse slides you left and right. HOLD LEFT to wind up: the small gauge on the right fills with the wind — it reads distance proportionally, but where the gob actually comes down is your judgment call. Longer holds carry farther AND hit heavier (more points); past the tick it dribbles. RIGHT button winds up the MEGA GOB (costs 3, wide splash, triple weight). Scoring: base × lane (×1 near / ×2 road / ×3 far) × weight × chain (up to ×5) — bullseyes double. The manhole swish pays 500 and refunds 3 gobs.',
   },
   {
     id: 'pest-control', name: 'PEST CONTROL', tag: 'Somebody left a donut out. Now it\'s your problem.',
@@ -81,7 +81,7 @@ const CABINETS = [
   },
   {
     id: 'bumper-chairs', name: 'BUMPER CHAIRS', tag: 'Last chair rolling wins. Facilities is furious.',
-    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — the minimap top-right sees the whole garage. ← →/A D steer · ↑/W drives · Space uses your item. Three balloons each — staplers pop them. Supply crates drop: STAPLER · COFFEE PUDDLE (spins whoever rolls through) · ESPRESSO (boost) · TRIPLE STAPLER. Last chair holding a balloon wins; at the horn, most balloons.',
+    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — your balloons float over your seat, the minimap top-right sees the whole garage, and the ITEM BOX (top left) spins like a slot machine when you grab a crate. ← →/A D steer · ↑/W drives · Space uses the item. The full kit: STAPLER · TRIPLE · SMART STAPLER (it seeks) · COFFEE PUDDLE · ESPRESSO · OVERTIME (untouchable rush — brushing rivals pops them) · EJECTOR (hop a wall) · BLACKOUT (spins every rival) · GHOST VENDOR (steals a balloon, up to five). Last chair holding a balloon wins.',
   },
   {
     id: 'roll-call', name: 'ROLL CALL', tag: 'Five dice, three throws, thirteen boxes, no excuses.',
@@ -93,7 +93,7 @@ const CABINETS = [
   },
   {
     id: 'lemonade', name: 'LEMONADE', tag: 'Fourteen days of summer. One pitcher. No mercy from the sky.',
-    players: '1P', controls: 'The classic corner-stand sim. Each morning: read the FORECAST, then ↑/↓ pick a line, ←/→ adjust (Shift ×10) — glasses to mix, signs to post, price per glass — and Enter opens the stand. Scorchers forgive high prices; overcast does not; thunderstorms forgive nothing. Unsold glasses spoil. Score is the cash box after day 14.',
+    players: '1P', controls: 'The classic corner-stand sim, economy faithful to the 1979 source: the street buys ~30 glasses at the 10¢ anchor — cheaper climbs a little, dearer collapses by the inverse square; signs pay off with diminishing returns; heat waves double the crowd; cloudy days roll their announced storm odds; street-crew days kill traffic or buy you out at lunch; and the cost of a glass climbs from 2¢ to 5¢ as summer wears on. Every morning starts with an EMPTY pitcher — ↑/↓ pick a line, ←/→ adjust (Shift ×10), Enter opens. Score is the cash box after day 14.',
   },
   {
     id: 'sub-basement', name: 'SUB-BASEMENT', tag: 'There is a floor below the basement. It knows your name.',

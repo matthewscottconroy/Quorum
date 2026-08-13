@@ -52,6 +52,12 @@ pub struct CabinetConfig {
 #[derive(Resource, Default)]
 pub struct FinalScore(pub u32);
 
+/// What the end screen says instead of "GAME OVER". A cabinet that ends a
+/// round in VICTORY sets this before flipping to Phase::GameOver, so a won
+/// floor never gets a loser's banner. The shell consumes it each round.
+#[derive(Resource, Default)]
+pub struct EndBanner(pub Option<String>);
+
 /// Marker for everything a game spawns; swept by the shell between rounds.
 #[derive(Component)]
 pub struct GameTag;
@@ -111,6 +117,7 @@ pub fn run() {
     .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.03)))
     .insert_resource(CabinetConfig { players: 1, humans: 1 })
     .init_resource::<FinalScore>()
+    .init_resource::<EndBanner>()
     .init_resource::<NetMode>()
     .init_resource::<Paused>()
     .add_event::<NetIn>()

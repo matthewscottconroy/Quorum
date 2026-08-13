@@ -2796,6 +2796,7 @@ fn endgame(
     mut images: ResMut<Assets<Image>>,
     mut terrain: Query<&mut Sprite, With<TerrainSprite>>,
     mut final_score: ResMut<FinalScore>,
+    mut banner: ResMut<crate::EndBanner>,
     mut next: ResMut<NextState<Phase>>,
 ) {
     if editor.active || !game.over {
@@ -2838,10 +2839,12 @@ fn endgame(
         if mine >= game.doc.need {
             score += 500 + (game.time_left.max(0) as u32 / 30) * 2;
             stat("floor_wins", 1);
+            banner.0 = Some("FLOOR CLEARED!".into());
         }
     } else if winner_2p(&game) == Some(me.min(1)) {
         score += 300;
         stat("floor_wins", 1);
+        banner.0 = Some("YOU TAKE THE FLOOR!".into());
     }
     final_score.0 = score;
     next.set(Phase::GameOver);
