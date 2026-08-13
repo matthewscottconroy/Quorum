@@ -61,7 +61,7 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P mission · 2-12 online deathmatch · editor', controls: 'W/S walk · A/D strafe · ← → turn · Space fires tranquilizer darts · E opens doors and plants the bug. ONLINE: the OFFICE PARTY — no guards, no errands, three darts and you nap; first to 10 tranqs (or best at the horn) wins. Lift 3 intel files, bug the server (glowing tile), then leave by the green door. Unseen the whole night = GHOST bonus.',
+    players: '1P mission · 2-12 online deathmatch · editor', controls: 'W/S walk · A/D strafe · ← → turn · Space fires a tranquilizer dart (watch the gun kick — a RED flash means YOU got hit) · E opens doors and plants the bug (on-screen prompts say when). MISSION: grab the 3 amber files, press E standing on the glowing green server tile, then walk out the green door. ONLINE: the OFFICE PARTY — host or join a room in the bar right below the screen; no guards, three darts and you nap, first to 10 tranqs (or best at the horn) wins.',
   },
   {
     id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
@@ -69,7 +69,7 @@ const CABINETS = [
   },
   {
     id: 'off-the-roof', name: 'OFF THE ROOF', tag: 'Fifteen gobs. One street. No witnesses.',
-    players: '1P', controls: 'Mouse aims (cursor height sets the arc) · hold LEFT to charge, release to fire — past the red line it dribbles · RIGHT-CLICK arms the MEGA GOB (costs 3, splashes wide). Scoring: base × distance band (×1/×2/×3) × hit chain (up to ×5, a miss resets) — bullseyes double. The manhole pays 500 and refills 3 gobs.',
+    players: '1P', controls: 'Overhead view: you shuffle along the ledge at the bottom — the mouse slides you left and right. HOLD LEFT to wind up: a marker crawls up the street showing where the gob lands; longer holds carry farther AND hit heavier (more points) — hold too long and it dribbles. RIGHT button winds up the MEGA GOB (costs 3, wide splash, triple weight). Scoring: base × lane (×1 near / ×2 road / ×3 far) × weight × chain (up to ×5) — bullseyes double. The manhole swish pays 500 and refunds 3 gobs.',
   },
   {
     id: 'pest-control', name: 'PEST CONTROL', tag: 'Somebody left a donut out. Now it\'s your problem.',
@@ -81,7 +81,7 @@ const CABINETS = [
   },
   {
     id: 'bumper-chairs', name: 'BUMPER CHAIRS', tag: 'Last chair rolling wins. Facilities is furious.',
-    players: '1P vs bots · 2-12 online · editor', controls: '← →/A D steer · ↑/W drives · Space uses your item. Three balloons each — staplers pop them. Supply crates drop: STAPLER · COFFEE PUDDLE (spins whoever rolls through) · ESPRESSO (boost) · TRIPLE STAPLER. Last chair holding a balloon wins; at the horn, most balloons.',
+    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — the minimap top-right sees the whole garage. ← →/A D steer · ↑/W drives · Space uses your item. Three balloons each — staplers pop them. Supply crates drop: STAPLER · COFFEE PUDDLE (spins whoever rolls through) · ESPRESSO (boost) · TRIPLE STAPLER. Last chair holding a balloon wins; at the horn, most balloons.',
   },
   {
     id: 'roll-call', name: 'ROLL CALL', tag: 'Five dice, three throws, thirteen boxes, no excuses.',

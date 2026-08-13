@@ -20,9 +20,9 @@ use crate::{FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "THE BOOKS DON'T SLEEP. NEITHER DO YOU.",
-    "WASD WALKS / ARROWS TURN / SPACE DARTS / E INTERACTS",
-    "SOLO: LIFT FILES, BUG THE SERVER, WALK OUT.",
-    "ONLINE: OFFICE PARTY - THREE DARTS AND YOU NAP.",
+    "W/S WALK - A/D STRAFE - ARROW KEYS TURN - SPACE FIRES A DART - E OPENS/USES",
+    "SOLO: GRAB 3 AMBER FILES, PRESS E ON THE GLOWING GREEN TILE, EXIT GREEN DOOR.",
+    "OFFICE PARTY (2-12 ONLINE): HOST OR JOIN A ROOM IN THE BAR UNDER THE SCREEN.",
 ];
 
 /// Deathmatch tuning: three darts and you nap, first to ten (or the best
@@ -403,7 +403,12 @@ struct View {
     cols: Vec<Entity>,
     depth: Vec<f32>,
     bills: Vec<Entity>, // reused for guards + pickups, nearest first
+    gun: Entity,        // the dart gun in the corner; kicks on fire
+    tracer: Entity,     // dart streak toward the crosshair
 }
+
+#[derive(Component)]
+struct PromptText;
 
 #[derive(Component)]
 struct HudText;
@@ -600,7 +605,30 @@ fn setup(
             .id();
         bills.push(e);
     }
-    commands.insert_resource(View { cols, depth: vec![f32::MAX; NCOL], bills });
+    // The dart gun: a visible prop in the lower-right so firing has a place
+    // to come FROM (and a kick), instead of an ambiguous screen pulse.
+    let gun = commands
+        .spawn((
+            Sprite { color: Color::srgb(0.16, 0.17, 0.22), custom_size: Some(Vec2::new(46.0, 90.0)), ..default() },
+            Transform::from_xyz(150.0, VIEW_CY - VIEW_H / 2.0 + 40.0, 5.8).with_rotation(Quat::from_rotation_z(-0.22)),
+            GameTag,
+        ))
+        .with_children(|kid| {
+            kid.spawn((
+                Sprite { color: AMBER, custom_size: Some(Vec2::new(14.0, 18.0)), ..default() },
+                Transform::from_xyz(0.0, 52.0, 0.1),
+            ));
+        })
+        .id();
+    let tracer = commands
+        .spawn((
+            Sprite { color: Color::srgb(1.0, 0.85, 0.4), custom_size: Some(Vec2::new(3.0, 200.0)), ..default() },
+            Transform::from_xyz(78.0, VIEW_CY - 110.0, 5.7).with_rotation(Quat::from_rotation_z(-0.6)),
+            Visibility::Hidden,
+            GameTag,
+        ))
+        .id();
+    commands.insert_resource(View { cols, depth: vec![f32::MAX; NCOL], bills, gun, tracer });
 
     // Crosshair.
     commands.spawn((
@@ -624,7 +652,17 @@ fn setup(
     commands.entity(hud).insert((HudText, GameTag));
     let obj = text(&mut commands, "", 12.0, AMBER, Vec3::new(0.0, -304.0, 6.0));
     commands.entity(obj).insert((ObjText, GameTag));
+    // Contextual "press E" prompt, low in the 3D window.
+    let prompt = text(&mut commands, "", 16.0, GREEN, Vec3::new(0.0, VIEW_CY - 180.0, 6.0));
+    commands.entity(prompt).insert((PromptText, GameTag));
+    // A standing key legend so nobody has to guess the controls mid-heist.
+    let help = text(&mut commands, "", 10.0, DIM, Vec3::new(0.0, 288.0, 6.0));
+    commands.entity(help).insert(GameTag);
+    commands.entity(help).insert(HelpLine);
 }
+
+#[derive(Component)]
+struct HelpLine;
 
 fn try_move(m: &Mission, x: f32, y: f32) -> bool {
     // A little body radius so walls don't shave the camera.
@@ -1302,22 +1340,80 @@ fn render_view(
             *vis = Visibility::Hidden;
         }
     }
-    // Veils: damage red, muzzle pop, and a heavy lid while napping.
+    // Veils: RED means you were hurt; firing never tints the screen red —
+    // the gun kick and amber tracer carry that instead.
     if let Ok(mut sp) = veil.single_mut() {
-        let a = if m.nap_t > 0.0 {
-            0.55
+        if m.nap_t > 0.0 {
+            sp.color = RED.with_alpha(0.55);
+        } else if m.hurt > 0.0 {
+            sp.color = RED.with_alpha((m.hurt * 0.9).min(0.35));
         } else {
-            (m.hurt * 0.9).min(0.35) + if m.flash > 0.0 { 0.10 } else { 0.0 }
-        };
-        sp.color = RED.with_alpha(a);
+            sp.color = RED.with_alpha(0.0);
+        }
+    }
+    // The gun kicks back while the muzzle timer runs; the tracer streaks.
+    if let Ok((_, mut tf, _)) = sprites.get_mut(view.gun) {
+        tf.translation.y = VIEW_CY - VIEW_H / 2.0 + 40.0 - m.flash * 220.0;
+    }
+    if let Ok((_, _, mut vis)) = sprites.get_mut(view.tracer) {
+        *vis = if m.flash > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn hud(
     m: Res<Mission>,
-    mut hud: Query<&mut Text2d, (With<HudText>, Without<ObjText>)>,
-    mut obj: Query<&mut Text2d, (With<ObjText>, Without<HudText>)>,
+    mut hud: Query<&mut Text2d, (With<HudText>, Without<ObjText>, Without<PromptText>, Without<HelpLine>)>,
+    mut obj: Query<&mut Text2d, (With<ObjText>, Without<HudText>, Without<PromptText>, Without<HelpLine>)>,
+    mut prompt: Query<&mut Text2d, (With<PromptText>, Without<HudText>, Without<ObjText>, Without<HelpLine>)>,
+    mut help: Query<&mut Text2d, (With<HelpLine>, Without<HudText>, Without<ObjText>, Without<PromptText>)>,
 ) {
+    // Contextual prompt: what E would do right now, spelled out.
+    if let Ok(mut t) = prompt.single_mut() {
+        let s = if m.over.is_some() || m.nap_t > 0.0 {
+            String::new()
+        } else {
+            let dir = Vec2::new(m.ang.cos(), m.ang.sin());
+            let (tx, ty) = ((m.px + dir.x * 1.0).floor() as i32, (m.py + dir.y * 1.0).floor() as i32);
+            let door_ahead = matches!(m.at(tx, ty), Cell::Wall(4))
+                && !m.doors_open[(ty as usize) * MW + tx as usize];
+            let on_server = !m.dm
+                && !m.server_bugged
+                && (m.px.floor() as usize, m.py.floor() as usize) == m.server_cell;
+            let near_server = !m.dm
+                && !m.server_bugged
+                && Vec2::new(
+                    m.server_cell.0 as f32 + 0.5 - m.px,
+                    m.server_cell.1 as f32 + 0.5 - m.py,
+                )
+                .length()
+                    < 3.0;
+            if door_ahead {
+                "[E] OPEN THE DOOR".into()
+            } else if on_server {
+                "[E] PLANT THE BUG".into()
+            } else if near_server {
+                "STAND ON THE GLOWING TILE, THEN PRESS E".into()
+            } else if !m.dm && m.objectives_done() && !m.done {
+                "OBJECTIVES DONE - WALK THROUGH THE GREEN DOOR".into()
+            } else {
+                String::new()
+            }
+        };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    if let Ok(mut t) = help.single_mut() {
+        let s = if m.dm {
+            "W/S WALK  A/D STRAFE  ARROWS TURN  SPACE DART  E DOORS - FIRST TO 10 TRANQS"
+        } else {
+            "W/S WALK  A/D STRAFE  ARROWS TURN  SPACE DART  E OPEN/USE - RED VEIL = YOU GOT HIT"
+        };
+        if t.0 != s {
+            t.0 = s.into();
+        }
+    }
     if let Ok(mut t) = hud.single_mut() {
         let s = if m.over.is_some() {
             m.result.clone()

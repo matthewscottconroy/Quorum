@@ -20,7 +20,8 @@ use crate::{CabinetConfig, FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "THREE BALLOONS. ONE GARAGE. NO BRAKES WORTH USING.",
-    "ARROWS/WASD DRIVE - SPACE FIRES THE ITEM.",
+    "UP DRIVES - LEFT/RIGHT STEER - SPACE FIRES THE ITEM.",
+    "YOU RIDE BEHIND YOUR CHAIR; THE MAP TOP-RIGHT SEES EVERYTHING.",
     "LAST CHAIR ROLLING TAKES THE FLOOR.",
 ];
 
@@ -62,6 +63,46 @@ fn cell_at(rows: &[String], x: i32, y: i32) -> char {
 
 fn world_of(x: f32, y: f32) -> Vec2 {
     Vec2::new(x * ACELL - 360.0, 250.0 - y * ACELL)
+}
+
+// ── the mode-7 style view ────────────────────────────────────────────────
+// The garage is simulated top-down (nothing about physics or the wire
+// changed) but DRAWN from behind your chair: everything in the world is a
+// billboard projected each frame from your position and heading, the way
+// the 16-bit kart racers faked it. Camera sits one cell off the floor.
+
+const HORIZON: f32 = 70.0;
+const FOCAL: f32 = 300.0;
+
+/// A projected world object. `pos` is in cell units; sizes are in cells.
+#[derive(Component)]
+struct Bill {
+    pos: Vec2,
+    w: f32,
+    hh: f32,
+    alt: f32,   // altitude of the sprite's base above the floor
+    flat: bool, // ground decal (puddles, floor dots): squashed, on the deck
+    base: Color,
+}
+
+/// Screen-fixed view furniture: sky, floor, minimap, your own chair rig.
+#[derive(Component)]
+struct FixedView;
+
+fn bill(commands: &mut Commands, pos: Vec2, w: f32, hh: f32, alt: f32, flat: bool, base: Color) -> Entity {
+    commands
+        .spawn((
+            Sprite { color: base, custom_size: Some(Vec2::splat(2.0)), ..default() },
+            Transform::from_xyz(0.0, 0.0, 1.0),
+            Visibility::Hidden,
+            Bill { pos, w, hh, alt, flat, base },
+            GameTag,
+        ))
+        .id()
+}
+
+fn mini_xy(pos: Vec2) -> Vec2 {
+    Vec2::new(232.0 + pos.x * 5.0, 280.0 - pos.y * 5.0)
 }
 
 struct Chair {
@@ -117,6 +158,8 @@ struct Garage {
     score: u32,
     over: Option<Timer>,
     result: String,
+    mini: Vec<Entity>, // minimap dots, parallel to chairs
+    rig: Entity,       // your own chair, fixed at the bottom of the screen
 }
 
 #[derive(Component)]
@@ -233,6 +276,13 @@ impl Plugin for ChairsPlugin {
                     .run_if(in_state(Phase::Playing))
                     .run_if(crate::unpaused)
                     .run_if(editor_off),
+            )
+            .add_systems(
+                Update,
+                project
+                    .after(hud)
+                    .run_if(in_state(Phase::Playing))
+                    .run_if(crate::unpaused),
             );
     }
 }
@@ -252,32 +302,16 @@ fn poll_editor_start(
 }
 
 fn spawn_chair(commands: &mut Commands, seat: usize, at: Vec2) -> (Entity, Entity) {
-    let ent = commands
-        .spawn((
-            Sprite {
-                color: PLAYER_COLORS[seat % 12],
-                custom_size: Some(Vec2::new(24.0, 20.0)),
-                ..default()
-            },
-            Transform::from_xyz(0.0, 0.0, 3.0),
-            GameTag,
-        ))
-        .with_children(|kid| {
-            // The backrest: which way this chair believes it is going.
-            kid.spawn((
-                Sprite { color: WHITE.with_alpha(0.8), custom_size: Some(Vec2::new(6.0, 14.0)), ..default() },
-                Transform::from_xyz(8.0, 0.0, 0.1),
-            ));
-        })
-        .id();
-    let balloon_ent = commands
-        .spawn((
-            Sprite { color: PLAYER_COLORS[seat % 12].with_alpha(0.9), custom_size: Some(Vec2::new(30.0, 5.0)), ..default() },
-            Transform::from_xyz(0.0, 0.0, 3.5),
-            GameTag,
-        ))
-        .id();
-    let _ = at;
+    let ent = bill(commands, at, 0.85, 0.75, 0.0, false, PLAYER_COLORS[seat % 12]);
+    let balloon_ent = bill(
+        commands,
+        at,
+        0.6,
+        0.22,
+        1.05,
+        false,
+        PLAYER_COLORS[seat % 12].with_alpha(0.95),
+    );
     (ent, balloon_ent)
 }
 
@@ -310,33 +344,72 @@ fn setup(
         }
     }
 
-    // Floor + walls + boxes from the arena text.
+    // Ceiling and floor planes of the projected view.
+    for (y0, y1, color, z) in [
+        (HORIZON, 320.0, Color::srgb(0.05, 0.06, 0.10), 0.02),
+        (-320.0, HORIZON, Color::srgb(0.10, 0.11, 0.14), 0.03),
+    ] {
+        let e = commands
+            .spawn((
+                Sprite { color, custom_size: Some(Vec2::new(760.0, y1 - y0)), ..default() },
+                Transform::from_xyz(0.0, (y0 + y1) / 2.0, z),
+                Visibility::Hidden,
+                FixedView,
+                GameTag,
+            ))
+            .id();
+        let _ = e;
+    }
+    // Walls, boxes, and floor markings become projected billboards.
     let mut spawns: Vec<Vec2> = Vec::new();
     let mut boxes = Vec::new();
     for y in 0..AH {
         for x in 0..AW {
             let ch = cell_at(&rows, x as i32, y as i32);
-            let p = world_of(x as f32 + 0.5, y as f32 + 0.5);
+            let center = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
             match ch {
                 '#' => {
-                    commands.spawn((
-                        Sprite { color: Color::srgb(0.22, 0.24, 0.30), custom_size: Some(Vec2::splat(ACELL - 1.0)), ..default() },
-                        Transform::from_xyz(p.x, p.y, 1.0),
-                        GameTag,
-                    ));
+                    // Waist-high bumpers, kart-battle style: you can see the
+                    // whole arena over them, they just won't let you through.
+                    let tone = if (x + y) % 2 == 0 {
+                        Color::srgb(0.34, 0.36, 0.45)
+                    } else {
+                        Color::srgb(0.25, 0.27, 0.36)
+                    };
+                    bill(&mut commands, center, 1.08, 0.5, 0.0, false, tone);
                 }
                 'B' => {
-                    let ent = commands
-                        .spawn((
-                            Sprite { color: AMBER, custom_size: Some(Vec2::splat(18.0)), ..default() },
-                            Transform::from_xyz(p.x, p.y, 2.0).with_rotation(Quat::from_rotation_z(0.4)),
-                            GameTag,
-                        ))
-                        .id();
+                    let ent = bill(&mut commands, center, 0.55, 0.55, 0.30, false, AMBER);
                     boxes.push(Box_ { cell: (x, y), up_in: 0.0, ent });
                 }
-                's' => spawns.push(Vec2::new(x as f32 + 0.5, y as f32 + 0.5)),
+                's' => spawns.push(center),
                 _ => {}
+            }
+            // Sparse floor dots so the ground reads as moving.
+            if ch != '#' && x % 2 == 0 && y % 2 == 0 {
+                bill(&mut commands, center, 0.15, 0.0, 0.0, true, WHITE.with_alpha(0.22));
+            }
+        }
+    }
+    // Minimap (top right): the arena at five pixels a cell.
+    commands.spawn((
+        Sprite { color: Color::srgba(0.0, 0.0, 0.0, 0.55), custom_size: Some(Vec2::new(132.0, 102.0)), ..default() },
+        Transform::from_xyz(292.0, 235.0, 28.0),
+        Visibility::Hidden,
+        FixedView,
+        GameTag,
+    ));
+    for y in 0..AH {
+        for x in 0..AW {
+            if cell_at(&rows, x as i32, y as i32) == '#' {
+                let mp = mini_xy(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+                commands.spawn((
+                    Sprite { color: Color::srgba(0.5, 0.52, 0.6, 0.8), custom_size: Some(Vec2::splat(5.0)), ..default() },
+                    Transform::from_xyz(mp.x, mp.y, 28.2),
+                    Visibility::Hidden,
+                    FixedView,
+                    GameTag,
+                ));
             }
         }
     }
@@ -363,8 +436,8 @@ fn setup(
         if is_net && !human && !remote {
             continue;
         }
-        let (ent, balloon_ent) = spawn_chair(&mut commands, seat, Vec2::ZERO);
         let at = spawns[seat % spawns.len()];
+        let (ent, balloon_ent) = spawn_chair(&mut commands, seat, at);
         chairs.push(Chair {
             seat,
             human,
@@ -390,21 +463,60 @@ fn setup(
             }
         }
     }
+    let me = if is_net { my_seat } else { 0 };
+    // Minimap dots, one per chair; yours is bigger.
+    let mut mini = Vec::new();
+    for c in &chairs {
+        let size = if c.seat == me { 8.0 } else { 6.0 };
+        let e = commands
+            .spawn((
+                Sprite { color: PLAYER_COLORS[c.seat % 12], custom_size: Some(Vec2::splat(size)), ..default() },
+                Transform::from_xyz(292.0, 235.0, 28.5),
+                Visibility::Hidden,
+                FixedView,
+                GameTag,
+            ))
+            .id();
+        mini.push(e);
+    }
+    // Your own chair, seen from behind, parked at the bottom of the screen.
+    let my_color = PLAYER_COLORS[me % 12];
+    let rig = commands
+        .spawn((
+            Sprite { color: my_color, custom_size: Some(Vec2::new(66.0, 46.0)), ..default() },
+            Transform::from_xyz(0.0, -238.0, 24.0),
+            Visibility::Hidden,
+            FixedView,
+            GameTag,
+        ))
+        .with_children(|kid| {
+            kid.spawn((
+                Sprite { color: WHITE.with_alpha(0.75), custom_size: Some(Vec2::new(58.0, 8.0)), ..default() },
+                Transform::from_xyz(0.0, 27.0, 0.1),
+            ));
+            kid.spawn((
+                Sprite { color: Color::srgb(0.12, 0.12, 0.16), custom_size: Some(Vec2::new(30.0, 12.0)), ..default() },
+                Transform::from_xyz(0.0, -29.0, 0.1),
+            ));
+        })
+        .id();
     commands.insert_resource(Garage {
         rows,
         chairs,
         shots: Vec::new(),
         puddles: Vec::new(),
         boxes,
-        my_seat: if is_net { my_seat } else { 0 },
+        my_seat: me,
         net: is_net,
         clock: 180.0,
         pos_t: 0.0,
         score: 0,
         over: None,
         result: String::new(),
+        mini,
+        rig,
     });
-    let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 6.0));
+    let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 30.0));
     commands.entity(hud).insert((Hud, GameTag));
 }
 
@@ -428,27 +540,13 @@ fn fire_item(
         1 => {
             // Coffee: a puddle just behind the chair.
             let back = pos - Vec2::new(ang.cos(), -ang.sin()) * 0.9;
-            let w = world_of(back.x, back.y);
-            let ent = commands
-                .spawn((
-                    Sprite { color: Color::srgb(0.32, 0.2, 0.08), custom_size: Some(Vec2::splat(26.0)), ..default() },
-                    Transform::from_xyz(w.x, w.y, 1.5).with_rotation(Quat::from_rotation_z(0.5)),
-                    GameTag,
-                ))
-                .id();
+            let ent = bill(commands, back, 0.95, 0.0, 0.0, true, Color::srgb(0.32, 0.2, 0.08));
             g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
         }
         _ => {
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
-            let w = world_of(start.x, start.y);
-            let ent = commands
-                .spawn((
-                    Sprite { color: CYAN, custom_size: Some(Vec2::splat(9.0)), ..default() },
-                    Transform::from_xyz(w.x, w.y, 3.8),
-                    GameTag,
-                ))
-                .id();
+            let ent = bill(commands, start, 0.26, 0.26, 0.40, false, CYAN);
             g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 1, ent });
         }
     }
@@ -467,8 +565,6 @@ fn drive(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     mut g: ResMut<Garage>,
-    mut tfs: Query<&mut Transform>,
-    mut sprites: Query<&mut Sprite>,
 ) {
     if g.over.is_some() {
         return;
@@ -528,15 +624,23 @@ fn drive(
         let dir = Vec2::new(c.ang.cos(), -c.ang.sin());
         let step = dir * (c.speed / ACELL) * dt;
         let next = c.pos + step;
+        // Slide along walls: block each axis separately, and only bounce
+        // when you drive square into a corner — no more velcro walls.
+        let mut blocked = 0;
         if solid_at(&rows, Vec2::new(next.x, c.pos.y)) {
-            c.speed *= -0.35;
+            blocked += 1;
         } else {
             c.pos.x = next.x;
         }
         if solid_at(&rows, Vec2::new(c.pos.x, next.y)) {
-            c.speed *= -0.35;
+            blocked += 1;
         } else {
             c.pos.y = next.y;
+        }
+        if blocked == 2 {
+            c.speed *= -0.3;
+        } else if blocked == 1 {
+            c.speed *= 1.0 - 2.0 * dt; // scraping costs a little paint
         }
     }
     if let Some((i, kind)) = fire_req {
@@ -616,32 +720,6 @@ fn drive(
         }
     }
 
-    // Paint every chair.
-    for c in &g.chairs {
-        let w = world_of(c.pos.x, c.pos.y);
-        if let Ok(mut tf) = tfs.get_mut(c.ent) {
-            tf.translation.x = w.x;
-            tf.translation.y = w.y;
-            tf.rotation = Quat::from_rotation_z(-c.ang);
-        }
-        if let Ok(mut sp) = sprites.get_mut(c.ent) {
-            let base = PLAYER_COLORS[c.seat % 12];
-            sp.color = if c.balloons <= 0 {
-                base.with_alpha(0.15)
-            } else if c.inv_t > 0.0 {
-                base.with_alpha(0.5)
-            } else {
-                base
-            };
-        }
-        if let Ok(mut tf) = tfs.get_mut(c.balloon_ent) {
-            tf.translation.x = w.x;
-            tf.translation.y = w.y + 18.0;
-        }
-        if let Ok(mut sp) = sprites.get_mut(c.balloon_ent) {
-            sp.custom_size = Some(Vec2::new(10.0 * c.balloons.max(0) as f32, 5.0));
-        }
-    }
 }
 
 /// Bot chairs (local rounds): chase a box or the nearest live rival, fire
@@ -707,7 +785,7 @@ fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
 }
 
 /// Shots travel, bounce once, and pop balloons on locally-owned chairs.
-fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>, mut tfs: Query<&mut Transform>) {
+fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     if g.over.is_some() {
         return;
     }
@@ -735,11 +813,6 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>, mut
             }
         } else {
             s.pos = next;
-        }
-        let w = world_of(s.pos.x, s.pos.y);
-        if let Ok(mut tf) = tfs.get_mut(s.ent) {
-            tf.translation.x = w.x;
-            tf.translation.y = w.y;
         }
     }
     // Hits: only chairs this machine owns decide they were hit.
@@ -776,9 +849,8 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
         c.inv_t = 1.5;
         c.spin_t = 0.8;
         sfx("boom");
-        let w = world_of(c.pos.x, c.pos.y);
-        popup(commands, "POP!", 18.0, RED, w + Vec2::new(0.0, 26.0));
         if c.seat == my {
+            popup(commands, "POP! BALLOON GONE", 20.0, RED, Vec2::new(0.0, -100.0));
             stat("balloons_lost", 1);
         }
     }
@@ -787,6 +859,7 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
         p.pops += 1;
         if p.seat == my {
             g.score += 200;
+            popup(commands, "+200 POP", 16.0, GREEN, Vec2::new(0.0, 110.0));
             stat("balloons_popped", 1);
         }
     }
@@ -798,10 +871,11 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
     }
     // Elimination and the end of the derby.
     if g.chairs[ci].balloons <= 0 {
-        let w = world_of(g.chairs[ci].pos.x, g.chairs[ci].pos.y);
-        popup(commands, "OUT!", 22.0, AMBER, w);
         if seat == my {
+            popup(commands, "YOU'RE OUT!", 24.0, AMBER, Vec2::new(0.0, -60.0));
             stat("chairs_lost", 1);
+        } else {
+            popup(commands, &format!("CHAIR {} IS OUT", seat + 1), 14.0, AMBER, Vec2::new(0.0, 140.0));
         }
     }
     let alive: Vec<usize> = g.chairs.iter().filter(|c| c.balloons > 0).map(|c| c.seat).collect();
@@ -875,16 +949,10 @@ fn hazards(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     }
 }
 
-fn boxes_spin(time: Res<Time>, mut g: ResMut<Garage>, mut sprites: Query<&mut Sprite>, mut tfs: Query<&mut Transform>) {
+fn boxes_spin(time: Res<Time>, mut g: ResMut<Garage>) {
     let dt = time.delta_secs();
     for b in g.boxes.iter_mut() {
         b.up_in = (b.up_in - dt).max(0.0);
-        if let Ok(mut sp) = sprites.get_mut(b.ent) {
-            sp.color = if b.up_in > 0.0 { AMBER.with_alpha(0.12) } else { AMBER };
-        }
-        if let Ok(mut tf) = tfs.get_mut(b.ent) {
-            tf.rotate_z(dt * 1.2);
-        }
     }
 }
 
@@ -971,6 +1039,124 @@ fn net_apply(
             }
             _ => {}
         }
+    }
+}
+
+/// The mode-7 pass: sync billboard state from the sim, then project every
+/// billboard from behind YOUR chair. Runs even while the editor owns the
+/// canvas (it hides the whole view layer there, so the canvas stays clean).
+#[allow(clippy::type_complexity)]
+fn project(
+    g: Option<Res<Garage>>,
+    editor: Option<Res<ArenaEditor>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut bills: Query<(&mut Bill, &mut Transform, &mut Sprite, &mut Visibility)>,
+    mut fixed: Query<(&mut Visibility, &mut Transform), (With<FixedView>, Without<Bill>)>,
+) {
+    let editing = editor.map(|e| e.active).unwrap_or(false);
+    if editing || g.is_none() {
+        for (_, _, _, mut vis) in bills.iter_mut() {
+            *vis = Visibility::Hidden;
+        }
+        for (mut vis, _) in fixed.iter_mut() {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
+    let g = g.unwrap();
+    // Camera: my chair.
+    let me = g.chairs.iter().find(|c| c.seat == g.my_seat);
+    let (cam, ang) = me.map(|c| (c.pos, c.ang)).unwrap_or((Vec2::new(12.0, 9.0), 0.0));
+    let fwd = Vec2::new(ang.cos(), -ang.sin());
+    let rt = Vec2::new(-fwd.y, fwd.x);
+    // Sync dynamic billboards from the sim.
+    for c in &g.chairs {
+        let base = PLAYER_COLORS[c.seat % 12];
+        let behind = c.seat == g.my_seat; // your chair is the fixed rig instead
+        let pos = if behind { cam - fwd * 3.0 } else { c.pos };
+        if let Ok((mut b, _, _, _)) = bills.get_mut(c.ent) {
+            b.pos = pos;
+            b.base = if c.balloons <= 0 {
+                base.with_alpha(0.22)
+            } else if c.inv_t > 0.0 {
+                base.with_alpha(0.5)
+            } else {
+                base
+            };
+        }
+        if let Ok((mut b, _, _, _)) = bills.get_mut(c.balloon_ent) {
+            b.pos = pos;
+            b.w = 0.3 * c.balloons.max(0) as f32;
+            b.base = base.with_alpha(if c.balloons > 0 { 0.95 } else { 0.0 });
+        }
+    }
+    for s in &g.shots {
+        if let Ok((mut b, _, _, _)) = bills.get_mut(s.ent) {
+            b.pos = s.pos;
+        }
+    }
+    for p in &g.puddles {
+        if let Ok((mut b, _, _, _)) = bills.get_mut(p.ent) {
+            b.pos = p.pos;
+            b.base = Color::srgba(0.32, 0.2, 0.08, (p.ttl / 6.0).clamp(0.25, 0.9));
+        }
+    }
+    for (i, bx) in g.boxes.iter().enumerate() {
+        if let Ok((mut b, _, _, _)) = bills.get_mut(bx.ent) {
+            b.base = if bx.up_in > 0.0 { AMBER.with_alpha(0.10) } else { AMBER };
+            b.alt = 0.25 + 0.10 * (g.clock * 3.0 + i as f32).sin();
+        }
+    }
+    // Project everything.
+    for (b, mut tf, mut sp, mut vis) in bills.iter_mut() {
+        let rel = b.pos - cam;
+        let cx = rel.dot(rt);
+        let cy = rel.dot(fwd);
+        if cy < 0.30 || cy > 17.0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let inv = FOCAL / cy;
+        let sx = cx * inv;
+        if sx.abs() > 640.0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let gy = HORIZON - inv; // camera rides one cell above the deck
+        let (w_px, h_px, sy, zoff) = if b.flat {
+            let w = (b.w * inv).min(900.0);
+            (w, (w * 0.35).max(1.5), gy + 1.0, -0.4)
+        } else {
+            let w = (b.w * inv).min(900.0);
+            let h = (b.hh * inv).min(900.0);
+            (w, h, gy + h / 2.0 + b.alt * inv, 0.0)
+        };
+        let shade = (2.4 / cy).clamp(0.30, 1.0);
+        let c = b.base.to_srgba();
+        sp.color = Color::srgba(c.red * shade, c.green * shade, c.blue * shade, c.alpha);
+        sp.custom_size = Some(Vec2::new(w_px.max(1.0), h_px.max(1.0)));
+        tf.translation = Vec3::new(sx, sy, (21.0 - cy).clamp(1.0, 21.0) + zoff);
+        *vis = Visibility::Inherited;
+    }
+    // Screen-fixed furniture on, then the per-chair minimap dots and the rig.
+    for (mut vis, _) in fixed.iter_mut() {
+        *vis = Visibility::Inherited;
+    }
+    for (i, c) in g.chairs.iter().enumerate() {
+        if let Some(&e) = g.mini.get(i) {
+            if let Ok((mut vis, mut tf)) = fixed.get_mut(e) {
+                *vis = if c.balloons > 0 { Visibility::Inherited } else { Visibility::Hidden };
+                let mp = mini_xy(c.pos);
+                tf.translation.x = mp.x;
+                tf.translation.y = mp.y;
+            }
+        }
+    }
+    if let Ok((_, mut tf)) = fixed.get_mut(g.rig) {
+        let lean = (i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
+            - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD)))
+            as f32;
+        tf.rotation = Quat::from_rotation_z(lean * 0.09);
     }
 }
 
