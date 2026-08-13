@@ -100,6 +100,10 @@ const CABINETS = [
     players: '1P · 2-12 online (co-op-ish)', controls: 'A MUD in a cabinet — click the screen and TYPE: N/E/S/W move · LOOK · GET <thing> · INV · USE <thing> · HIT <thing> · SAY <words> · WHO · HELP. Arm yourself (the RED STAPLER is famous), pocket penny piles, get the keycard into the ARCHIVE, drop THE AUDITOR, take the PAYROLL LEDGER to the FREIGHT ELEVATOR and USE LEDGER. First one out ends the shift for everyone and banks +500. Online, the host runs the world.',
   },
   {
+    id: 'plot-device', name: 'PLOT DEVICE', tag: 'A turtle, a pen, and a whole language.',
+    players: '1P · programmable', controls: 'A full turtle-graphics Logo lab: click the screen and TYPE. Motion FD/BK/RT/LT/SETXY/ARC · pen PU/PD, SETPC 0-15, SETRGB, SETW, SETSTYLE "SOLID/"DASH/"DOT · REPEAT/IF/IFELSE/WHILE/FOR, recursion, MAKE variables · multiple turtles via NEWTURTLE, TELL, ASK n [..], EACH [..] · functions are values: FN [x] [..], APPLY, MAP, FILTER, REDUCE, FOREACH, RUN. Define procedures with TO NAME :ARG ... END, list them with POTS, and SAVE "name shelves the whole workspace to the LEVEL picker for later. HELP lists everything; TAB hides the console to admire the plot; QUIT scores your ink.',
+  },
+  {
     id: 'homestead', name: 'HOMESTEAD', tag: 'Nineteen lots. Five supplies. One inspector.',
     players: '1P vs 3 bots · 3-4 online', controls: 'Draft two outposts, then R rolls each turn — lots pay COFFEE, PAPER, TONER, SNACKS, and STAPLES. Click corners for outposts (click yours again for an office), edges for halls · I buys an idea · G plays a guard · T trades 4:1 · E ends. A 7 wakes THE INSPECTOR. First to 10 points owns the park.',
   },
@@ -143,6 +147,11 @@ const LEVELS = {
     house: [['std', 'HOUSE: THE PARKING GARAGE']],
     blank: 'EDITOR: EMPTY GARAGE', playFallback: null,
     toast: 'Editor: 1 wall / 2 floor / 3 crate spot / 4 spawn, click paints, right-click erases, Shift+S saves (needs 2+ spawns), G test-plays, X returns',
+  },
+  'plot-device': {
+    house: [['std', 'WORKSPACE: DEMO LIBRARY']],
+    blank: 'WORKSPACE: BLANK', playFallback: { blank: true }, noEditor: true,
+    toast: '',
   },
 };
 // Clock-capable cabinets: per-side game clock choices, in seconds. Online,
@@ -366,6 +375,10 @@ const STAT_LABELS = {
   rooms_explored: 'ROOMS MAPPED', pests_bopped: 'PESTS FLATTENED',
   pennies_pocketed: 'PENNIES POCKETED (MUD)', ledgers_lifted: 'LEDGERS LIFTED',
   floors_escaped: 'ESCAPES UP THE FREIGHT ELEVATOR', naps_taken: 'BEIGE-OUTS (KO\'D)',
+  // PLOT DEVICE
+  strokes_drawn: 'PEN STROKES PLOTTED', procs_defined: 'PROCEDURES TAUGHT',
+  turtles_hatched: 'TURTLES HATCHED', workspaces_saved: 'WORKSPACES SHELVED',
+  programs_crashed: 'PROGRAMS THAT BLEW UP',
 };
 function statLabel(key) {
   return STAT_LABELS[key] ?? key.replace(/_/g, ' ').toUpperCase();
@@ -379,7 +392,7 @@ function statValue(key, v) {
 }
 
 // Cabinets steered by keys: these get the click-to-refocus overlay.
-const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control', 'bumper-chairs', 'roll-call', 'floor-plan', 'homestead', 'lemonade', 'sub-basement']);
+const KEY_GAMES = new Set(['brickfall', 'comet-buster', 'penny-pincher', 'powder-keg', 'interns', 'texas-holdem', 'red-tape', 'night-audit', 'lucky-penny', 'off-the-roof', 'pest-control', 'bumper-chairs', 'roll-call', 'floor-plan', 'homestead', 'lemonade', 'sub-basement', 'plot-device']);
 
 function gameFromHash() {
   const q = (location.hash.split('?')[1]) ?? '';
@@ -559,7 +572,7 @@ class PageArcade extends HTMLElement {
                     ${LEVELS[cab.id].house.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
                   </select>
                 </label>
-                <button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>
+                ${LEVELS[cab.id].noEditor ? '' : `<button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>`}
                 <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
               ${cab.id === 'powder-keg' ? `
                 <label class="tsc-note">ROUNDS

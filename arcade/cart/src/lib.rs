@@ -23,6 +23,7 @@ mod night_audit;
 mod off_the_roof;
 mod penny;
 mod pest_control;
+mod plot_device;
 mod powder;
 mod red_tape;
 mod retro;
@@ -182,6 +183,9 @@ pub fn run() {
         }
         "sub-basement" => {
             app.add_plugins((shell_for("SUB-BASEMENT", sub_basement::BLURB), sub_basement::BasementPlugin));
+        }
+        "plot-device" => {
+            app.add_plugins((shell_for("PLOT DEVICE", plot_device::BLURB), plot_device::PlotPlugin));
         }
         _ => {
             app.add_plugins((shell_for("BRICKFALL", brickfall::BLURB), brickfall::BrickPlugin));

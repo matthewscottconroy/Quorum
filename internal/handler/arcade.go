@@ -126,6 +126,10 @@ var arcadeStatNames = map[string][]string{
 		"rooms_explored", "pests_bopped", "pennies_pocketed", "ledgers_lifted",
 		"floors_escaped", "naps_taken",
 	},
+	"plot-device": {
+		"strokes_drawn", "procs_defined", "turtles_hatched", "workspaces_saved",
+		"programs_crashed",
+	},
 }
 
 var validArcadeStat = func() map[string]map[string]bool {
