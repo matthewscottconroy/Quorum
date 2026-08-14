@@ -29,7 +29,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.x'
+          # go.mod's toolchain directive is the single source of truth for
+          # the Go patch level — security bumps happen there, not here.
+          # (setup-go exports GOTOOLCHAIN=local, so an inline go-version
+          # here would silently override the directive.)
+          go-version-file: 'go.mod'
           cache: true
       - name: gofmt
         run: |
@@ -68,7 +72,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.x'
+          # go.mod's toolchain directive is the single source of truth for
+          # the Go patch level — security bumps happen there, not here.
+          # (setup-go exports GOTOOLCHAIN=local, so an inline go-version
+          # here would silently override the directive.)
+          go-version-file: 'go.mod'
           cache: true
       # Runs the full ladder up, back down to zero, and up again against a real
       # Postgres — so every .up.sql must have a .down.sql that truly reverses it,
@@ -85,13 +93,22 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.25.x'
+          # go.mod's toolchain directive is the single source of truth for
+          # the Go patch level — security bumps happen there, not here.
+          # (setup-go exports GOTOOLCHAIN=local, so an inline go-version
+          # here would silently override the directive.)
+          go-version-file: 'go.mod'
           cache: true
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: latest
       - name: govulncheck
+        # Backstop: even if the installed toolchain lags, auto lets go
+        # fetch exactly what go.mod's toolchain directive demands, so the
+        # scan can never run against an older stdlib than we ship.
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
