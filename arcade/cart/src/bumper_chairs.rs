@@ -50,8 +50,8 @@ fn item_icon(k: u8) -> (Color, &'static str) {
 }
 
 const TURN_RATE: f32 = 3.4;
-const ACCEL: f32 = 260.0;
-const MAX_SPEED: f32 = 240.0;
+const ACCEL: f32 = 310.0;
+const MAX_SPEED: f32 = 300.0;
 
 const DEFAULT_ARENA: [&str; AH] = [
     "########################",
@@ -192,6 +192,11 @@ struct Garage {
     start_t: f32,   // the 3-2-1-GO gate at the horn
     bump_t: f32,    // wall-thud sound cooldown
     sky: Vec<(Entity, f32)>, // parallax skyline: entity + angular phase
+    veil: Entity,   // full-screen flash for item drama
+    fx_t: f32,
+    fx_color: Color,
+    hop_t: f32,     // your EJECTOR arc
+    i_won: bool,
 }
 
 #[derive(Component)]
@@ -395,7 +400,8 @@ fn setup(
     // Ceiling and floor planes of the projected view.
     for (y0, y1, color, z) in [
         (HORIZON, 320.0, Color::srgb(0.05, 0.06, 0.10), 0.02),
-        (-320.0, HORIZON, Color::srgb(0.10, 0.11, 0.14), 0.03),
+        // The base plane matches the darker asphalt so tile seams vanish.
+        (-320.0, HORIZON, Color::srgb(0.115, 0.11, 0.10), 0.03),
     ] {
         let e = commands
             .spawn((
@@ -419,10 +425,12 @@ fn setup(
                 '#' => {
                     // Waist-high bumpers, kart-battle style: you can see the
                     // whole arena over them, they just won't let you through.
+                    // Walls wear hazard paint — nothing on the FLOOR is
+                    // ever this color, so a barrier reads as a barrier.
                     let tone = if (x + y) % 2 == 0 {
-                        Color::srgb(0.34, 0.36, 0.45)
+                        Color::srgb(0.85, 0.66, 0.16)
                     } else {
-                        Color::srgb(0.25, 0.27, 0.36)
+                        Color::srgb(0.32, 0.30, 0.26)
                     };
                     bill(&mut commands, center, 1.08, 0.5, 0.0, false, tone);
                 }
@@ -436,10 +444,11 @@ fn setup(
             // The mode-7 checkerboard: every open cell is a floor tile, so
             // the ground streams under you the way a kart track should.
             if ch != '#' {
+                // Asphalt: warm, flat, unmistakably UNDER you.
                 let tone = if (x + y) % 2 == 0 {
-                    Color::srgb(0.155, 0.165, 0.225)
+                    Color::srgb(0.165, 0.155, 0.135)
                 } else {
-                    Color::srgb(0.075, 0.085, 0.115)
+                    Color::srgb(0.105, 0.10, 0.09)
                 };
                 let e = bill(&mut commands, center, 1.02, 1.0, -0.1, true, tone);
                 let _ = e;
@@ -608,6 +617,15 @@ fn setup(
     let slot_label = text(&mut commands, "", 11.0, WHITE, Vec3::new(-322.0, 204.0, 27.2));
     commands.entity(slot_label).insert((FixedView, GameTag));
     commands.entity(slot_label).insert(Visibility::Hidden);
+    let veil = commands
+        .spawn((
+            Sprite { color: Color::NONE, custom_size: Some(Vec2::new(744.0, 664.0)), ..default() },
+            Transform::from_xyz(0.0, 0.0, 29.0),
+            Visibility::Hidden,
+            FixedView,
+            GameTag,
+        ))
+        .id();
     // A skyline of parking-garage pillars above the horizon: it slides
     // opposite your steering, which is most of what "turning" looks like.
     let mut sky = Vec::new();
@@ -653,6 +671,11 @@ fn setup(
         start_t: 3.2,
         bump_t: 0.0,
         sky,
+        veil,
+        fx_t: 0.0,
+        fx_color: WHITE,
+        hop_t: 0.0,
+        i_won: false,
     });
     let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 30.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -862,9 +885,15 @@ fn drive(
             if c.spin_t > 0.0 {
                 c.ang += 9.0 * dt; // the spin-out: all wheel, no say
             } else {
-                c.ang += turn as f32 * TURN_RATE * dt * (0.4 + (c.speed.abs() / MAX_SPEED).min(1.0));
+                // A parked car doesn't pivot: steering authority comes with
+                // road speed.
+                let authority = (0.10 + 0.90 * (c.speed.abs() / MAX_SPEED).min(1.0).sqrt()).min(1.0);
+                c.ang += turn as f32 * TURN_RATE * dt * authority;
                 if gas {
-                    c.speed += ACCEL * dt;
+                    // Gas pedal: hard launch off the line, tapering as the
+                    // motor winds out toward top speed.
+                    let curve = (1.25 - 0.9 * (c.speed.max(0.0) / MAX_SPEED)).max(0.2);
+                    c.speed += ACCEL * curve * dt;
                 }
                 // The brake is a brake: kill forward motion first, and only
                 // once you've stopped does holding it creep you backward.
@@ -872,13 +901,26 @@ fn drive(
                     if c.speed > 6.0 {
                         c.speed = (c.speed - 460.0 * dt).max(0.0);
                     } else {
-                        c.speed -= ACCEL * 0.45 * dt;
+                        c.speed -= 120.0 * dt;
                     }
                 }
                 coasting = !gas && !brake;
             }
             if keys.just_pressed(KeyCode::Space) && !stop_slot {
                 if let Some(kind) = c.item.take() {
+                    // Say what the item is DOING, right when it happens.
+                    let (line, color) = match kind {
+                        0 => ("STAPLER AWAY!", CYAN),
+                        1 => ("COFFEE SPILLED BEHIND YOU", Color::srgb(0.85, 0.6, 0.25)),
+                        2 => ("ESPRESSO! FLOOR IT", GREEN),
+                        3 => ("TRIPLE SPREAD!", CYAN),
+                        4 => ("SMART STAPLER SEEKING...", MAGENTA),
+                        5 => ("OVERTIME! UNTOUCHABLE - RAM THEM", AMBER),
+                        6 => ("EJECTOR SEAT!", WHITE),
+                        7 => ("BLACKOUT! EVERY RIVAL SPINS", Color::srgb(0.5, 0.55, 1.0)),
+                        _ => ("GHOST SENT FOR A BALLOON...", Color::srgb(0.85, 0.9, 1.0)),
+                    };
+                    popup(&mut commands, line, 18.0, color, Vec2::new(0.0, 150.0));
                     match kind {
                         2 => {
                             c.boost_t = 1.4;
@@ -961,8 +1003,17 @@ fn drive(
                 }
                 stat("staplers_thrown", 3);
             }
-            20 => eject_hop(&rows, &mut g, i),
-            7 => blackout(&mut g, i, true),
+            20 => {
+                eject_hop(&rows, &mut g, i);
+                if g.chairs[i].human {
+                    g.hop_t = 0.45;
+                }
+            }
+            7 => {
+                blackout(&mut g, i, true);
+                g.fx_t = 0.45;
+                g.fx_color = Color::srgb(0.35, 0.4, 1.0);
+            }
             8 => ghost_steal(&mut commands, &mut g, i, true),
             _ => {
                 fire_item(&mut commands, &mut g, i, kind, true);
@@ -1221,8 +1272,22 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
     // Elimination and the end of the derby.
     if g.chairs[ci].balloons <= 0 {
         if seat == my {
-            popup(commands, "YOU'RE OUT!", 24.0, AMBER, Vec2::new(0.0, -60.0));
+            popup(commands, "ELIMINATED!", 34.0, RED, Vec2::new(0.0, 0.0));
+            g.fx_t = 0.6;
+            g.fx_color = RED;
             stat("chairs_lost", 1);
+            // Solo: your derby is over the moment you are — call it for
+            // the leading bot instead of leaving you on the carpet.
+            if !g.net && g.over.is_none() {
+                let leader = g
+                    .chairs
+                    .iter()
+                    .filter(|c| c.balloons > 0)
+                    .max_by_key(|c| (c.balloons, c.pops))
+                    .map(|c| c.seat);
+                finish(commands, g, leader);
+                return;
+            }
         } else {
             popup(commands, &format!("CHAIR {} IS OUT", seat + 1), 14.0, AMBER, Vec2::new(0.0, 140.0));
         }
@@ -1235,6 +1300,7 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
 
 fn finish(commands: &mut Commands, g: &mut Garage, winner: Option<usize>) {
     let my = g.my_seat;
+    g.i_won = winner == Some(my);
     let mine = g.chairs.iter().find(|c| c.seat == my);
     let my_pops = mine.map(|c| c.pops).unwrap_or(0);
     let survived = mine.map(|c| c.balloons > 0).unwrap_or(false);
@@ -1371,6 +1437,8 @@ fn net_apply(
                                     c.spin_t = 1.6;
                                     c.speed *= 0.3;
                                     popup(&mut commands, "BLACKOUT!", 18.0, RED, Vec2::new(0.0, -100.0));
+                                    g.fx_t = 0.5;
+                                    g.fx_color = Color::srgb(0.35, 0.4, 1.0);
                                     sfx("boom");
                                 }
                             }
@@ -1388,6 +1456,8 @@ fn net_apply(
                                 }
                                 if conceded {
                                     popup(&mut commands, "A GHOST TOOK A BALLOON!", 18.0, RED, Vec2::new(0.0, -100.0));
+                                    g.fx_t = 0.45;
+                                    g.fx_color = RED;
                                     stat("balloons_lost", 1);
                                     sfx("eat");
                                     if let Ok(m) = serde_json::to_string(&WPop { t: "pop".into(), by: ev.seat, g: true }) {
@@ -1486,9 +1556,12 @@ fn project(
         return;
     }
     let mut g = g.unwrap();
-    // The slot machine settles.
+    // The slot machine settles; flashes and hops decay.
     let was = g.slot_spin;
-    g.slot_spin = (g.slot_spin - time.delta_secs()).max(0.0);
+    let dt = time.delta_secs();
+    g.slot_spin = (g.slot_spin - dt).max(0.0);
+    g.fx_t = (g.fx_t - dt).max(0.0);
+    g.hop_t = (g.hop_t - dt).max(0.0);
     if was > 0.0 && g.slot_spin == 0.0 {
         sfx("place");
     }
@@ -1622,16 +1695,42 @@ fn project(
             }
         }
     }
+    let me_dead = me.map(|c| c.balloons <= 0).unwrap_or(false);
     if let Ok((_, mut tf)) = fixed.get_mut(g.rig) {
-        let lean = (i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
-            - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD)))
-            as f32;
-        // The chair leans into the drift and jitters with speed — the seat
-        // of the pants doing its share of the storytelling.
-        let (slip, spd) = me.map(|c| (wrap_pi(c.ang - c.mdir), c.speed)).unwrap_or((0.0, 0.0));
-        tf.rotation = Quat::from_rotation_z((lean * 0.05 + slip * 0.55).clamp(-0.5, 0.5));
-        let bob = (g.clock * 11.0).sin() * (spd.abs() / MAX_SPEED).min(1.0) * 3.0;
-        tf.translation.y = -238.0 + bob;
+        if me_dead {
+            // Knocked out: the chair goes over on its side. No ambiguity.
+            tf.rotation = Quat::from_rotation_z(1.35);
+            tf.translation.y = -272.0;
+        } else {
+            let lean = (i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
+                - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD)))
+                as f32;
+            // The chair leans into the drift and jitters with speed — the seat
+            // of the pants doing its share of the storytelling.
+            let (slip, spd) = me.map(|c| (wrap_pi(c.ang - c.mdir), c.speed)).unwrap_or((0.0, 0.0));
+            tf.rotation = Quat::from_rotation_z((lean * 0.05 + slip * 0.55).clamp(-0.5, 0.5));
+            let bob = (g.clock * 11.0).sin() * (spd.abs() / MAX_SPEED).min(1.0) * 3.0;
+            let hop = (std::f32::consts::PI * (1.0 - g.hop_t / 0.45).clamp(0.0, 1.0)).sin() * 46.0;
+            tf.translation.y = -238.0 + bob + if g.hop_t > 0.0 { hop } else { 0.0 };
+        }
+    }
+    if let Ok(mut sp) = fixed_sprites.get_mut(g.rig) {
+        let my_color = PLAYER_COLORS[g.my_seat % 12];
+        sp.color = if me_dead {
+            Color::srgb(0.35, 0.35, 0.4)
+        } else if me.map(|c| c.star_t > 0.0).unwrap_or(false) && flicker {
+            WHITE
+        } else {
+            my_color
+        };
+    }
+    // The drama veil: blackout blue, ghost/elimination red.
+    if let Ok(mut sp) = fixed_sprites.get_mut(g.veil) {
+        sp.color = if g.fx_t > 0.0 {
+            g.fx_color.with_alpha((g.fx_t / 0.6 * 0.38).min(0.38))
+        } else {
+            Color::NONE
+        };
     }
     // Skyline slides opposite the steering.
     for &(e, phase) in &g.sky {
@@ -1680,6 +1779,14 @@ fn hud(g: Res<Garage>, mut hud: Query<&mut Text2d, With<Hud>>) {
             g.result.clone()
         } else if g.start_t > 0.0 {
             format!("GET READY... {}", g.start_t.max(0.0).ceil() as i32)
+        } else if g.chairs.iter().find(|c| c.seat == g.my_seat).map(|c| c.balloons <= 0).unwrap_or(false) {
+            let alive = g.chairs.iter().filter(|c| c.balloons > 0).count();
+            format!(
+                "ELIMINATED - SPECTATING   {} STILL ROLLING   {}:{:02}",
+                alive,
+                (g.clock.max(0.0) as u32) / 60,
+                (g.clock.max(0.0) as u32) % 60
+            )
         } else {
             let me = g.chairs.iter().find(|c| c.seat == g.my_seat);
             let item = match me.and_then(|c| c.item) {
@@ -1716,6 +1823,7 @@ fn endgame(
     mut g: ResMut<Garage>,
     editor: Option<ResMut<ArenaEditor>>,
     mut final_score: ResMut<FinalScore>,
+    mut banner: ResMut<crate::EndBanner>,
     mut next: ResMut<NextState<Phase>>,
 ) {
     if let Some(t) = g.over.as_mut() {
@@ -1729,6 +1837,7 @@ fn endgame(
                 }
             }
             final_score.0 = g.score;
+            banner.0 = Some(if g.i_won { "THE FLOOR IS YOURS!".into() } else { "KNOCKED OUT".into() });
             next.set(Phase::GameOver);
         }
     }
