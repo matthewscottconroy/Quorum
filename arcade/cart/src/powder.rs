@@ -635,6 +635,9 @@ struct Arena {
     flames: Vec<f32>,                              // seconds of flame left per cell
     flame_owner: Vec<usize>,
     perks: Vec<Option<(Perk, Entity)>>,
+    /// When each perk was revealed: the blast that frees a perk must not
+    /// eat it in the same breath (grace window before flames can burn it).
+    perk_born: Vec<f32>,
     /// Editor-planted cargo: this crate ALWAYS drops this perk when it burns.
     planted: Vec<Option<Perk>>,
     clock: f32,
@@ -936,6 +939,7 @@ fn setup(
         flames: vec![0.0; n],
         flame_owner: vec![usize::MAX; n],
         perks: vec![None; n],
+        perk_born: vec![-10.0; n],
         clock: 0.0,
         spiral,
         spiral_next: 0,
@@ -1604,8 +1608,11 @@ fn bombs_and_flames(
             let j = Arena::idx(c, r);
             arena.flames[j] = FLAME_SECS;
             arena.flame_owner[j] = owner;
-            if let Some((_, e)) = arena.perks[j].take() {
-                commands.entity(e).despawn(); // flames eat loose perks
+            if arena.clock - arena.perk_born[j] > 0.6 {
+                if let Some((_, e)) = arena.perks[j].take() {
+                    commands.entity(e).despawn(); // flames eat LOOSE perks —
+                    // never the one this very blast just revealed
+                }
             }
             // Cross-shaped blast: a fat core, slim arms along the blast axis.
             let size = match dir {
@@ -1656,6 +1663,7 @@ fn bombs_and_flames(
                     let p = world(c, r);
                     let e = spawn_perk_sprite(&mut commands, &fx, perk_kind(perk), p);
                     arena.perks[j] = Some((perk, e));
+                    arena.perk_born[j] = arena.clock;
                 }
             }
             let dir = ((c - c0).signum(), (r - r0).signum());

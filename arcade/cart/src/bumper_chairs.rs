@@ -152,6 +152,7 @@ struct Shot {
     vel: Vec2,
     owner: usize,
     bounces: i32,
+    ttl: f32,
     homing: bool,
     ent: Entity,
 }
@@ -197,6 +198,7 @@ struct Garage {
     fx_color: Color,
     hop_t: f32,     // your EJECTOR arc
     i_won: bool,
+    gear: i8, // last engine-pitch step sent to the synth
 }
 
 #[derive(Component)]
@@ -676,6 +678,7 @@ fn setup(
         fx_color: WHITE,
         hop_t: 0.0,
         i_won: false,
+        gear: -1,
     });
     let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 30.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -709,13 +712,14 @@ fn fire_item(
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
             let ent = bill(commands, start, 0.30, 0.30, 0.40, false, MAGENTA);
-            g.shots.push(Shot { pos: start, vel: dir * 7.5, owner: seat, bounces: 0, homing: true, ent });
+            g.shots.push(Shot { pos: start, vel: dir * 7.5, owner: seat, bounces: 0, ttl: 5.0, homing: true, ent });
         }
         _ => {
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
             let ent = bill(commands, start, 0.26, 0.26, 0.40, false, CYAN);
-            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 1, homing: false, ent });
+            // Three ricochets, kart-shell style: the fear is the point.
+            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 3, ttl: 8.0, homing: false, ent });
         }
     }
     sfx(if kind == 1 { "drop" } else { "fire" });
@@ -923,7 +927,10 @@ fn drive(
                     popup(&mut commands, line, 18.0, color, Vec2::new(0.0, 150.0));
                     match kind {
                         2 => {
+                            // The shot hits NOW: full send, not a gentle ramp.
                             c.boost_t = 1.4;
+                            c.speed = MAX_SPEED * 1.5;
+                            c.mdir = c.ang; // grip snaps so the zoom goes where you look
                             sfx("power");
                         }
                         3 => fire_req = Some((i, 10)), // triple
@@ -947,14 +954,9 @@ fn drive(
         // Grip: the direction you MOVE chases the direction you FACE. At
         // speed there's less grip, so hard steering drifts — and yanking
         // the wheel flat-out spins you.
+        // Spins come from HITS, never from steering: hard cornering only
+        // drifts (the slip below), it never punishes you with a spin-out.
         let slip = wrap_pi(c.ang - c.mdir);
-        if slip.abs() > 1.05 && c.speed > max * 0.72 && c.spin_t <= 0.0 {
-            c.spin_t = 0.9;
-            c.speed *= 0.45;
-            if c.human {
-                sfx("buzz");
-            }
-        }
         let grip = 7.5 - 5.0 * (c.speed.abs() / MAX_SPEED).min(1.0);
         c.mdir += slip * (grip * dt).min(1.0);
         let dirv = Vec2::new(c.mdir.cos(), -c.mdir.sin());
@@ -991,7 +993,22 @@ fn drive(
     }
     if bumped && g.bump_t <= 0.0 {
         g.bump_t = 0.35;
-        sfx("drop"); // the thud of upholstery meeting masonry
+        sfx("thud"); // upholstery meets masonry
+    }
+    // The engine hums with your actual speed — hear yourself accelerate,
+    // coast down, and brake.
+    const ENGINE: [&str; 7] =
+        ["engine0", "engine1", "engine2", "engine3", "engine4", "engine5", "engine6"];
+    let my_speed = g
+        .chairs
+        .iter()
+        .find(|c| c.seat == g.my_seat)
+        .map(|c| c.speed.abs())
+        .unwrap_or(0.0);
+    let gear = ((my_speed / MAX_SPEED * 6.0).round() as i8).clamp(0, 6);
+    if gear != g.gear {
+        g.gear = gear;
+        sfx(ENGINE[gear as usize]);
     }
     if let Some((i, kind)) = fire_req {
         match kind {
@@ -1149,7 +1166,11 @@ fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
             c.think = 0.8;
             let kind = c.item.take().unwrap();
             match kind {
-                2 => c.boost_t = 1.2,
+                2 => {
+                    c.boost_t = 1.2;
+                    c.speed = MAX_SPEED * 1.4;
+                    c.mdir = c.ang;
+                }
                 5 => c.star_t = 4.0,
                 k => fire_req.push((i, k)),
             }
@@ -1183,6 +1204,11 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
         g.chairs.iter().map(|c| (c.seat, c.pos, c.balloons)).collect();
     for si in 0..g.shots.len() {
         let s = &mut g.shots[si];
+        s.ttl -= dt;
+        if s.ttl <= 0.0 {
+            dead_shots.push(si);
+            continue;
+        }
         if s.homing {
             if let Some((_, tpos, _)) = chair_spots
                 .iter()
@@ -1251,6 +1277,7 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
         sfx("boom");
         if c.seat == my {
             popup(commands, "POP! BALLOON GONE", 20.0, RED, Vec2::new(0.0, -100.0));
+            sfx("death"); // unmistakably YOU got hit
             stat("balloons_lost", 1);
         }
     }
@@ -1314,6 +1341,7 @@ fn finish(commands: &mut Commands, g: &mut Garage, winner: Option<usize>) {
         None => "EVERYONE'S ON THE CARPET.".into(),
     };
     popup(commands, &g.result.clone(), 28.0, GREEN, Vec2::new(0.0, 40.0));
+    sfx("engine_off");
     g.over = Some(Timer::from_seconds(2.6, TimerMode::Once));
     sfx(if winner == Some(my) { "win" } else { "over" });
 }
@@ -1633,12 +1661,13 @@ fn project(
     }
     for (i, bx) in g.boxes.iter().enumerate() {
         if let Ok((mut b, _, _, _)) = bills.get_mut(bx.ent) {
+            // Item crates cycle the rainbow, kart-item-box style: nothing
+            // else in the garage is ever this colorful.
             b.base = if bx.up_in > 0.0 {
                 AMBER.with_alpha(0.10)
-            } else if flicker {
-                Color::srgb(1.0, 0.9, 0.45) // the crate glints, kart-item style
             } else {
-                AMBER
+                let hue = (g.clock * 160.0 + i as f32 * 47.0).rem_euclid(360.0);
+                Color::hsl(hue, 0.85, 0.62)
             };
             b.alt = 0.25 + 0.10 * (g.clock * 3.0 + i as f32).sin();
         }

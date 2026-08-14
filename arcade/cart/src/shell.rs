@@ -4,6 +4,8 @@
 
 use std::sync::Mutex;
 
+use bevy::input::gamepad::{Gamepad, GamepadButton};
+use bevy::input::InputSystem;
 use bevy::prelude::*;
 use serde::Deserialize;
 
@@ -230,6 +232,81 @@ struct ShellTag;
 struct Blink(Timer);
 
 /// Attract/game-over furniture and phase transitions.
+/// Gamepads become keyboards: every cabinet already speaks arrows/WASD/
+/// Space/Enter, so the shell translates pads into those keys. One pad
+/// drives BOTH key clusters (any solo cabinet just works); with two pads,
+/// pad 1 takes the P1 cluster (WASD/Space/E) and pad 2 the P2 cluster
+/// (arrows/Enter/R-Shift) — local versus, two chairs, no keyboard sharing.
+/// Extra buttons: East=E (utility), North=R (roll), West=B (buy).
+fn gamepad_keys(
+    pads: Query<(Entity, &Gamepad)>,
+    mut order: Local<Vec<Entity>>,
+    mut injected: Local<Vec<KeyCode>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+) {
+    for (e, _) in pads.iter() {
+        if !order.contains(&e) {
+            order.push(e);
+        }
+    }
+    order.retain(|e| pads.get(*e).is_ok());
+    let mut want: Vec<KeyCode> = Vec::new();
+    let solo = order.len() <= 1;
+    for (idx, e) in order.iter().enumerate() {
+        let Ok((_, pad)) = pads.get(*e) else { continue };
+        let stick = pad.left_stick();
+        let up = pad.pressed(GamepadButton::DPadUp) || stick.y > 0.5;
+        let down = pad.pressed(GamepadButton::DPadDown) || stick.y < -0.5;
+        let left = pad.pressed(GamepadButton::DPadLeft) || stick.x < -0.5;
+        let right = pad.pressed(GamepadButton::DPadRight) || stick.x > 0.5;
+        let south = pad.pressed(GamepadButton::South);
+        let east = pad.pressed(GamepadButton::East);
+        let north = pad.pressed(GamepadButton::North);
+        let west = pad.pressed(GamepadButton::West);
+        let start = pad.pressed(GamepadButton::Start);
+        let mut push = |on: bool, k: KeyCode| {
+            if on && !want.contains(&k) {
+                want.push(k);
+            }
+        };
+        if idx == 0 {
+            push(up, KeyCode::KeyW);
+            push(down, KeyCode::KeyS);
+            push(left, KeyCode::KeyA);
+            push(right, KeyCode::KeyD);
+            push(south, KeyCode::Space);
+            push(east, KeyCode::KeyE);
+            push(north, KeyCode::KeyR);
+            push(west, KeyCode::KeyB);
+            push(start, KeyCode::Enter);
+            if solo {
+                push(up, KeyCode::ArrowUp);
+                push(down, KeyCode::ArrowDown);
+                push(left, KeyCode::ArrowLeft);
+                push(right, KeyCode::ArrowRight);
+            }
+        } else {
+            push(up, KeyCode::ArrowUp);
+            push(down, KeyCode::ArrowDown);
+            push(left, KeyCode::ArrowLeft);
+            push(right, KeyCode::ArrowRight);
+            push(south, KeyCode::Enter);
+            push(east, KeyCode::ShiftRight);
+        }
+    }
+    // Apply the delta between what we injected last frame and now.
+    let released: Vec<KeyCode> = injected.iter().copied().filter(|k| !want.contains(k)).collect();
+    for k in released {
+        keys.release(k);
+    }
+    for k in &want {
+        if !keys.pressed(*k) {
+            keys.press(*k);
+        }
+    }
+    *injected = want;
+}
+
 pub struct ShellPlugin {
     pub title: &'static str,
     pub blurb: &'static [&'static str],
@@ -248,6 +325,7 @@ impl Plugin for ShellPlugin {
             .add_systems(Startup, boot)
             .add_systems(OnEnter(Phase::Attract), attract_in)
             .add_systems(OnExit(Phase::Attract), shell_out)
+            .add_systems(PreUpdate, gamepad_keys.after(InputSystem))
             .add_systems(OnEnter(Phase::GameOver), (game_over_in, clear_pause))
             .add_systems(OnEnter(Phase::Playing), (clear_pause, round_begin))
             .add_systems(OnExit(Phase::GameOver), (shell_out, clear_game_entities))

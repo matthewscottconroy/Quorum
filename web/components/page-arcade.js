@@ -261,6 +261,35 @@ const SFX = {
   win:     () => { for (let i = 0; i < 5; i++) _tone(523 * Math.pow(1.2, i), 523 * Math.pow(1.2, i), 0.09, i * 0.1); },
   chip:    () => _tone(170 + Math.random() * 50, 130, 0.04, 0, 0.05),
   chute:   () => _tone(880, 320, 0.22, 0, 0.035, 'triangle'),
+  thud:    () => { _tone(90, 55, 0.10, 0, 0.09); _noise(0.06, 0, 0.05); },
+};
+// The engine: one persistent sawtooth whose pitch follows the cart's speed
+// steps (engine0..engine6); engine_off fades it out.
+let _engOsc = null, _engGain = null;
+function _engine(step) {
+  const ctx = _ctx();
+  if (!ctx) return;
+  if (!_engOsc) {
+    _engOsc = ctx.createOscillator();
+    _engOsc.type = 'sawtooth';
+    _engGain = ctx.createGain();
+    _engGain.gain.value = 0;
+    _engOsc.connect(_engGain).connect(ctx.destination);
+    _engOsc.start();
+  }
+  const t = ctx.currentTime;
+  _engOsc.frequency.cancelScheduledValues(t);
+  _engOsc.frequency.linearRampToValueAtTime(42 + step * 26, t + 0.12);
+  _engGain.gain.cancelScheduledValues(t);
+  _engGain.gain.linearRampToValueAtTime(step === 0 ? 0.012 : 0.03, t + 0.1);
+}
+for (let s = 0; s <= 6; s++) SFX['engine' + s] = () => _engine(s);
+SFX.engine_off = () => {
+  if (_engGain) {
+    const t = _actx.currentTime;
+    _engGain.gain.cancelScheduledValues(t);
+    _engGain.gain.linearRampToValueAtTime(0, t + 0.25);
+  }
 };
 window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
 

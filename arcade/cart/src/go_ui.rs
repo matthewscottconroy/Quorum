@@ -86,7 +86,22 @@ impl Plugin for GoPlugin {
     }
 }
 
-fn setup(mut commands: Commands, config: Res<CabinetConfig>, net: Res<NetMode>) {
+fn setup(
+    mut commands: Commands,
+    config: Res<CabinetConfig>,
+    net: Res<NetMode>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    commands.insert_resource(GoFx {
+        disc: meshes.add(Circle::new(CELL * 0.36)),
+        mats: [
+            materials.add(stone_color(Stone::Black)),
+            materials.add(stone_color(Stone::White)),
+            materials.add(stone_color(Stone::Black).with_alpha(0.3)),
+            materials.add(stone_color(Stone::White).with_alpha(0.3)),
+        ],
+    });
     commands.insert_resource(Table {
         board: GoBoard::new(),
         flash: None,
@@ -131,6 +146,13 @@ fn grid(mut gizmos: Gizmos, table: Res<Table>) {
     }
 }
 
+/// Round stones: one circle mesh, four materials (two seats x live/ghost).
+#[derive(Resource)]
+struct GoFx {
+    disc: Handle<Mesh>,
+    mats: [Handle<ColorMaterial>; 4], // black, white, black-ghost, white-ghost
+}
+
 fn stone_color(s: Stone) -> Color {
     match s {
         Stone::Black => GREEN,
@@ -138,20 +160,30 @@ fn stone_color(s: Stone) -> Color {
     }
 }
 
-fn repaint(commands: &mut Commands, table: &Table, stones: &Query<Entity, With<StoneSprite>>) {
+fn repaint(
+    commands: &mut Commands,
+    fx: &GoFx,
+    table: &Table,
+    stones: &Query<Entity, With<StoneSprite>>,
+) {
     for e in stones.iter() {
         commands.entity(e).despawn();
     }
     for pos in 0..SIZE * SIZE {
         if let Some(s) = table.board.cells[pos] {
             let p = point(pos % SIZE, pos / SIZE);
-            // Square stones: honest 8-bit Go. Marked-dead stones go ghostly.
-            let mut color = stone_color(s);
-            if table.marking && table.dead[pos] {
-                color = color.with_alpha(0.3);
-            }
+            // Round stones, as the goban gods intended. Marked-dead stones
+            // go ghostly.
+            let ghost = table.marking && table.dead[pos];
+            let mat = match (s, ghost) {
+                (Stone::Black, false) => fx.mats[0].clone(),
+                (Stone::White, false) => fx.mats[1].clone(),
+                (Stone::Black, true) => fx.mats[2].clone(),
+                (Stone::White, true) => fx.mats[3].clone(),
+            };
             commands.spawn((
-                Sprite { color, custom_size: Some(Vec2::splat(CELL * 0.62)), ..default() },
+                Mesh2d(fx.disc.clone()),
+                MeshMaterial2d(mat),
                 Transform::from_xyz(p.x, p.y, 3.0),
                 StoneSprite,
                 GameTag,
@@ -209,6 +241,7 @@ fn clicked_point(
 fn input(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    fx: Res<GoFx>,
     time: Res<Time>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
@@ -219,7 +252,7 @@ fn input(
 ) {
     if table.dirty {
         table.dirty = false;
-        repaint(&mut commands, &table, &stones);
+        repaint(&mut commands, &fx, &table, &stones);
     }
     if table.over_wait.is_some() {
         return;
@@ -336,7 +369,7 @@ fn input(
         if undone {
             sfx("tick");
             stat("takebacks", 1);
-            repaint(&mut commands, &table, &stones);
+            repaint(&mut commands, &fx, &table, &stones);
         }
         return;
     }
@@ -354,7 +387,7 @@ fn input(
             if net.0.is_some() {
                 send_wire("mv", pos);
             }
-            repaint(&mut commands, &table, &stones);
+            repaint(&mut commands, &fx, &table, &stones);
         }
         Err(e) => {
             let why = match e {
