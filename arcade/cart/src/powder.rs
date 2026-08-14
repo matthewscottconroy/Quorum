@@ -189,6 +189,9 @@ const ROWS: i32 = 13;
 const CELL: f32 = 34.0;
 const Y_OFF: f32 = -34.0; // shift the arena down to leave HUD room
 const FUSE: f32 = 2.4;
+/// Remote kegs idle at this sentinel fuse until their owner presses the
+/// button (E / R-SHIFT); the wire caps at u16 centiseconds, hence 500.
+const REMOTE_FUSE: f32 = 500.0;
 const FLAME_SECS: f32 = 0.45;
 const SUDDEN_DEATH_AT: f32 = 75.0;
 
@@ -273,9 +276,11 @@ fn perk_color_by_kind(kind: u8) -> Color {
         1 => Color::srgb(0.3, 0.6, 1.0),
         2 => Color::srgb(0.55, 1.0, 0.3),
         3 => WHITE,
-        4 => Color::srgb(1.0, 0.62, 0.2),
+        4 => Color::srgb(1.0, 0.84, 0.2), // gold, as in flame
         5 => Color::srgb(0.35, 0.9, 1.0),
-        _ => Color::srgb(0.75, 0.5, 1.0),
+        6 => Color::srgb(0.75, 0.5, 1.0),
+        7 => Color::srgb(0.95, 0.42, 0.15), // the glove
+        _ => Color::srgb(0.2, 0.95, 0.9),   // remote
     }
 }
 
@@ -288,6 +293,8 @@ fn perk_kind(p: Perk) -> u8 {
         Perk::Pierce => 4,
         Perk::Vest => 5,
         Perk::Phase => 6,
+        Perk::Punch => 7,
+        Perk::Remote => 8,
     }
 }
 
@@ -297,13 +304,15 @@ fn perk_name(p: Perk) -> &'static str {
         Perk::Bombs => "KEGS",
         Perk::Speed => "SPEED",
         Perk::Kick => "KICK",
-        Perk::Pierce => "PIERCE",
+        Perk::Pierce => "GOLD FLAME",
         Perk::Vest => "VEST",
         Perk::Phase => "PHASE",
+        Perk::Punch => "GLOVE",
+        Perk::Remote => "REMOTE",
     }
 }
 
-const ALL_PERKS: [Perk; 7] = [
+const ALL_PERKS: [Perk; 9] = [
     Perk::Range,
     Perk::Bombs,
     Perk::Speed,
@@ -311,6 +320,8 @@ const ALL_PERKS: [Perk; 7] = [
     Perk::Pierce,
     Perk::Vest,
     Perk::Phase,
+    Perk::Punch,
+    Perk::Remote,
 ];
 
 /// A planted crate's cargo, as saved in a cellar document.
@@ -323,6 +334,8 @@ fn perk_char(p: Perk) -> char {
         Perk::Pierce => 'P',
         Perk::Vest => 'V',
         Perk::Phase => 'G',
+        Perk::Punch => 'U',
+        Perk::Remote => 'M',
     }
 }
 
@@ -335,6 +348,8 @@ fn char_perk(c: char) -> Option<Perk> {
         'P' => Perk::Pierce,
         'V' => Perk::Vest,
         'G' => Perk::Phase,
+        'U' => Perk::Punch,
+        'M' => Perk::Remote,
         _ => return None,
     })
 }
@@ -349,11 +364,11 @@ struct PowderFx {
     keg_mat: Handle<ColorMaterial>,
     keg_hot: Handle<ColorMaterial>,
     dark_mat: Handle<ColorMaterial>,
-    icon_mats: [Handle<ColorMaterial>; 7],
+    icon_mats: [Handle<ColorMaterial>; 9],
 }
 
 /// A round keg with a lit fuse — spawned identically on host and guest.
-fn spawn_keg(commands: &mut Commands, fx: &PowderFx, p: Vec2) -> Entity {
+fn spawn_keg(commands: &mut Commands, fx: &PowderFx, p: Vec2, remote: bool) -> Entity {
     commands
         .spawn((
             Mesh2d(fx.keg.clone()),
@@ -363,6 +378,22 @@ fn spawn_keg(commands: &mut Commands, fx: &PowderFx, p: Vec2) -> Entity {
             GameTag,
         ))
         .with_children(|kid| {
+            if remote {
+                // A remote keg wears its antenna and a teal shell so nobody
+                // mistakes it for one on a timer.
+                kid.spawn((
+                    Sprite { color: Color::srgba(0.2, 0.95, 0.9, 0.35), custom_size: Some(Vec2::splat(20.0)), ..default() },
+                    Transform::from_xyz(0.0, 0.0, 0.15),
+                ));
+                kid.spawn((
+                    Sprite { color: Color::srgb(0.2, 0.95, 0.9), custom_size: Some(Vec2::new(2.0, 12.0)), ..default() },
+                    Transform::from_xyz(0.0, 16.0, 0.2),
+                ));
+                kid.spawn((
+                    Sprite { color: WHITE, custom_size: Some(Vec2::splat(4.0)), ..default() },
+                    Transform::from_xyz(0.0, 23.0, 0.2),
+                ));
+            }
             // Barrel band, fuse cord, and the spark on top.
             kid.spawn((
                 Sprite { color: Color::srgb(0.42, 0.42, 0.52), custom_size: Some(Vec2::new(18.0, 3.0)), ..default() },
@@ -462,6 +493,20 @@ fn spawn_perk_sprite(commands: &mut Commands, fx: &PowderFx, kind: u8, p: Vec2) 
                         Transform::from_xyz(0.0, 0.0, 0.15),
                     ));
                     rect(kid, 0.0, 6.5, 3.0, 3.0, std::f32::consts::FRAC_PI_4);
+                }
+                7 => {
+                    // GLOVE: a fist ready to punt.
+                    rect(kid, 2.5, 1.5, 9.5, 8.0, 0.0);
+                    rect(kid, -3.0, -0.5, 5.0, 3.5, 0.0);
+                    rect(kid, -5.5, -5.0, 8.0, 2.2, 0.5);
+                    rect(kid, -1.5, -6.5, 8.0, 2.2, -0.5);
+                }
+                8 => {
+                    // REMOTE: a keg with an antenna and signal ticks.
+                    dot(kid, 0.0, -3.0);
+                    rect(kid, 0.0, 4.0, 2.0, 8.0, 0.0);
+                    rect(kid, 4.5, 7.5, 5.0, 2.0, -0.6);
+                    rect(kid, -4.5, 7.5, 5.0, 2.0, 0.6);
                 }
                 _ => {
                     // PHASE: the little ghost that walks through crates.
@@ -576,9 +621,11 @@ enum Perk {
     Bombs,
     Speed,
     Kick,   // walk into a keg to send it sliding
-    Pierce, // your blasts drill through crates instead of stopping
+    Pierce, // GOLD FLAME: blasts drill through every crate (rare)
     Vest,   // survive one blast (consumed, with a moment of cover)
     Phase,  // walk through crates like they're fog
+    Punch,  // the glove: E / R-SHIFT punts the keg you face over walls
+    Remote, // your kegs wait for the button (E / R-SHIFT detonates)
 }
 
 #[derive(Resource)]
@@ -652,6 +699,10 @@ struct Fighter {
     pierce: bool,
     vest: bool,
     phase: bool,
+    punch: bool,
+    det: bool,         // REMOTE perk: kegs wait for the button
+    facing: IVec2,     // last direction moved: where the glove punches
+    wants_util: bool,  // E / R-SHIFT: punch the faced keg, or detonate
     /// Post-vest mercy window: flames can't touch a blinking fighter.
     iframes: f32,
     think: Timer,
@@ -765,7 +816,7 @@ fn setup(
         keg_mat: materials.add(Color::srgb(0.22, 0.22, 0.28)),
         keg_hot: materials.add(Color::srgb(0.75, 0.22, 0.18)),
         dark_mat: materials.add(Color::srgb(0.08, 0.08, 0.14)),
-        icon_mats: [0u8, 1, 2, 3, 4, 5, 6].map(|k| materials.add(perk_color_by_kind(k))),
+        icon_mats: [0u8, 1, 2, 3, 4, 5, 6, 7, 8].map(|k| materials.add(perk_color_by_kind(k))),
     });
     let editor_mode = crate::shell::take_editor_pending();
     let players = config.players.clamp(2, 12) as usize;
@@ -922,7 +973,7 @@ fn setup(
                     want: IVec2::ZERO,
                     progress: 0.0,
                     speed: 3.4,
-                    range: 2,
+                    range: 1, // everyone starts with a polite little blast
                     max_bombs: 1,
                     live_bombs: 0,
                     alive: true,
@@ -932,6 +983,10 @@ fn setup(
                     pierce: false,
                     vest: false,
                     phase: false,
+                    punch: false,
+                    det: false,
+                    facing: IVec2::new(0, 1),
+                    wants_util: false,
                     iframes: 0.0,
                     think: Timer::from_seconds(0.12 + 0.013 * seat as f32, TimerMode::Repeating),
                 },
@@ -991,6 +1046,11 @@ fn human_input(keys: Res<ButtonInput<KeyCode>>, net: Res<NetMode>, mut fighters:
         if bomb_hit {
             f.wants_bomb = true;
         }
+        let util_hit = (p1 && keys.just_pressed(KeyCode::KeyE))
+            || (p2 && keys.just_pressed(KeyCode::ShiftRight));
+        if util_hit {
+            f.wants_util = true;
+        }
     }
 }
 
@@ -1010,7 +1070,8 @@ fn danger_map(arena: &Arena, soon: f32) -> Vec<u8> {
         if *fuse > soon {
             continue;
         }
-        let grade = if *fuse < 0.55 { 2 } else { 1 };
+        // Anything blowing within a stride is lethal, not merely 'soon'.
+        let grade = if *fuse < 0.9 { 2 } else { 1 };
         danger[i] = danger[i].max(grade);
         for (j, _) in blast_cells(&arena.tiles, i, *range, *pierce) {
             danger[j] = danger[j].max(grade);
@@ -1086,8 +1147,20 @@ fn bot_brains(
         if f.human.is_some() || f.remote || !f.alive {
             continue;
         }
-        // Reflex, every frame: never walk into a cell that kills right now.
-        if f.want != IVec2::ZERO {
+        // Reflex, every frame: never walk into a cell that kills right
+        // now — and if you're already leaning INTO one mid-step, reverse
+        // out instead of freezing with your nose in the fire.
+        if f.dir != IVec2::ZERO && f.progress > 0.05 {
+            let ahead = f.tile + f.dir;
+            if ahead.x >= 0
+                && ahead.x < COLS
+                && ahead.y >= 0
+                && ahead.y < ROWS
+                && danger[Arena::idx(ahead.x, ahead.y)] == 2
+            {
+                f.want = -f.dir;
+            }
+        } else if f.want != IVec2::ZERO {
             let t = f.tile + f.want;
             if t.x >= 0
                 && t.x < COLS
@@ -1098,10 +1171,40 @@ fn bot_brains(
                 f.want = IVec2::ZERO;
             }
         }
+        let here = Arena::idx(f.tile.x, f.tile.y);
+        // Standing on trouble with no plan? Don't wait for the think tick.
+        if danger[here] > 0 && f.want == IVec2::ZERO {
+            if let Some(step) = bfs_step(&arena, &danger, f.tile, 0, |i| danger[i] == 0)
+                .or_else(|| bfs_step(&arena, &danger, f.tile, 1, |i| danger[i] == 0))
+            {
+                f.want = step;
+            }
+        }
         if !f.think.tick(time.delta()).just_finished() {
             continue;
         }
-        let here = Arena::idx(f.tile.x, f.tile.y);
+        // The remote button: fire when a rival or a crate sits in a waiting
+        // keg's blast and we ourselves do not.
+        if f.det {
+            for (j, b) in arena.bombs.iter().enumerate() {
+                let Some((_, fu, range, owner, pierce)) = b else { continue };
+                if *owner != f.seat || *fu < 100.0 {
+                    continue;
+                }
+                let blast = blast_cells(&arena.tiles, j, *range, *pierce);
+                let me_in = j == here || blast.iter().any(|&(c, _)| c == here);
+                let rival_in = blast.iter().any(|&(cell, _)| {
+                    positions.iter().any(|&(s, t, alive)| {
+                        alive && s != f.seat && Arena::idx(t.x, t.y) == cell
+                    })
+                });
+                let crate_in = blast.iter().any(|&(_, is_crate)| is_crate);
+                if !me_in && (rival_in || crate_in) {
+                    f.wants_util = true;
+                    break;
+                }
+            }
+        }
 
         // 1. In danger: sprint out. Prefer a route through clean cells;
         // only cross not-yet-burning blast lanes when truly cornered, and
@@ -1282,8 +1385,26 @@ fn movement(
             if f.dir == IVec2::ZERO {
                 if f.want != IVec2::ZERO && open_for(&arena, f.phase, f.tile.x + f.want.x, f.tile.y + f.want.y) {
                     f.dir = f.want;
+                    f.facing = f.want;
                 } else {
                     break;
+                }
+            }
+            // Let go of the keys and you stop RIGHT HERE — even between
+            // cells. No gliding to the next center.
+            if f.want == IVec2::ZERO {
+                break;
+            }
+            // About-face mid-step: swap ends and mirror the progress, so
+            // reversing feels instant (unless a keg now blocks the way back).
+            if f.want == -f.dir && f.progress > f32::EPSILON {
+                let back = f.tile;
+                if arena.bombs[Arena::idx(back.x, back.y)].is_none() {
+                    let d = f.dir;
+                    f.tile += d;
+                    f.dir = -d;
+                    f.facing = -d;
+                    f.progress = 1.0 - f.progress;
                 }
             }
             let step = remaining.min(1.0 - f.progress);
@@ -1313,6 +1434,7 @@ fn movement(
                 let turn_ok = f.want != IVec2::ZERO && open_for(&arena, f.phase, f.tile.x + f.want.x, f.tile.y + f.want.y);
                 if turn_ok {
                     f.dir = f.want;
+                    f.facing = f.want;
                 } else if f.want == IVec2::ZERO || !open_for(&arena, f.phase, f.tile.x + f.dir.x, f.tile.y + f.dir.y) {
                     // No key held: stop at this tile center. (Holding a
                     // blocked direction keeps you sliding the way you were
@@ -1343,12 +1465,80 @@ fn bombs_and_flames(
     mut fighters: Query<(&mut Fighter, &mut Sprite), (Without<TileSprite>, Without<FlameSprite>)>,
     mut tiles_q: Query<(&TileSprite, &mut Sprite), Without<FlameSprite>>,
     mut flames_q: Query<(Entity, &mut FlameSprite, &mut Sprite), (Without<Fighter>, Without<TileSprite>)>,
+    mut bomb_tfs: Query<&mut Transform, (With<BombSprite>, Without<Fighter>)>,
 ) {
     if net_guest(&net) {
         return;
     }
     let dt = time.delta_secs();
     arena.clock += dt;
+
+    // The utility button: the GLOVE punts the keg you face over anything,
+    // and REMOTE detonates your oldest waiting keg.
+    let occupied_now: Vec<IVec2> = fighters.iter().filter(|(f, _)| f.alive).map(|(f, _)| f.tile).collect();
+    for (mut f, _) in &mut fighters {
+        if !f.alive || !f.wants_util {
+            f.wants_util = false;
+            continue;
+        }
+        f.wants_util = false;
+        let mut done = false;
+        if f.punch {
+            let target = f.tile + f.facing;
+            if target.x >= 0 && target.x < COLS && target.y >= 0 && target.y < ROWS {
+                let j = Arena::idx(target.x, target.y);
+                if arena.bombs[j].is_some() {
+                    // Fly three cells, then keep going until an open cell.
+                    let mut land: Option<usize> = None;
+                    for k in 3..(COLS.max(ROWS)) {
+                        let c = target + f.facing * (k - 1);
+                        if c.x < 1 || c.x >= COLS - 1 || c.y < 1 || c.y >= ROWS - 1 {
+                            break;
+                        }
+                        let lj = Arena::idx(c.x, c.y);
+                        if arena.tiles[lj] == Tile::Empty
+                            && arena.bombs[lj].is_none()
+                            && arena.flames[lj] <= 0.0
+                            && !occupied_now.contains(&c)
+                        {
+                            land = Some(lj);
+                            break;
+                        }
+                    }
+                    if let Some(lj) = land {
+                        let bomb = arena.bombs[j].take();
+                        if let Some((e, fu, r, o, pi)) = bomb {
+                            let (c, rr) = ((lj as i32) % COLS, (lj as i32) / COLS);
+                            let p = world(c, rr);
+                            if let Ok(mut tf) = bomb_tfs.get_mut(e) {
+                                tf.translation.x = p.x;
+                                tf.translation.y = p.y;
+                            }
+                            arena.bombs[lj] = Some((e, fu, r, o, pi));
+                            if f.human.is_some() {
+                                stat("kegs_kicked", 1);
+                            }
+                            sfx("drop");
+                            done = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !done && f.det {
+            let seat = f.seat;
+            if let Some(slot) = arena
+                .bombs
+                .iter_mut()
+                .find(|b| matches!(b, Some((_, fu, _, o, _)) if *o == seat && *fu > 100.0))
+            {
+                if let Some((_, fu, _, _, _)) = slot {
+                    *fu = 0.02; // the button does what the button says
+                }
+                sfx("fire");
+            }
+        }
+    }
 
     // Place requested bombs.
     for (mut f, _) in &mut fighters {
@@ -1363,8 +1553,9 @@ fn bombs_and_flames(
                 stat("bombs_laid", 1);
             }
             let p = world(f.tile.x, f.tile.y);
-            let e = spawn_keg(&mut commands, &fx, p);
-            arena.bombs[i] = Some((e, FUSE, f.range, f.seat, f.pierce));
+            let e = spawn_keg(&mut commands, &fx, p, f.det);
+            let fuse = if f.det { REMOTE_FUSE } else { FUSE };
+            arena.bombs[i] = Some((e, fuse, f.range, f.seat, f.pierce));
             f.live_bombs += 1;
             sfx("place");
         }
@@ -1444,15 +1635,19 @@ fn bombs_and_flames(
                 let planted = arena.planted[j].take();
                 let rolled = if planted.is_some() {
                     planted
-                } else if rng.chance(0.34) {
-                    Some(match rng.range(13) {
-                        0..=2 => Perk::Range,
-                        3..=5 => Perk::Bombs,
-                        6 | 7 => Perk::Speed,
-                        8 => Perk::Kick,
-                        9 => Perk::Pierce,
-                        10 | 11 => Perk::Vest,
-                        _ => Perk::Phase,
+                } else if rng.chance(0.42) {
+                    // The classic pantry: flames and kegs are the bread and
+                    // butter, the GOLD FLAME is the one you tell people about.
+                    Some(match rng.range(20) {
+                        0..=4 => Perk::Range,
+                        5..=8 => Perk::Bombs,
+                        9..=11 => Perk::Speed,
+                        12 | 13 => Perk::Kick,
+                        14 | 15 => Perk::Punch,
+                        16 => Perk::Vest,
+                        17 => Perk::Phase,
+                        18 => Perk::Remote,
+                        _ => Perk::Pierce, // 1-in-20 gold
                     })
                 } else {
                     None
@@ -1588,6 +1783,8 @@ fn pickups(
                 Perk::Pierce => f.pierce = true,
                 Perk::Vest => f.vest = true,
                 Perk::Phase => f.phase = true,
+                Perk::Punch => f.punch = true,
+                Perk::Remote => f.det = true,
             }
             sfx("power");
         }
@@ -2171,14 +2368,14 @@ fn guest_apply(
     for &(cell, fuse) in &st.b {
         fx.fuses.insert(cell as usize, fuse as f32 / 100.0);
     }
-    for &(cell, _) in &st.b {
+    for &(cell, fuse) in &st.b {
         let cell = cell as usize;
         if !fx.bombs.contains_key(&cell) {
             sfx("place");
         }
         fx.bombs.entry(cell).or_insert_with(|| {
             let p = world((cell as i32) % COLS, (cell as i32) / COLS);
-            spawn_keg(&mut commands, &pfx, p)
+            spawn_keg(&mut commands, &pfx, p, fuse > 40000)
         });
     }
     let want_flames: std::collections::HashSet<usize> = st.fl.iter().map(|&c| c as usize).collect();

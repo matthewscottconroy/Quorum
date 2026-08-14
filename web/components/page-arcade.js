@@ -44,8 +44,8 @@ const CABINETS = [
     players: '1P', controls: '← → move · ↑/X rotate · ↓ soft drop · Space hard drop · C holds a piece · Esc pause. The dim outline is where it lands.',
   },
   {
-    id: 'powder-keg', name: 'POWDER KEG', tag: 'Kegs, fuses, and up to a dozen rivals in the cellar.',
-    players: 'up to 12 — local + bots, or online', controls: 'TO START: pick PLAYERS (bots fill the rest) and HUMANS, then INSERT CREDIT. P1: WASD + Space · P2 (local): arrows + Enter · online: either set · Esc pause (local). Perks from crates — RED longer blast · BLUE extra keg · GREEN faster · WHITE kicks kegs · ORANGE blasts pierce crates · CYAN vest survives one hit · PURPLE walks through crates.',
+    id: 'powder-keg', name: 'POWDER KEG', tag: 'Office demolition, one cellar at a time.',
+    players: 'up to 12 — local + bots, or online', controls: 'P1: WASD moves (you stop EXACTLY where you let go — and reversing is instant) · Space lays a keg · E is the utility button. P2: arrows · Enter · Right-Shift. Everyone starts with a 1-cell sneeze of a blast — the cellar provides: FLAME (+range) · KEGS (+bombs) · SKATES (+speed) · KICK (walk into a keg to slide it) · GLOVE (E punts the keg you face clean over walls) · REMOTE (teal antenna kegs wait for E — they only blow on the button) · VEST (survive one hit) · PHASE (walk through crates) · and the rare GOLD FLAME that burns through everything. Last one standing; after 75s the walls close in.'
   },
   {
     id: 'hexfection', name: 'HEXFECTION', tag: 'Spread across the hex dish. Convert your neighbours.',
