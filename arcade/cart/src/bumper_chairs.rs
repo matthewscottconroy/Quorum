@@ -166,7 +166,8 @@ struct Shot {
     bounces: i32,
     ttl: f32,
     homing: bool,
-    ent: Entity,
+    ent: Entity,  // the puck body
+    rim: Entity,  // the glowing top rim
 }
 
 struct Puddle {
@@ -437,37 +438,8 @@ fn setup(
             let center = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
             match ch {
                 '#' => {
-                    // Waist-high bumpers, kart-battle style — built from
-                    // FACES now: one quad per side that borders open floor,
-                    // plus a flat cap on top. Real surfaces, no billboards.
-                    let tone = if (x + y) % 2 == 0 {
-                        Color::srgb(0.85, 0.66, 0.16)
-                    } else {
-                        Color::srgb(0.34, 0.32, 0.28)
-                    };
-                    let (xf, yf) = (x as f32, y as f32);
-                    let sides: [(i32, i32, Vec2, Vec2, f32); 4] = [
-                        (0, -1, Vec2::new(xf, yf), Vec2::new(xf + 1.0, yf), 1.0),
-                        (0, 1, Vec2::new(xf, yf + 1.0), Vec2::new(xf + 1.0, yf + 1.0), 1.0),
-                        (-1, 0, Vec2::new(xf, yf), Vec2::new(xf, yf + 1.0), 0.82),
-                        (1, 0, Vec2::new(xf + 1.0, yf), Vec2::new(xf + 1.0, yf + 1.0), 0.82),
-                    ];
-                    for (dx, dy, a, b, shade) in sides {
-                        if cell_at(&rows, x as i32 + dx, y as i32 + dy) != '#' {
-                            let s = tone.to_srgba();
-                            let face = Color::srgb(s.red * shade, s.green * shade, s.blue * shade);
-                            commands.spawn((
-                                Sprite { color: face, custom_size: Some(Vec2::splat(2.0)), ..default() },
-                                Transform::from_xyz(0.0, 0.0, 1.0),
-                                Visibility::Hidden,
-                                WallFace { a, b, base: face },
-                                GameTag,
-                            ));
-                        }
-                    }
-                    let s = tone.to_srgba();
-                    let cap = Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55);
-                    bill(&mut commands, center, 1.02, 1.0, WALL_H, true, cap);
+                    // Faces and caps are built AFTER the scan, merged into
+                    // long runs — see below. Nothing per-cell here.
                 }
                 'B' => {
                     let ent = bill(&mut commands, center, 0.55, 0.55, 0.30, false, AMBER);
@@ -509,6 +481,111 @@ fn setup(
                     FixedView,
                     GameTag,
                 ));
+            }
+        }
+    }
+    // ── merged wall geometry ────────────────────────────────────────────
+    // One face per RUN of collinear wall edge, not per cell: long single
+    // surfaces sort cleanly and never shuffle. One cap per row-run too.
+    {
+        let is_wall = |x: i32, y: i32| cell_at(&rows, x, y) == '#';
+        let face_tone = Color::srgb(0.85, 0.66, 0.16); // hazard yellow
+        let side_tone = Color::srgb(0.62, 0.48, 0.11); // E/W faces, shaded
+        let face = |commands: &mut Commands, a: Vec2, b: Vec2, base: Color| {
+            commands.spawn((
+                Sprite { color: base, custom_size: Some(Vec2::splat(2.0)), ..default() },
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                Visibility::Hidden,
+                WallFace { a, b, base },
+                GameTag,
+            ));
+        };
+        for y in 0..AH as i32 {
+            // North-facing runs (open floor above the wall row).
+            let mut x = 0i32;
+            while x < AW as i32 {
+                if is_wall(x, y) && !is_wall(x, y - 1) {
+                    let x0 = x;
+                    while x < AW as i32 && is_wall(x, y) && !is_wall(x, y - 1) {
+                        x += 1;
+                    }
+                    face(&mut commands, Vec2::new(x0 as f32, y as f32), Vec2::new(x as f32, y as f32), face_tone);
+                } else {
+                    x += 1;
+                }
+            }
+            // South-facing runs (open floor below).
+            let mut x = 0i32;
+            while x < AW as i32 {
+                if is_wall(x, y) && !is_wall(x, y + 1) {
+                    let x0 = x;
+                    while x < AW as i32 && is_wall(x, y) && !is_wall(x, y + 1) {
+                        x += 1;
+                    }
+                    face(
+                        &mut commands,
+                        Vec2::new(x0 as f32, y as f32 + 1.0),
+                        Vec2::new(x as f32, y as f32 + 1.0),
+                        face_tone,
+                    );
+                } else {
+                    x += 1;
+                }
+            }
+            // Caps: one flat lid per horizontal wall run.
+            let mut x = 0i32;
+            while x < AW as i32 {
+                if is_wall(x, y) {
+                    let x0 = x;
+                    while x < AW as i32 && is_wall(x, y) {
+                        x += 1;
+                    }
+                    let run = (x - x0) as f32;
+                    bill(
+                        &mut commands,
+                        Vec2::new(x0 as f32 + run / 2.0, y as f32 + 0.5),
+                        run * 1.01,
+                        1.0,
+                        WALL_H,
+                        true,
+                        Color::srgb(0.42, 0.34, 0.10),
+                    );
+                } else {
+                    x += 1;
+                }
+            }
+        }
+        for x in 0..AW as i32 {
+            // West-facing runs (open floor to the left).
+            let mut y = 0i32;
+            while y < AH as i32 {
+                if is_wall(x, y) && !is_wall(x - 1, y) {
+                    let y0 = y;
+                    while y < AH as i32 && is_wall(x, y) && !is_wall(x - 1, y) {
+                        y += 1;
+                    }
+                    face(&mut commands, Vec2::new(x as f32, y0 as f32), Vec2::new(x as f32, y as f32), side_tone);
+                } else {
+                    y += 1;
+                }
+            }
+            // East-facing runs (open floor to the right).
+            let mut y = 0i32;
+            while y < AH as i32 {
+                if is_wall(x, y) && !is_wall(x + 1, y) {
+                    let y0 = y;
+                    while y < AH as i32 && is_wall(x, y) && !is_wall(x + 1, y) {
+                        y += 1;
+                    }
+                    face(
+                        &mut commands,
+                        Vec2::new(x as f32 + 1.0, y0 as f32),
+                        Vec2::new(x as f32 + 1.0, y as f32),
+                        side_tone,
+                    );
+                } else {
+                    y += 1;
+                }
             }
         }
     }
@@ -744,19 +821,24 @@ fn fire_item(
             // The SMART stapler: slower off the line, but it steers.
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
-            let ent = bill(commands, start, 0.30, 0.30, 0.40, false, MAGENTA);
-            g.shots.push(Shot { pos: start, vel: dir * 7.5, owner: seat, bounces: 0, ttl: 5.0, homing: true, ent });
+            let ent = bill(commands, start, 0.34, 0.11, 0.30, false, Color::srgb(0.10, 0.10, 0.13));
+            let rim = bill(commands, start, 0.32, 0.05, 0.41, false, MAGENTA);
+            g.shots.push(Shot { pos: start, vel: dir * 7.5, owner: seat, bounces: 0, ttl: 5.0, homing: true, ent, rim });
         }
         _ => {
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
-            let ent = bill(commands, start, 0.26, 0.26, 0.40, false, CYAN);
+            // A puck: squat dark body low to the deck, bright rim on top —
+            // reads as a sliding hazard, not a floating square.
+            let ent = bill(commands, start, 0.34, 0.11, 0.30, false, Color::srgb(0.10, 0.10, 0.13));
+            let rim = bill(commands, start, 0.32, 0.05, 0.41, false, CYAN);
             // A thrown stapler is a HAZARD: it ricochets forever and only
             // leaves the floor by hitting someone (or the 40-shot cap).
-            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 999_999, ttl: 600.0, homing: false, ent });
+            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 999_999, ttl: 600.0, homing: false, ent, rim });
             if g.shots.len() > 40 {
                 let oldest = g.shots.remove(0);
                 commands.entity(oldest.ent).despawn();
+                commands.entity(oldest.rim).despawn();
             }
         }
     }
@@ -1296,6 +1378,7 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     for si in dead_shots.into_iter().rev() {
         let s = g.shots.remove(si);
         commands.entity(s.ent).despawn();
+        commands.entity(s.rim).despawn();
     }
     for (ci, by) in pops {
         pop_balloon(&mut commands, &mut g, ci, by);
@@ -1314,6 +1397,8 @@ fn pop_balloon(commands: &mut Commands, g: &mut Garage, ci: usize, by: usize) {
         if c.seat == my {
             popup(commands, "POP! BALLOON GONE", 20.0, RED, Vec2::new(0.0, -100.0));
             sfx("death"); // unmistakably YOU got hit
+            g.fx_t = 0.8; // and the screen BLINKS red about it
+            g.fx_color = RED;
             stat("balloons_lost", 1);
         }
     }
@@ -1678,9 +1763,13 @@ fn project(
             b.base = base.with_alpha(if c.balloons > 0 { 0.95 } else { 0.0 });
         }
     }
-    // Staplers strobe and bob so they never read as furniture.
+    // Pucks: the dark body rides low and steady; only the RIM pulses, so
+    // it reads as a sliding hazard with a warning light.
     for s in &g.shots {
         if let Ok((mut b, _, _, _)) = bills.get_mut(s.ent) {
+            b.pos = s.pos;
+        }
+        if let Ok((mut b, _, _, _)) = bills.get_mut(s.rim) {
             b.pos = s.pos;
             b.base = if flicker {
                 WHITE
@@ -1689,8 +1778,6 @@ fn project(
             } else {
                 CYAN
             };
-            b.w = if flicker { 0.34 } else { 0.24 };
-            b.alt = 0.42 + 0.10 * (g.clock * 9.0).sin();
         }
     }
     // Coffee reads as a bright fresh spill, not a shadow.
@@ -1790,12 +1877,16 @@ fn project(
         let p1 = Vec2::new(sxb, gyb + hb * 0.5);
         let d = p1 - p0;
         let cy_avg = (a.y + b2.y) * 0.5;
+        // Painter's order by the NEAREST point of the run: a surface that
+        // reaches closer to you always draws over one that doesn't. Stable
+        // under rotation, so runs never leapfrog each other.
+        let cy_near_pt = a.y.min(b2.y);
         let shade = (2.4 / cy_avg).clamp(0.30, 1.0);
         let c = f.base.to_srgba();
         sp.color = Color::srgb(c.red * shade, c.green * shade, c.blue * shade);
         sp.custom_size = Some(Vec2::new(d.length().clamp(1.0, 1600.0), ((ha + hb) * 0.5).clamp(1.5, 640.0)));
         let mid = (p0 + p1) / 2.0;
-        tf.translation = Vec3::new(mid.x, mid.y, (21.0 - cy_avg).clamp(1.0, 21.0));
+        tf.translation = Vec3::new(mid.x, mid.y, (21.0 - cy_near_pt).clamp(1.0, 21.0));
         tf.rotation = Quat::from_rotation_z(d.y.atan2(d.x));
         *vis = Visibility::Inherited;
     }
@@ -1842,10 +1933,12 @@ fn project(
             my_color
         };
     }
-    // The drama veil: blackout blue, ghost/elimination red.
+    // The drama veil: blackout blue, hit/elimination red — and it BLINKS,
+    // strobing at 12Hz while it decays, so a hit is never ambiguous.
     if let Ok(mut sp) = fixed_sprites.get_mut(g.veil) {
         sp.color = if g.fx_t > 0.0 {
-            g.fx_color.with_alpha((g.fx_t / 0.6 * 0.38).min(0.38))
+            let strobe = if ((g.clock * 12.0) as i32) % 2 == 0 { 1.0 } else { 0.25 };
+            g.fx_color.with_alpha((g.fx_t / 0.6 * 0.42 * strobe).min(0.42))
         } else {
             Color::NONE
         };
