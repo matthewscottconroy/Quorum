@@ -109,6 +109,18 @@ struct Bill {
 #[derive(Component)]
 struct FixedView;
 
+/// One exposed wall face: a REAL surface between two floor corners, not a
+/// camera-facing billboard — projected as a rotated quad each frame so wall
+/// runs read as continuous, stationary geometry.
+#[derive(Component)]
+struct WallFace {
+    a: Vec2, // cell-space corners of the bottom edge
+    b: Vec2,
+    base: Color,
+}
+
+const WALL_H: f32 = 0.5; // waist-high, in cells
+
 fn bill(commands: &mut Commands, pos: Vec2, w: f32, hh: f32, alt: f32, flat: bool, base: Color) -> Entity {
     commands
         .spawn((
@@ -425,16 +437,37 @@ fn setup(
             let center = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
             match ch {
                 '#' => {
-                    // Waist-high bumpers, kart-battle style: you can see the
-                    // whole arena over them, they just won't let you through.
-                    // Walls wear hazard paint — nothing on the FLOOR is
-                    // ever this color, so a barrier reads as a barrier.
+                    // Waist-high bumpers, kart-battle style — built from
+                    // FACES now: one quad per side that borders open floor,
+                    // plus a flat cap on top. Real surfaces, no billboards.
                     let tone = if (x + y) % 2 == 0 {
                         Color::srgb(0.85, 0.66, 0.16)
                     } else {
-                        Color::srgb(0.32, 0.30, 0.26)
+                        Color::srgb(0.34, 0.32, 0.28)
                     };
-                    bill(&mut commands, center, 1.08, 0.5, 0.0, false, tone);
+                    let (xf, yf) = (x as f32, y as f32);
+                    let sides: [(i32, i32, Vec2, Vec2, f32); 4] = [
+                        (0, -1, Vec2::new(xf, yf), Vec2::new(xf + 1.0, yf), 1.0),
+                        (0, 1, Vec2::new(xf, yf + 1.0), Vec2::new(xf + 1.0, yf + 1.0), 1.0),
+                        (-1, 0, Vec2::new(xf, yf), Vec2::new(xf, yf + 1.0), 0.82),
+                        (1, 0, Vec2::new(xf + 1.0, yf), Vec2::new(xf + 1.0, yf + 1.0), 0.82),
+                    ];
+                    for (dx, dy, a, b, shade) in sides {
+                        if cell_at(&rows, x as i32 + dx, y as i32 + dy) != '#' {
+                            let s = tone.to_srgba();
+                            let face = Color::srgb(s.red * shade, s.green * shade, s.blue * shade);
+                            commands.spawn((
+                                Sprite { color: face, custom_size: Some(Vec2::splat(2.0)), ..default() },
+                                Transform::from_xyz(0.0, 0.0, 1.0),
+                                Visibility::Hidden,
+                                WallFace { a, b, base: face },
+                                GameTag,
+                            ));
+                        }
+                    }
+                    let s = tone.to_srgba();
+                    let cap = Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55);
+                    bill(&mut commands, center, 1.02, 1.0, WALL_H, true, cap);
                 }
                 'B' => {
                     let ent = bill(&mut commands, center, 0.55, 0.55, 0.30, false, AMBER);
@@ -452,7 +485,7 @@ fn setup(
                 } else {
                     Color::srgb(0.105, 0.10, 0.09)
                 };
-                let e = bill(&mut commands, center, 1.02, 1.0, -0.1, true, tone);
+                let e = bill(&mut commands, center, 1.02, 1.0, 0.0, true, tone);
                 let _ = e;
             }
         }
@@ -704,7 +737,7 @@ fn fire_item(
         1 => {
             // Coffee: a puddle just behind the chair.
             let back = pos - Vec2::new(ang.cos(), -ang.sin()) * 0.9;
-            let ent = bill(commands, back, 1.15, 0.85, 0.0, true, Color::srgb(0.72, 0.5, 0.2));
+            let ent = bill(commands, back, 1.15, 0.85, 0.025, true, Color::srgb(0.72, 0.5, 0.2));
             g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
         }
         4 => {
@@ -718,8 +751,13 @@ fn fire_item(
             let dir = Vec2::new(ang.cos(), -ang.sin());
             let start = pos + dir * 0.8;
             let ent = bill(commands, start, 0.26, 0.26, 0.40, false, CYAN);
-            // Three ricochets, kart-shell style: the fear is the point.
-            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 3, ttl: 8.0, homing: false, ent });
+            // A thrown stapler is a HAZARD: it ricochets forever and only
+            // leaves the floor by hitting someone (or the 40-shot cap).
+            g.shots.push(Shot { pos: start, vel: dir * 9.0, owner: seat, bounces: 999_999, ttl: 600.0, homing: false, ent });
+            if g.shots.len() > 40 {
+                let oldest = g.shots.remove(0);
+                commands.entity(oldest.ent).despawn();
+            }
         }
     }
     sfx(if kind == 1 { "drop" } else { "fire" });
@@ -995,20 +1033,18 @@ fn drive(
         g.bump_t = 0.35;
         sfx("thud"); // upholstery meets masonry
     }
-    // The engine hums with your actual speed — hear yourself accelerate,
-    // coast down, and brake.
-    const ENGINE: [&str; 7] =
-        ["engine0", "engine1", "engine2", "engine3", "engine4", "engine5", "engine6"];
+    // The engine hums with your actual speed — 33 pitch steps and the
+    // synth glides between them, so it reads as one continuous rev.
     let my_speed = g
         .chairs
         .iter()
         .find(|c| c.seat == g.my_seat)
         .map(|c| c.speed.abs())
         .unwrap_or(0.0);
-    let gear = ((my_speed / MAX_SPEED * 6.0).round() as i8).clamp(0, 6);
+    let gear = ((my_speed / MAX_SPEED * 32.0).round() as i8).clamp(0, 32);
     if gear != g.gear {
         g.gear = gear;
-        sfx(ENGINE[gear as usize]);
+        sfx(&format!("engine{gear}"));
     }
     if let Some((i, kind)) = fire_req {
         match kind {
@@ -1571,6 +1607,10 @@ fn project(
     mut bills: Query<(&mut Bill, &mut Transform, &mut Sprite, &mut Visibility)>,
     mut fixed: Query<(&mut Visibility, &mut Transform), (With<FixedView>, Without<Bill>)>,
     mut fixed_sprites: Query<&mut Sprite, (With<FixedView>, Without<Bill>)>,
+    mut faces: Query<
+        (&WallFace, &mut Transform, &mut Sprite, &mut Visibility),
+        (Without<Bill>, Without<FixedView>),
+    >,
     mut texts: Query<&mut Text2d>,
 ) {
     let editing = editor.map(|e| e.active).unwrap_or(false);
@@ -1579,6 +1619,9 @@ fn project(
             *vis = Visibility::Hidden;
         }
         for (mut vis, _) in fixed.iter_mut() {
+            *vis = Visibility::Hidden;
+        }
+        for (_, _, _, mut vis) in faces.iter_mut() {
             *vis = Visibility::Hidden;
         }
         return;
@@ -1689,15 +1732,17 @@ fn project(
         }
         let gy = HORIZON - inv; // camera rides one cell above the deck
         let (w_px, h_px, sy, zoff) = if b.flat {
-            // Ground decals project by their DEPTH: near edge low on the
-            // screen, far edge higher, like a real mode-7 floor tile.
+            // Ground decals project by their DEPTH: near edge low, far edge
+            // higher. For flats, `alt` is the height of the PLANE (wall
+            // caps ride at wall height) and doubles as the draw-order bias.
             let d = b.hh.max(0.2);
             let near = (cy - d / 2.0).max(0.26);
             let far = cy + d / 2.0;
-            let y_near = HORIZON - FOCAL / near;
-            let y_far = HORIZON - FOCAL / far;
+            let drop = (1.0 - b.alt).max(0.05);
+            let y_near = HORIZON - drop * FOCAL / near;
+            let y_far = HORIZON - drop * FOCAL / far;
             let w = (b.w * inv).min(900.0);
-            (w, (y_far - y_near).max(1.5), (y_near + y_far) / 2.0, -0.4 + b.alt)
+            (w, (y_far - y_near).max(1.5), (y_near + y_far) / 2.0, -0.45 + b.alt * 0.8)
         } else {
             let w = (b.w * inv).min(900.0);
             let h = (b.hh * inv).min(900.0);
@@ -1708,6 +1753,50 @@ fn project(
         sp.color = Color::srgba(c.red * shade, c.green * shade, c.blue * shade, c.alpha);
         sp.custom_size = Some(Vec2::new(w_px.max(1.0), h_px.max(1.0)));
         tf.translation = Vec3::new(sx, sy, (21.0 - cy).clamp(1.0, 21.0) + zoff);
+        *vis = Visibility::Inherited;
+    }
+    // Wall faces: both bottom corners project, the quad stretches and
+    // rotates between them — a surface that stays put while you turn.
+    for (f, mut tf, mut sp, mut vis) in faces.iter_mut() {
+        let to_cam = |p: Vec2| {
+            let rel = p - cam;
+            Vec2::new(rel.dot(rt), rel.dot(fwd))
+        };
+        let mut a = to_cam(f.a);
+        let mut b2 = to_cam(f.b);
+        const NEAR: f32 = 0.32;
+        if (a.y < NEAR && b2.y < NEAR) || (a.y > 17.0 && b2.y > 17.0) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        if a.y < NEAR {
+            let t = (NEAR - a.y) / (b2.y - a.y);
+            a = a + (b2 - a) * t;
+        } else if b2.y < NEAR {
+            let t = (NEAR - b2.y) / (a.y - b2.y);
+            b2 = b2 + (a - b2) * t;
+        }
+        let ia = FOCAL / a.y;
+        let ib = FOCAL / b2.y;
+        let sxa = a.x * ia;
+        let sxb = b2.x * ib;
+        if sxa.min(sxb) > 640.0 || sxa.max(sxb) < -640.0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let (gya, gyb) = (HORIZON - ia, HORIZON - ib);
+        let (ha, hb) = (WALL_H * ia, WALL_H * ib);
+        let p0 = Vec2::new(sxa, gya + ha * 0.5);
+        let p1 = Vec2::new(sxb, gyb + hb * 0.5);
+        let d = p1 - p0;
+        let cy_avg = (a.y + b2.y) * 0.5;
+        let shade = (2.4 / cy_avg).clamp(0.30, 1.0);
+        let c = f.base.to_srgba();
+        sp.color = Color::srgb(c.red * shade, c.green * shade, c.blue * shade);
+        sp.custom_size = Some(Vec2::new(d.length().clamp(1.0, 1600.0), ((ha + hb) * 0.5).clamp(1.5, 640.0)));
+        let mid = (p0 + p1) / 2.0;
+        tf.translation = Vec3::new(mid.x, mid.y, (21.0 - cy_avg).clamp(1.0, 21.0));
+        tf.rotation = Quat::from_rotation_z(d.y.atan2(d.x));
         *vis = Visibility::Inherited;
     }
     // Screen-fixed furniture on, then the per-chair minimap dots and the rig.

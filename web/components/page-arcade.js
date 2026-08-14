@@ -263,35 +263,54 @@ const SFX = {
   chute:   () => _tone(880, 320, 0.22, 0, 0.035, 'triangle'),
   thud:    () => { _tone(90, 55, 0.10, 0, 0.09); _noise(0.06, 0, 0.05); },
 };
-// The engine: one persistent sawtooth whose pitch follows the cart's speed
-// steps (engine0..engine6); engine_off fades it out.
-let _engOsc = null, _engGain = null;
+// The engine: two detuned saws and a sub-octave triangle through a
+// tracking lowpass — pitch GLIDES between the cart's 0..32 speed steps,
+// so acceleration reads as one continuous rev, not a tone ladder.
+let _engOsc = null, _engOsc2 = null, _engSub = null, _engGain = null, _engFilter = null;
 function _engine(step) {
   const ctx = _ctx();
   if (!ctx) return;
   if (!_engOsc) {
-    _engOsc = ctx.createOscillator();
-    _engOsc.type = 'sawtooth';
+    _engFilter = ctx.createBiquadFilter();
+    _engFilter.type = 'lowpass';
+    _engFilter.Q.value = 1.6;
     _engGain = ctx.createGain();
     _engGain.gain.value = 0;
-    _engOsc.connect(_engGain).connect(ctx.destination);
-    _engOsc.start();
+    _engOsc = ctx.createOscillator(); _engOsc.type = 'sawtooth';
+    _engOsc2 = ctx.createOscillator(); _engOsc2.type = 'sawtooth';
+    _engSub = ctx.createOscillator(); _engSub.type = 'triangle';
+    for (const o of [_engOsc, _engOsc2, _engSub]) o.connect(_engFilter);
+    _engFilter.connect(_engGain).connect(ctx.destination);
+    for (const o of [_engOsc, _engOsc2, _engSub]) o.start();
   }
-  const t = ctx.currentTime;
+  const t = ctx.currentTime, pct = step / 32, ramp = 0.35;
+  const f = 44 + pct * 152;
   _engOsc.frequency.cancelScheduledValues(t);
-  _engOsc.frequency.linearRampToValueAtTime(42 + step * 26, t + 0.12);
+  _engOsc.frequency.linearRampToValueAtTime(f, t + ramp);
+  _engOsc2.frequency.cancelScheduledValues(t);
+  _engOsc2.frequency.linearRampToValueAtTime(f * 1.013, t + ramp);
+  _engSub.frequency.cancelScheduledValues(t);
+  _engSub.frequency.linearRampToValueAtTime(f * 0.5, t + ramp);
+  _engFilter.frequency.cancelScheduledValues(t);
+  _engFilter.frequency.linearRampToValueAtTime(230 + pct * 1500, t + ramp);
   _engGain.gain.cancelScheduledValues(t);
-  _engGain.gain.linearRampToValueAtTime(step === 0 ? 0.012 : 0.03, t + 0.1);
+  _engGain.gain.linearRampToValueAtTime(pct === 0 ? 0.009 : 0.022 + pct * 0.014, t + 0.25);
 }
-for (let s = 0; s <= 6; s++) SFX['engine' + s] = () => _engine(s);
 SFX.engine_off = () => {
   if (_engGain) {
     const t = _actx.currentTime;
     _engGain.gain.cancelScheduledValues(t);
-    _engGain.gain.linearRampToValueAtTime(0, t + 0.25);
+    _engGain.gain.linearRampToValueAtTime(0, t + 0.3);
   }
 };
-window.__arcadeSfx = name => { try { SFX[name]?.(); } catch { /* silence is golden */ } };
+window.__arcadeSfx = name => {
+  try {
+    if (name !== 'engine_off' && name.startsWith('engine')) {
+      return _engine(Math.max(0, Math.min(32, Number(name.slice(6)) || 0)));
+    }
+    SFX[name]?.();
+  } catch { /* silence is golden */ }
+};
 
 // Service-record labels: every counter a cartridge reports, with the
 // display copy it deserves. Unknown keys fall back to SHOUTING_SNAKE_CASE.
