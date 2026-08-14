@@ -52,7 +52,6 @@ fn item_icon(k: u8) -> (Color, &'static str) {
 const TURN_RATE: f32 = 3.4;
 const ACCEL: f32 = 260.0;
 const MAX_SPEED: f32 = 240.0;
-const FRICTION: f32 = 1.6;
 
 const DEFAULT_ARENA: [&str; AH] = [
     "########################",
@@ -132,6 +131,7 @@ struct Chair {
     remote: bool,  // a live human elsewhere
     pos: Vec2,     // in CELL units
     ang: f32,
+    mdir: f32, // motion direction: chases ang; the gap between them is drift
     speed: f32,
     balloons: i32,
     item: Option<u8>,
@@ -141,7 +141,9 @@ struct Chair {
     star_t: f32, // OVERTIME: untouchable, fast, pops on contact
     pops: u32,
     think: f32,
-    ent: Entity,
+    ent: Entity,        // seat cushion billboard
+    back_ent: Entity,   // backrest billboard
+    base_ent: Entity,   // wheel-hub billboard
     balloon_ent: Entity,
 }
 
@@ -332,18 +334,30 @@ fn poll_editor_start(
     }
 }
 
-fn spawn_chair(commands: &mut Commands, seat: usize, at: Vec2) -> (Entity, Entity) {
-    let ent = bill(commands, at, 0.85, 0.75, 0.0, false, PLAYER_COLORS[seat % 12]);
-    let balloon_ent = bill(
-        commands,
-        at,
-        0.6,
-        0.22,
-        1.05,
-        false,
-        PLAYER_COLORS[seat % 12].with_alpha(0.95),
-    );
-    (ent, balloon_ent)
+/// A rival chair reads as a chair: dark wheel hub, colored seat cushion,
+/// taller backrest, balloons floating above the lot.
+fn spawn_chair(commands: &mut Commands, seat: usize, at: Vec2) -> (Entity, Entity, Entity, Entity) {
+    let color = PLAYER_COLORS[seat % 12];
+    let base_ent = bill(commands, at, 0.62, 0.16, 0.0, false, Color::srgb(0.13, 0.13, 0.17));
+    let ent = bill(commands, at, 0.86, 0.26, 0.18, false, color);
+    let back_ent = bill(commands, at, 0.66, 0.62, 0.46, false, dim_color(color));
+    let balloon_ent = bill(commands, at, 0.6, 0.22, 1.28, false, color.with_alpha(0.95));
+    (ent, back_ent, base_ent, balloon_ent)
+}
+
+fn dim_color(c: Color) -> Color {
+    let s = c.to_srgba();
+    Color::srgb(s.red * 0.68, s.green * 0.68, s.blue * 0.68)
+}
+
+fn wrap_pi(mut a: f32) -> f32 {
+    while a > std::f32::consts::PI {
+        a -= std::f32::consts::TAU;
+    }
+    while a < -std::f32::consts::PI {
+        a += std::f32::consts::TAU;
+    }
+    a
 }
 
 fn setup(
@@ -468,13 +482,14 @@ fn setup(
             continue;
         }
         let at = spawns[seat % spawns.len()];
-        let (ent, balloon_ent) = spawn_chair(&mut commands, seat, at);
+        let (ent, back_ent, base_ent, balloon_ent) = spawn_chair(&mut commands, seat, at);
         chairs.push(Chair {
             seat,
             human,
             remote,
             pos: at,
             ang: 0.0,
+            mdir: 0.0,
             speed: 0.0,
             balloons: 3,
             item: None,
@@ -485,6 +500,8 @@ fn setup(
             pops: 0,
             think: seat as f32 * 0.1,
             ent,
+            back_ent,
+            base_ent,
             balloon_ent,
         });
     }
@@ -625,7 +642,7 @@ fn fire_item(
         1 => {
             // Coffee: a puddle just behind the chair.
             let back = pos - Vec2::new(ang.cos(), -ang.sin()) * 0.9;
-            let ent = bill(commands, back, 0.95, 0.0, 0.0, true, Color::srgb(0.32, 0.2, 0.08));
+            let ent = bill(commands, back, 1.15, 0.0, 0.0, true, Color::srgb(0.72, 0.5, 0.2));
             g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
         }
         4 => {
@@ -759,6 +776,13 @@ fn drive(
     let net = g.net;
 
     // Inputs act on MY chair; bots and physics run for locally-owned chairs.
+    // MK-style item box: pressing the button while it spins STOPS the
+    // spin; the next press uses what settled.
+    let stop_slot = keys.just_pressed(KeyCode::Space) && g.slot_spin > 0.0;
+    if stop_slot {
+        g.slot_spin = 0.0;
+        sfx("place");
+    }
     let mut fire_req: Option<(usize, u8)> = None;
     for i in 0..g.chairs.len() {
         let local = {
@@ -776,18 +800,31 @@ fn drive(
         c.spin_t = (c.spin_t - dt).max(0.0);
         c.boost_t = (c.boost_t - dt).max(0.0);
         c.inv_t = (c.inv_t - dt).max(0.0);
+        let mut coasting = false;
         if c.human {
             let turn = i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
                 - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD));
-            let gas = i32::from(keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW))
-                - i32::from(keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS));
+            let gas = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
+            let brake = keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS);
             if c.spin_t > 0.0 {
                 c.ang += 9.0 * dt; // the spin-out: all wheel, no say
             } else {
                 c.ang += turn as f32 * TURN_RATE * dt * (0.4 + (c.speed.abs() / MAX_SPEED).min(1.0));
-                c.speed += gas as f32 * ACCEL * dt;
+                if gas {
+                    c.speed += ACCEL * dt;
+                }
+                // The brake is a brake: kill forward motion first, and only
+                // once you've stopped does holding it creep you backward.
+                if brake {
+                    if c.speed > 6.0 {
+                        c.speed = (c.speed - 460.0 * dt).max(0.0);
+                    } else {
+                        c.speed -= ACCEL * 0.45 * dt;
+                    }
+                }
+                coasting = !gas && !brake;
             }
-            if keys.just_pressed(KeyCode::Space) {
+            if keys.just_pressed(KeyCode::Space) && !stop_slot {
                 if let Some(kind) = c.item.take() {
                     match kind {
                         2 => {
@@ -809,28 +846,46 @@ fn drive(
             }
         }
         let max = if c.boost_t > 0.0 || c.star_t > 0.0 { MAX_SPEED * 1.55 } else { MAX_SPEED };
-        c.speed = c.speed.clamp(-max * 0.45, max);
-        c.speed -= c.speed * FRICTION * dt;
-        let dir = Vec2::new(c.ang.cos(), -c.ang.sin());
-        let step = dir * (c.speed / ACELL) * dt;
+        c.speed = c.speed.clamp(-max * 0.35, max);
+        // Off the gas you coast down gently; on it, mild rolling drag.
+        c.speed -= c.speed * if coasting { 1.1 } else { 0.55 } * dt;
+        // Grip: the direction you MOVE chases the direction you FACE. At
+        // speed there's less grip, so hard steering drifts — and yanking
+        // the wheel flat-out spins you.
+        let slip = wrap_pi(c.ang - c.mdir);
+        if slip.abs() > 1.05 && c.speed > max * 0.72 && c.spin_t <= 0.0 {
+            c.spin_t = 0.9;
+            c.speed *= 0.45;
+            if c.human {
+                sfx("buzz");
+            }
+        }
+        let grip = 7.5 - 5.0 * (c.speed.abs() / MAX_SPEED).min(1.0);
+        c.mdir += slip * (grip * dt).min(1.0);
+        let dirv = Vec2::new(c.mdir.cos(), -c.mdir.sin());
+        let step = dirv * (c.speed / ACELL) * dt;
         let next = c.pos + step;
-        // Slide along walls: block each axis separately, and only bounce
-        // when you drive square into a corner — no more velcro walls.
-        let mut blocked = 0;
-        if solid_at(&rows, Vec2::new(next.x, c.pos.y)) {
-            blocked += 1;
-        } else {
+        // Walls: glance off at an angle (motion direction reflects, your
+        // facing doesn't), square hits bounce you straight back.
+        let bx = solid_at(&rows, Vec2::new(next.x, c.pos.y));
+        let by = solid_at(&rows, Vec2::new(c.pos.x, next.y));
+        if !bx {
             c.pos.x = next.x;
         }
-        if solid_at(&rows, Vec2::new(c.pos.x, next.y)) {
-            blocked += 1;
-        } else {
+        if !by {
             c.pos.y = next.y;
         }
-        if blocked == 2 {
-            c.speed *= -0.3;
-        } else if blocked == 1 {
-            c.speed *= 1.0 - 2.0 * dt; // scraping costs a little paint
+        if bx && by {
+            c.speed *= -0.35;
+            if c.human && c.speed.abs() > 40.0 {
+                sfx("tick");
+            }
+        } else if bx {
+            c.mdir = (-dirv.y).atan2(-dirv.x);
+            c.speed *= 0.78;
+        } else if by {
+            c.mdir = dirv.y.atan2(dirv.x);
+            c.speed *= 0.78;
         }
     }
     if let Some((i, kind)) = fire_req {
@@ -1386,17 +1441,29 @@ fn project(
         let base = PLAYER_COLORS[c.seat % 12];
         let behind = c.seat == g.my_seat; // your chair is the fixed rig instead
         let pos = if behind { cam - fwd * 3.0 } else { c.pos };
-        if let Ok((mut b, _, _, _)) = bills.get_mut(c.ent) {
-            b.pos = pos;
-            b.base = if c.balloons <= 0 {
-                base.with_alpha(0.22)
+        // One tint rule for every part of the silhouette.
+        let tint = |part: Color| -> Color {
+            if c.balloons <= 0 {
+                part.with_alpha(0.22)
             } else if c.star_t > 0.0 && flicker {
                 WHITE // OVERTIME strobe
             } else if c.inv_t > 0.0 {
-                base.with_alpha(0.5)
+                part.with_alpha(0.5)
             } else {
-                base
-            };
+                part
+            }
+        };
+        if let Ok((mut b, _, _, _)) = bills.get_mut(c.base_ent) {
+            b.pos = pos;
+            b.base = tint(Color::srgb(0.13, 0.13, 0.17));
+        }
+        if let Ok((mut b, _, _, _)) = bills.get_mut(c.ent) {
+            b.pos = pos;
+            b.base = tint(base);
+        }
+        if let Ok((mut b, _, _, _)) = bills.get_mut(c.back_ent) {
+            b.pos = pos;
+            b.base = tint(dim_color(base));
         }
         if let Ok((mut b, _, _, _)) = bills.get_mut(c.balloon_ent) {
             b.pos = pos;
@@ -1404,15 +1471,28 @@ fn project(
             b.base = base.with_alpha(if c.balloons > 0 { 0.95 } else { 0.0 });
         }
     }
+    // Staplers strobe and bob so they never read as furniture.
     for s in &g.shots {
         if let Ok((mut b, _, _, _)) = bills.get_mut(s.ent) {
             b.pos = s.pos;
+            b.base = if flicker {
+                WHITE
+            } else if s.homing {
+                MAGENTA
+            } else {
+                CYAN
+            };
+            b.w = if flicker { 0.34 } else { 0.24 };
+            b.alt = 0.42 + 0.10 * (g.clock * 9.0).sin();
         }
     }
+    // Coffee reads as a bright fresh spill, not a shadow.
     for p in &g.puddles {
         if let Ok((mut b, _, _, _)) = bills.get_mut(p.ent) {
             b.pos = p.pos;
-            b.base = Color::srgba(0.32, 0.2, 0.08, (p.ttl / 6.0).clamp(0.25, 0.9));
+            b.w = 1.15;
+            let shimmer = 0.75 + 0.2 * (g.clock * 5.0).sin();
+            b.base = Color::srgba(0.72, 0.5, 0.2, (p.ttl / 6.0).clamp(0.4, 1.0) * shimmer);
         }
     }
     for (i, bx) in g.boxes.iter().enumerate() {

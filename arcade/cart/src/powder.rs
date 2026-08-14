@@ -1138,15 +1138,16 @@ fn bot_brains(
             }
         });
         if worth_bombing && f.live_bombs < f.max_bombs {
-            // Simulate our own blast: only plant when a CLEAN escape route
-            // exists — no betting your chassis on sprinting through some
-            // other keg's blast lane.
+            // Simulate our own blast: plant only when a safe cell is
+            // reachable. Retreating ALONG the fresh keg's own lane is the
+            // classic move and its fuse is long, so grade-1 transit is
+            // allowed — only lethal-now cells (grade 2) are off the table.
             let mut sim = danger.clone();
             sim[here] = sim[here].max(1);
             for (j, _) in blast_cells(&arena.tiles, here, f.range, f.pierce) {
                 sim[j] = sim[j].max(1);
             }
-            if bfs_step(&arena, &sim, f.tile, 0, |i| sim[i] == 0).is_some() {
+            if bfs_step(&arena, &sim, f.tile, 1, |i| sim[i] == 0).is_some() {
                 f.wants_bomb = true;
                 continue;
             }

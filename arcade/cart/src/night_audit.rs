@@ -10,7 +10,9 @@
 //! column sprites (a DDA raycast per column) plus billboard sprites for
 //! guards and pickups, occluded against the column depth buffer.
 
+use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
+use bevy::window::CursorGrabMode;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
@@ -276,6 +278,11 @@ struct Mission {
     nap_t: f32,
     pos_timer: Timer,
     fired_flag: bool,
+    weapon: u8,       // 0 dart pistol, 1 rapid stapler, 2 memo launcher
+    have_rapid: bool,
+    have_memo: bool,
+    armor: i32,       // vest points soak hits first
+    espresso_t: f32,  // fast feet timer
 }
 
 /// A rival auditor as last heard from, eased between updates.
@@ -385,6 +392,10 @@ enum PickupKind {
     File,
     Darts,
     Coffee,
+    Rapid,    // the RAPID STAPLER: hoses darts
+    Memo,     // the MEMO LAUNCHER: one shot naps a whole cluster
+    Vest,     // body armor: soaks damage before health does
+    Espresso, // fast feet for a while
 }
 
 struct Pickup {
@@ -433,6 +444,7 @@ impl Plugin for NightAuditPlugin {
                 Update,
                 editor_update.run_if(in_state(Phase::Playing)).run_if(crate::unpaused),
             )
+            .add_systems(Update, cursor_lock.run_if(in_state(Phase::Playing)))
             .add_systems(
                 Update,
                 (
@@ -454,9 +466,15 @@ impl Plugin for NightAuditPlugin {
     }
 }
 
+/// True when the cell is walkable floor — where armory pickups may land.
+fn parsed_cell_for_armory(grid: &[Cell], x: usize, y: usize) -> bool {
+    matches!(grid[y * MW + x], Cell::Open)
+}
+
 fn setup(
     mut commands: Commands,
     net: Res<NetMode>,
+    mut rng: ResMut<Rng>,
     existing_editor: Option<ResMut<OfficeEditor>>,
 ) {
     let editor_mode = crate::shell::take_editor_pending();
@@ -532,6 +550,26 @@ fn setup(
         }
     }
     commands.insert_resource(Remotes(remotes));
+    // The armory scatter: a RAPID STAPLER, a MEMO LAUNCHER, a VEST, and
+    // an ESPRESSO hide on random open floor tiles every shift.
+    {
+        let mut placed = 0;
+        let mut tries = 0;
+        let kinds = [PickupKind::Rapid, PickupKind::Memo, PickupKind::Vest, PickupKind::Espresso];
+        while placed < kinds.len() && tries < 400 {
+            tries += 1;
+            let cx = 1 + rng.range((MW - 2) as u32) as usize;
+            let cy = 1 + rng.range((MH - 2) as u32) as usize;
+            let open = pickups.iter().all(|p: &Pickup| {
+                (p.x - (cx as f32 + 0.5)).abs() + (p.y - (cy as f32 + 0.5)).abs() > 1.5
+            });
+            let cell_ok = matches!(parsed_cell_for_armory(&grid, cx, cy), true);
+            if cell_ok && open {
+                pickups.push(Pickup { x: cx as f32 + 0.5, y: cy as f32 + 0.5, kind: kinds[placed], taken: false });
+                placed += 1;
+            }
+        }
+    }
     commands.insert_resource(Mission {
         rows,
         spawns,
@@ -543,6 +581,11 @@ fn setup(
         nap_t: 0.0,
         pos_timer: Timer::from_seconds(0.1, TimerMode::Repeating),
         fired_flag: false,
+        weapon: 0,
+        have_rapid: false,
+        have_memo: false,
+        armor: 0,
+        espresso_t: 0.0,
         grid,
         doors_open: vec![false; MW * MH],
         px,
@@ -593,8 +636,8 @@ fn setup(
         cols.push(e);
     }
     // Billboard pool: plenty for every guard and pickup on screen at once.
-    let mut bills = Vec::with_capacity(24);
-    for _ in 0..24 {
+    let mut bills = Vec::with_capacity(56);
+    for _ in 0..56 {
         let e = commands
             .spawn((
                 Sprite { color: WHITE, custom_size: Some(Vec2::splat(10.0)), ..default() },
@@ -675,8 +718,39 @@ fn try_move(m: &Mission, x: f32, y: f32) -> bool {
     true
 }
 
-fn player_move(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>) {
+/// PC-shooter pointer handling: clicking the view locks the pointer so
+/// the mouse turns you; pause, the editor, and the end screen release it.
+fn cursor_lock(
+    buttons: Res<ButtonInput<MouseButton>>,
+    paused: Res<crate::Paused>,
+    m: Option<Res<Mission>>,
+    editor: Option<Res<OfficeEditor>>,
+    mut windows: Query<&mut Window>,
+) {
+    let Ok(mut w) = windows.single_mut() else { return };
+    let editing = editor.map(|e| e.active).unwrap_or(false);
+    let over = m.map(|m| m.over.is_some()).unwrap_or(true);
+    if paused.0 || editing || over {
+        if w.cursor_options.grab_mode != CursorGrabMode::None {
+            w.cursor_options.grab_mode = CursorGrabMode::None;
+            w.cursor_options.visible = true;
+        }
+    } else if buttons.just_pressed(MouseButton::Left)
+        && w.cursor_options.grab_mode != CursorGrabMode::Locked
+    {
+        w.cursor_options.grab_mode = CursorGrabMode::Locked;
+        w.cursor_options.visible = false;
+    }
+}
+
+fn player_move(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut motion: EventReader<MouseMotion>,
+    mut m: ResMut<Mission>,
+) {
     if m.over.is_some() || m.nap_t > 0.0 {
+        motion.clear();
         return;
     }
     let dt = time.delta_secs();
@@ -684,14 +758,42 @@ fn player_move(time: Res<Time>, keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<M
     m.fire_cd = (m.fire_cd - dt).max(0.0);
     m.flash = (m.flash - dt).max(0.0);
     m.hurt = (m.hurt - dt).max(0.0);
+    m.espresso_t = (m.espresso_t - dt).max(0.0);
+    // Mouse turns the view, PC-shooter style (click the screen to lock the
+    // pointer). Arrows still work for the keyboard faithful.
+    let mouse_dx: f32 = motion.read().map(|ev| ev.delta.x).sum();
+    m.ang += mouse_dx * 0.0032;
     let turn = i32::from(keys.pressed(KeyCode::ArrowRight)) - i32::from(keys.pressed(KeyCode::ArrowLeft));
     m.ang += turn as f32 * TURN_SPEED * dt;
+    // The armory: 1 pistol, 2 rapid stapler, 3 memo launcher, Q cycles.
+    if keys.just_pressed(KeyCode::Digit1) {
+        m.weapon = 0;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Digit2) && m.have_rapid {
+        m.weapon = 1;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Digit3) && m.have_memo {
+        m.weapon = 2;
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        m.weapon = match m.weapon {
+            0 if m.have_rapid => 1,
+            0 if m.have_memo => 2,
+            1 if m.have_memo => 2,
+            _ => 0,
+        };
+        sfx("tick");
+    }
     let fwd = i32::from(keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp)) as f32
         - i32::from(keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown)) as f32;
     let side = i32::from(keys.pressed(KeyCode::KeyD)) as f32 - i32::from(keys.pressed(KeyCode::KeyA)) as f32;
     let dir = Vec2::new(m.ang.cos(), m.ang.sin());
     let right = Vec2::new(-dir.y, dir.x);
-    let step = (dir * fwd + right * side).clamp_length_max(1.0) * MOVE_SPEED * dt;
+    let sp = MOVE_SPEED * if m.espresso_t > 0.0 { 1.35 } else { 1.0 };
+    let step = (dir * fwd + right * side).clamp_length_max(1.0) * sp * dt;
     let (nx, ny) = (m.px + step.x, m.py + step.y);
     // Slide along walls: try the full move, then each axis alone.
     if try_move(&m, nx, ny) {
@@ -728,6 +830,25 @@ fn interact(keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>, mut pickups
             }
             PickupKind::Coffee => {
                 m.hp = (m.hp + 25).min(100);
+                stat("coffees_drunk", 1);
+                sfx("power");
+            }
+            PickupKind::Rapid => {
+                m.have_rapid = true;
+                m.weapon = 1;
+                sfx("clear");
+            }
+            PickupKind::Memo => {
+                m.have_memo = true;
+                m.weapon = 2;
+                sfx("clear");
+            }
+            PickupKind::Vest => {
+                m.armor = (m.armor + 50).min(100);
+                sfx("power");
+            }
+            PickupKind::Espresso => {
+                m.espresso_t = 20.0;
                 stat("coffees_drunk", 1);
                 sfx("power");
             }
@@ -813,7 +934,11 @@ fn net_apply(
             Some("hit") => {
                 if let Ok(h) = serde_json::from_str::<WireHit>(&ev.data) {
                     if h.v == cfg.seat && m.nap_t <= 0.0 && m.over.is_none() {
-                        m.dm_hp -= 1;
+                        if m.armor >= 25 {
+                            m.armor -= 25; // the vest eats the tag
+                        } else {
+                            m.dm_hp -= 1;
+                        }
                         m.hurt = 0.4;
                         sfx("death");
                         if m.dm_hp <= 0 {
@@ -1030,20 +1155,26 @@ fn fire(
     if !pressed || m.fire_cd > 0.0 {
         return;
     }
-    if m.darts <= 0 {
+    let cost = if m.weapon == 2 { 3 } else { 1 };
+    if m.darts < cost {
         sfx("tick"); // dry click: the office is out of tranquilizer
         return;
     }
-    m.darts -= 1;
-    m.fire_cd = 0.45;
+    m.darts -= cost;
+    m.fire_cd = match m.weapon {
+        1 => 0.16, // rapid stapler hoses
+        2 => 0.95, // memo launcher needs a breath
+        _ => 0.45,
+    };
     m.flash = 0.08;
     m.fired_flag = true;
-    stat("darts_fired", 1);
+    stat("darts_fired", cost as u64);
     sfx("fire");
     // OFFICE PARTY: the same hitscan, aimed at rival auditors instead.
     if m.dm {
         let (wall_d, _, _) = cast(&m, m.px, m.py, m.ang, 24.0);
         let mut best: Option<(usize, f32)> = None;
+        let mut hits: Vec<(usize, f32)> = Vec::new();
         for r in remotes.0.iter().filter(|r| !r.napping && r.heard) {
             let rel = Vec2::new(r.x - m.px, r.y - m.py);
             let d = rel.length();
@@ -1057,13 +1188,29 @@ fn fire(
             while da < -std::f32::consts::PI {
                 da += std::f32::consts::TAU;
             }
-            if da.abs() < (0.05 + 0.25 / d.max(0.5)) && los(&m, m.px, m.py, r.x, r.y) {
+            let cone = if m.weapon == 2 {
+                0.30 + 0.30 / d.max(0.5) // the memo burst forgives aim
+            } else {
+                0.05 + 0.25 / d.max(0.5)
+            };
+            if da.abs() < cone && los(&m, m.px, m.py, r.x, r.y) {
                 if best.map(|(_, bd)| d < bd).unwrap_or(true) {
                     best = Some((r.seat, d));
                 }
+                if m.weapon == 2 {
+                    hits.push((r.seat, d));
+                }
             }
         }
-        if let Some((seat, _)) = best {
+        if m.weapon == 2 {
+            hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            for (seat, _) in hits.into_iter().take(3) {
+                if let Ok(w) = serde_json::to_string(&WireHit { t: "hit".into(), v: seat as u8 }) {
+                    net_send(&w);
+                }
+            }
+            sfx("boom");
+        } else if let Some((seat, _)) = best {
             if let Ok(w) = serde_json::to_string(&WireHit { t: "hit".into(), v: seat as u8 }) {
                 net_send(&w);
             }
@@ -1071,9 +1218,10 @@ fn fire(
         }
         return;
     }
-    // Hitscan: nearest awake guard within a narrow cone and line of sight.
+    // Hitscan against guards. The memo launcher bursts wide and naps up
+    // to three at once; pistol and rapid stapler pick the nearest in cone.
     let (wall_d, _, _) = cast(&m, m.px, m.py, m.ang, 24.0);
-    let mut best: Option<(usize, f32)> = None;
+    let mut matched: Vec<(usize, f32)> = Vec::new();
     for (i, g) in guards.0.iter().enumerate() {
         if g.hp <= 0 {
             continue;
@@ -1091,23 +1239,30 @@ fn fire(
             da += std::f32::consts::TAU;
         }
         // The cone widens up close, like an actual arm.
-        if da.abs() < (0.05 + 0.25 / d.max(0.5)) && los(&m, m.px, m.py, g.x, g.y) {
-            if best.map(|(_, bd)| d < bd).unwrap_or(true) {
-                best = Some((i, d));
-            }
+        let cone = if m.weapon == 2 {
+            0.30 + 0.30 / d.max(0.5)
+        } else {
+            0.05 + 0.25 / d.max(0.5)
+        };
+        if da.abs() < cone && los(&m, m.px, m.py, g.x, g.y) {
+            matched.push((i, d));
         }
     }
-    if let Some((i, _)) = best {
+    matched.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let (take, dmg) = if m.weapon == 2 { (3, 2) } else { (1, 1) };
+    let mut any = false;
+    for (i, _) in matched.into_iter().take(take) {
         let g = &mut guards.0[i];
-        g.hp -= 1;
+        g.hp -= dmg;
         g.alert = true;
+        any = true;
         if g.hp <= 0 {
             m.score += 150;
             stat("guards_tranqed", 1);
-            sfx("capture");
-        } else {
-            sfx("rotate");
         }
+    }
+    if any {
+        sfx(if m.weapon == 2 { "boom" } else { "capture" });
     }
 }
 
@@ -1162,7 +1317,9 @@ fn guards_think(
                 let hit_chance = (0.85 - dist * 0.07).max(0.25);
                 if rng.chance(hit_chance) {
                     let dmg = 6 + rng.range(8) as i32;
-                    m.hp -= dmg;
+                    let soak = dmg.min(m.armor);
+                    m.armor -= soak;
+                    m.hp -= dmg - soak;
                     m.hurt = 0.35;
                     sfx("death");
                 }
@@ -1265,8 +1422,11 @@ fn render_view(
         h: f32,
         color: Color,
         dy: f32, // vertical offset factor (pickups sit low)
+        zb: f32, // tiny z bump so heads draw over torsos
     }
     let mut items: Vec<(f32, Bill)> = Vec::new();
+    // Guards and rival auditors are FIGURES now — torso plus a head —
+    // instead of anonymous slabs. Sleepers stay lumps.
     for g in &guards.0 {
         let color = if g.hp <= 0 {
             Color::srgb(0.35, 0.35, 0.40)
@@ -1275,27 +1435,40 @@ fn render_view(
         } else {
             AMBER
         };
-        let (h, dy) = if g.hp <= 0 { (0.35, -0.28) } else { (0.95, 0.0) };
-        items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h, color, dy }));
+        if g.hp <= 0 {
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0 }));
+        } else {
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0 }));
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004 }));
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.24, h: 0.08, color: Color::srgb(0.12, 0.14, 0.22), dy: 0.42, zb: 0.006 })); // the cap
+        }
     }
     for r in remotes.0.iter().filter(|r| r.heard) {
         let (x, y) = (r.px + (r.x - r.px) * r.t, r.py + (r.y - r.py) * r.t);
         let color = PLAYER_COLORS[r.seat % 12];
-        let (h, dy) = if r.napping { (0.35, -0.28) } else { (0.95, 0.0) };
-        items.push((0.0, Bill { x, y, w: 0.5, h, color, dy }));
+        if r.napping {
+            items.push((0.0, Bill { x, y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0 }));
+        } else {
+            items.push((0.0, Bill { x, y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0 }));
+            items.push((0.0, Bill { x, y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004 }));
+        }
     }
     for p in pickups.0.iter().filter(|p| !p.taken) {
         let color = match p.kind {
             PickupKind::File => AMBER,
             PickupKind::Darts => CYAN,
             PickupKind::Coffee => MAGENTA,
+            PickupKind::Rapid => Color::srgb(0.3, 0.6, 1.0),
+            PickupKind::Memo => Color::srgb(0.95, 0.95, 0.92),
+            PickupKind::Vest => GREEN,
+            PickupKind::Espresso => Color::srgb(0.95, 0.55, 0.15),
         };
-        items.push((0.0, Bill { x: p.x, y: p.y, w: 0.28, h: 0.3, color, dy: -0.3 }));
+        items.push((0.0, Bill { x: p.x, y: p.y, w: 0.28, h: 0.3, color, dy: -0.3, zb: 0.0 }));
     }
     // The server console tile glows until bugged — the "go here" beacon.
     if !m.server_bugged && !m.dm {
         let (sx, sy) = m.server_cell;
-        items.push((0.0, Bill { x: sx as f32 + 0.5, y: sy as f32 + 0.5, w: 0.4, h: 0.2, color: GREEN, dy: -0.35 }));
+        items.push((0.0, Bill { x: sx as f32 + 0.5, y: sy as f32 + 0.5, w: 0.4, h: 0.2, color: GREEN, dy: -0.35, zb: 0.0 }));
     }
     for it in items.iter_mut() {
         let rel = Vec2::new(it.1.x - m.px, it.1.y - m.py);
@@ -1331,7 +1504,7 @@ fn render_view(
             sp.custom_size = Some(Vec2::new(scale * b.w, scale * b.h));
             tf.translation.x = sx;
             tf.translation.y = VIEW_CY + scale * b.dy;
-            tf.translation.z = 2.0 + (30.0 - dist) * 0.01;
+            tf.translation.z = 2.0 + (30.0 - dist) * 0.01 + b.zb;
             *vis = Visibility::Inherited;
         }
     }
@@ -1406,9 +1579,9 @@ fn hud(
     }
     if let Ok(mut t) = help.single_mut() {
         let s = if m.dm {
-            "W/S WALK  A/D STRAFE  ARROWS TURN  SPACE DART  E DOORS - FIRST TO 10 TRANQS"
+            "MOUSE TURNS (CLICK LOCKS)  W/S A/D MOVE  CLICK/SPACE FIRES  1-3 WEAPONS  E DOORS"
         } else {
-            "W/S WALK  A/D STRAFE  ARROWS TURN  SPACE DART  E OPEN/USE - RED VEIL = YOU GOT HIT"
+            "MOUSE TURNS (CLICK LOCKS)  W/S A/D MOVE  CLICK/SPACE FIRES  1-3 WEAPONS  E USE - PARTY: HOST/JOIN BELOW THE SCREEN"
         };
         if t.0 != s {
             t.0 = s.into();
@@ -1422,14 +1595,24 @@ fn hud(
                 format!("NAPPING... BACK IN {:.0}", m.nap_t.max(0.0) + 0.99)
             } else {
                 format!(
-                    "HITS LEFT {}   FIRST TO {}   {}",
+                    "HITS LEFT {}{}   [{}]   FIRST TO {}   {}",
                     m.dm_hp.max(0),
+                    if m.armor > 0 { " +VEST" } else { "" },
+                    weapon_name(m.weapon),
                     DM_TARGET,
                     fmt_clock(m.dm_clock.max(0.0))
                 )
             }
         } else {
-            format!("HEALTH {}   DARTS {}   {}", m.hp.max(0), m.darts, fmt_clock(m.clock))
+            let vest = if m.armor > 0 { format!(" +{} VEST", m.armor) } else { String::new() };
+            let zoomies = if m.espresso_t > 0.0 { "  [FAST]" } else { "" };
+            format!(
+                "HEALTH {}{vest}   DARTS {}   [{}]{zoomies}   {}",
+                m.hp.max(0),
+                m.darts,
+                weapon_name(m.weapon),
+                fmt_clock(m.clock)
+            )
         };
         if t.0 != s {
             t.0 = s;
@@ -1463,6 +1646,14 @@ fn hud(
         if t.0 != s {
             t.0 = s;
         }
+    }
+}
+
+fn weapon_name(w: u8) -> &'static str {
+    match w {
+        1 => "RAPID STAPLER",
+        2 => "MEMO LAUNCHER",
+        _ => "DART PISTOL",
     }
 }
 

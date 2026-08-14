@@ -61,7 +61,7 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P mission · 2-12 online deathmatch · editor', controls: 'W/S walk · A/D strafe · ← → turn · Space fires a tranquilizer dart (watch the gun kick — a RED flash means YOU got hit) · E opens doors and plants the bug (on-screen prompts say when). MISSION: grab the 3 amber files, press E standing on the glowing green server tile, then walk out the green door. ONLINE: the OFFICE PARTY — host or join a room in the bar right below the screen; no guards, three darts and you nap, first to 10 tranqs (or best at the horn) wins.',
+    players: '1P mission · 2-12 online deathmatch · editor', controls: 'MOUSE turns the view, PC-shooter style — click the screen to lock the pointer (Esc releases). W/S walk · A/D strafe · click or Space fires · E opens doors and plants the bug (on-screen prompts say when). Guards and rival auditors are proper figures now — torso, head, cap. THE ARMORY: a RAPID STAPLER, a MEMO LAUNCHER (costs 3 darts, naps a cluster), a VEST (soaks damage), and an ESPRESSO (fast feet) hide on random floor tiles each shift — 1/2/3 or Q switches weapons. MISSION: grab the 3 amber files, press E on the glowing green server tile, then walk out the green door. ONLINE: the OFFICE PARTY — host or join a room in the bar right below the screen; first to 10 tranqs wins, and the armory works on rivals too.',
   },
   {
     id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
@@ -81,7 +81,7 @@ const CABINETS = [
   },
   {
     id: 'bumper-chairs', name: 'BUMPER CHAIRS', tag: 'Last chair rolling wins. Facilities is furious.',
-    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — your balloons float over your seat, the minimap top-right sees the whole garage, and the ITEM BOX (top left) spins like a slot machine when you grab a crate. ← →/A D steer · ↑/W drives · Space uses the item. The full kit: STAPLER · TRIPLE · SMART STAPLER (it seeks) · COFFEE PUDDLE · ESPRESSO · OVERTIME (untouchable rush — brushing rivals pops them) · EJECTOR (hop a wall) · BLACKOUT (spins every rival) · GHOST VENDOR (steals a balloon, up to five). Last chair holding a balloon wins.',
+    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — rivals are proper chairs (hub, seat, backrest), your balloons float over your seat, the minimap top-right sees the whole garage, and the ITEM BOX (top left) spins like a slot machine when you grab a crate (Space stops the spin early; the next press uses it). ← →/A D steer · ↑/W drives · ↓/S brakes, and only once stopped does holding it reverse. Chairs drift in hard corners, spin out if you yank the wheel flat-out, glance off walls, and coast down off the gas. Space uses the item. The full kit: STAPLER · TRIPLE · SMART STAPLER (it seeks) · COFFEE PUDDLE · ESPRESSO · OVERTIME (untouchable rush — brushing rivals pops them) · EJECTOR (hop a wall) · BLACKOUT (spins every rival) · GHOST VENDOR (steals a balloon, up to five). Last chair holding a balloon wins.',
   },
   {
     id: 'roll-call', name: 'ROLL CALL', tag: 'Five dice, three throws, thirteen boxes, no excuses.',
