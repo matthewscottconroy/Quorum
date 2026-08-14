@@ -12,7 +12,6 @@
 
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
-use bevy::window::CursorGrabMode;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
@@ -22,9 +21,9 @@ use crate::{FinalScore, GameTag, NetIn, NetMode, Phase};
 
 pub const BLURB: &[&str] = &[
     "THE BOOKS DON'T SLEEP. NEITHER DO YOU.",
-    "W/S WALK - A/D STRAFE - ARROW KEYS TURN - SPACE FIRES A DART - E OPENS/USES",
-    "SOLO: GRAB 3 AMBER FILES, PRESS E ON THE GLOWING GREEN TILE, EXIT GREEN DOOR.",
-    "OFFICE PARTY (2-12 ONLINE): HOST OR JOIN A ROOM IN THE BAR UNDER THE SCREEN.",
+    "MOUSE TURNS - WASD MOVES - CLICK DARTS - E USES",
+    "SOLO: 3 FILES, BUG THE GREEN TILE, EXIT GREEN.",
+    "DEATHMATCH (2-12): HOST/JOIN IN THE BAR BELOW.",
 ];
 
 /// Deathmatch tuning: three darts and you nap, first to ten (or the best
@@ -444,7 +443,6 @@ impl Plugin for NightAuditPlugin {
                 Update,
                 editor_update.run_if(in_state(Phase::Playing)).run_if(crate::unpaused),
             )
-            .add_systems(Update, cursor_lock.run_if(in_state(Phase::Playing)))
             .add_systems(
                 Update,
                 (
@@ -716,31 +714,6 @@ fn try_move(m: &Mission, x: f32, y: f32) -> bool {
         }
     }
     true
-}
-
-/// PC-shooter pointer handling: clicking the view locks the pointer so
-/// the mouse turns you; pause, the editor, and the end screen release it.
-fn cursor_lock(
-    buttons: Res<ButtonInput<MouseButton>>,
-    paused: Res<crate::Paused>,
-    m: Option<Res<Mission>>,
-    editor: Option<Res<OfficeEditor>>,
-    mut windows: Query<&mut Window>,
-) {
-    let Ok(mut w) = windows.single_mut() else { return };
-    let editing = editor.map(|e| e.active).unwrap_or(false);
-    let over = m.map(|m| m.over.is_some()).unwrap_or(true);
-    if paused.0 || editing || over {
-        if w.cursor_options.grab_mode != CursorGrabMode::None {
-            w.cursor_options.grab_mode = CursorGrabMode::None;
-            w.cursor_options.visible = true;
-        }
-    } else if buttons.just_pressed(MouseButton::Left)
-        && w.cursor_options.grab_mode != CursorGrabMode::Locked
-    {
-        w.cursor_options.grab_mode = CursorGrabMode::Locked;
-        w.cursor_options.visible = false;
-    }
 }
 
 fn player_move(

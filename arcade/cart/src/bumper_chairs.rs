@@ -189,6 +189,9 @@ struct Garage {
     slot_icon: Entity, // the item box's window
     slot_label: Entity,
     slot_spin: f32, // the slot machine wobble after grabbing a crate
+    start_t: f32,   // the 3-2-1-GO gate at the horn
+    bump_t: f32,    // wall-thud sound cooldown
+    sky: Vec<(Entity, f32)>, // parallax skyline: entity + angular phase
 }
 
 #[derive(Component)]
@@ -430,9 +433,16 @@ fn setup(
                 's' => spawns.push(center),
                 _ => {}
             }
-            // Sparse floor dots so the ground reads as moving.
-            if ch != '#' && x % 2 == 0 && y % 2 == 0 {
-                bill(&mut commands, center, 0.15, 0.0, 0.0, true, WHITE.with_alpha(0.22));
+            // The mode-7 checkerboard: every open cell is a floor tile, so
+            // the ground streams under you the way a kart track should.
+            if ch != '#' {
+                let tone = if (x + y) % 2 == 0 {
+                    Color::srgb(0.155, 0.165, 0.225)
+                } else {
+                    Color::srgb(0.075, 0.085, 0.115)
+                };
+                let e = bill(&mut commands, center, 1.02, 1.0, -0.1, true, tone);
+                let _ = e;
             }
         }
     }
@@ -598,6 +608,29 @@ fn setup(
     let slot_label = text(&mut commands, "", 11.0, WHITE, Vec3::new(-322.0, 204.0, 27.2));
     commands.entity(slot_label).insert((FixedView, GameTag));
     commands.entity(slot_label).insert(Visibility::Hidden);
+    // A skyline of parking-garage pillars above the horizon: it slides
+    // opposite your steering, which is most of what "turning" looks like.
+    let mut sky = Vec::new();
+    for i in 0..12 {
+        let ph = i as f32 / 12.0 * std::f32::consts::TAU;
+        let h = 22.0 + ((i * 37) % 5) as f32 * 9.0;
+        let wdt = 26.0 + ((i * 53) % 4) as f32 * 16.0;
+        let tone = if i % 2 == 0 {
+            Color::srgb(0.10, 0.12, 0.19)
+        } else {
+            Color::srgb(0.075, 0.09, 0.15)
+        };
+        let e = commands
+            .spawn((
+                Sprite { color: tone, custom_size: Some(Vec2::new(wdt, h)), ..default() },
+                Transform::from_xyz(0.0, HORIZON + h / 2.0 + 1.0, 0.06),
+                Visibility::Hidden,
+                FixedView,
+                GameTag,
+            ))
+            .id();
+        sky.push((e, ph));
+    }
     commands.insert_resource(Garage {
         rows,
         chairs,
@@ -617,6 +650,9 @@ fn setup(
         slot_icon,
         slot_label,
         slot_spin: 0.0,
+        start_t: 3.2,
+        bump_t: 0.0,
+        sky,
     });
     let hud = text(&mut commands, "", 18.0, WHITE, Vec3::new(0.0, 300.0, 30.0));
     commands.entity(hud).insert((Hud, GameTag));
@@ -642,7 +678,7 @@ fn fire_item(
         1 => {
             // Coffee: a puddle just behind the chair.
             let back = pos - Vec2::new(ang.cos(), -ang.sin()) * 0.9;
-            let ent = bill(commands, back, 1.15, 0.0, 0.0, true, Color::srgb(0.72, 0.5, 0.2));
+            let ent = bill(commands, back, 1.15, 0.85, 0.0, true, Color::srgb(0.72, 0.5, 0.2));
             g.puddles.push(Puddle { pos: back, ttl: 12.0, owner: seat, ent });
         }
         4 => {
@@ -770,6 +806,22 @@ fn drive(
         return;
     }
     let dt = time.delta_secs();
+    g.bump_t = (g.bump_t - dt).max(0.0);
+    // The grid holds everyone until the horn: 3... 2... 1... GO!
+    if g.start_t > 0.0 {
+        let before = g.start_t.ceil() as i32;
+        g.start_t -= dt;
+        let after = g.start_t.max(0.0).ceil() as i32;
+        if after < before && after > 0 {
+            popup(&mut commands, &after.to_string(), 44.0, AMBER, Vec2::new(0.0, 60.0));
+            sfx("tick");
+        }
+        if g.start_t <= 0.0 {
+            popup(&mut commands, "GO!", 48.0, GREEN, Vec2::new(0.0, 60.0));
+            sfx("power");
+        }
+        return;
+    }
     g.clock -= dt;
     let rows = g.rows.clone();
     let my = g.my_seat;
@@ -784,6 +836,7 @@ fn drive(
         sfx("place");
     }
     let mut fire_req: Option<(usize, u8)> = None;
+    let mut bumped = false;
     for i in 0..g.chairs.len() {
         let local = {
             let c = &g.chairs[i];
@@ -878,15 +931,25 @@ fn drive(
         if bx && by {
             c.speed *= -0.35;
             if c.human && c.speed.abs() > 40.0 {
-                sfx("tick");
+                bumped = true;
             }
         } else if bx {
             c.mdir = (-dirv.y).atan2(-dirv.x);
+            if c.human && c.speed.abs() > 110.0 {
+                bumped = true;
+            }
             c.speed *= 0.78;
         } else if by {
             c.mdir = dirv.y.atan2(dirv.x);
+            if c.human && c.speed.abs() > 110.0 {
+                bumped = true;
+            }
             c.speed *= 0.78;
         }
+    }
+    if bumped && g.bump_t <= 0.0 {
+        g.bump_t = 0.35;
+        sfx("drop"); // the thud of upholstery meeting masonry
     }
     if let Some((i, kind)) = fire_req {
         match kind {
@@ -987,7 +1050,7 @@ fn drive(
 /// Bot chairs (local rounds): chase a box or the nearest live rival, fire
 /// when roughly lined up. Dumb, cheerful, dangerous in numbers.
 fn bots(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
-    if g.net || g.over.is_some() {
+    if g.net || g.over.is_some() || g.start_t > 0.0 {
         return;
     }
     let dt = time.delta_secs();
@@ -1497,7 +1560,13 @@ fn project(
     }
     for (i, bx) in g.boxes.iter().enumerate() {
         if let Ok((mut b, _, _, _)) = bills.get_mut(bx.ent) {
-            b.base = if bx.up_in > 0.0 { AMBER.with_alpha(0.10) } else { AMBER };
+            b.base = if bx.up_in > 0.0 {
+                AMBER.with_alpha(0.10)
+            } else if flicker {
+                Color::srgb(1.0, 0.9, 0.45) // the crate glints, kart-item style
+            } else {
+                AMBER
+            };
             b.alt = 0.25 + 0.10 * (g.clock * 3.0 + i as f32).sin();
         }
     }
@@ -1518,8 +1587,15 @@ fn project(
         }
         let gy = HORIZON - inv; // camera rides one cell above the deck
         let (w_px, h_px, sy, zoff) = if b.flat {
+            // Ground decals project by their DEPTH: near edge low on the
+            // screen, far edge higher, like a real mode-7 floor tile.
+            let d = b.hh.max(0.2);
+            let near = (cy - d / 2.0).max(0.26);
+            let far = cy + d / 2.0;
+            let y_near = HORIZON - FOCAL / near;
+            let y_far = HORIZON - FOCAL / far;
             let w = (b.w * inv).min(900.0);
-            (w, (w * 0.35).max(1.5), gy + 1.0, -0.4)
+            (w, (y_far - y_near).max(1.5), (y_near + y_far) / 2.0, -0.4 + b.alt)
         } else {
             let w = (b.w * inv).min(900.0);
             let h = (b.hh * inv).min(900.0);
@@ -1550,7 +1626,23 @@ fn project(
         let lean = (i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
             - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD)))
             as f32;
-        tf.rotation = Quat::from_rotation_z(lean * 0.09);
+        // The chair leans into the drift and jitters with speed — the seat
+        // of the pants doing its share of the storytelling.
+        let (slip, spd) = me.map(|c| (wrap_pi(c.ang - c.mdir), c.speed)).unwrap_or((0.0, 0.0));
+        tf.rotation = Quat::from_rotation_z((lean * 0.05 + slip * 0.55).clamp(-0.5, 0.5));
+        let bob = (g.clock * 11.0).sin() * (spd.abs() / MAX_SPEED).min(1.0) * 3.0;
+        tf.translation.y = -238.0 + bob;
+    }
+    // Skyline slides opposite the steering.
+    for &(e, phase) in &g.sky {
+        if let Ok((mut vis, mut tf)) = fixed.get_mut(e) {
+            let x = wrap_pi(phase - ang) * 230.0;
+            if x.abs() > 400.0 {
+                *vis = Visibility::Hidden;
+            } else {
+                tf.translation.x = x;
+            }
+        }
     }
     // Your balloon rack: what you can still afford to lose.
     let my_balloons_now = me.map(|c| c.balloons.max(0)).unwrap_or(0);
@@ -1586,6 +1678,8 @@ fn hud(g: Res<Garage>, mut hud: Query<&mut Text2d, With<Hud>>) {
     if let Ok(mut t) = hud.single_mut() {
         let s = if g.over.is_some() {
             g.result.clone()
+        } else if g.start_t > 0.0 {
+            format!("GET READY... {}", g.start_t.max(0.0).ceil() as i32)
         } else {
             let me = g.chairs.iter().find(|c| c.seat == g.my_seat);
             let item = match me.and_then(|c| c.item) {

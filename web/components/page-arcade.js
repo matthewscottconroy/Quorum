@@ -493,6 +493,22 @@ class PageArcade extends HTMLElement {
     } catch { /* stats are decoration */ }
   }
 
+  // Mouse-look cabinets lock the pointer in the BROWSER (not the engine):
+  // winit's grab on wasm is flaky, but canvas.requestPointerLock() is not.
+  // Locked, mousemove deltas keep flowing no matter where the cursor was;
+  // Esc releases, clicking locks again.
+  _wirePointerLock(cab) {
+    if (cab.id !== 'night-audit' || this._plWired) return;
+    const cv = this.querySelector('#arcade-canvas');
+    if (!cv || !cv.requestPointerLock) return;
+    this._plWired = true;
+    cv.addEventListener('click', () => {
+      if (this._playing && document.pointerLockElement !== cv) {
+        try { cv.requestPointerLock(); } catch { /* browser said no; deltas still work over the canvas */ }
+      }
+    });
+  }
+
   // ---- one cabinet ----
 
   renderCabinet(cab) {
@@ -592,7 +608,7 @@ class PageArcade extends HTMLElement {
             </div>
             ${net ? `
             <div class="tsc-net" id="net-box">
-              <span class="tsc-note">ONLINE:</span>
+              <span class="tsc-note" ${cab.id === 'night-audit' ? 'style="color:#ff77ff;text-shadow:0 0 6px rgba(255,119,255,.5)"' : ''}>${cab.id === 'night-audit' ? '► DEATHMATCH — THE OFFICE PARTY (2-12). HOST A ROOM, FRIENDS JOIN WITH THE CODE:' : 'ONLINE:'}</span>
               ${net.max > 2 ? `
                 <label class="tsc-note">SEATS
                   <select id="net-seats" class="tsc-sel">${Array.from({ length: net.max - net.min + 1 },
@@ -824,6 +840,7 @@ class PageArcade extends HTMLElement {
           mod.arcade_insert_credit(players, humans);
           this._playing = true;
           this.querySelector('#arcade-canvas')?.focus();
+          this._wirePointerLock(cab);
           this.loadScores(cab.id);
         } catch (err) {
           toast(err.error ?? 'Coin jammed', 'error');
