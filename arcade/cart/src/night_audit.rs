@@ -84,9 +84,9 @@ const MAP: [&str; MH] = [
     "#.g..#....#.dddd.####D##",
     "#....######......#.....#",
     "#.a.......D......D..f..#",
-    "#....#....#......#.....#",
-    "###D##....########..g..#",
-    "#........g#......#.....#",
+    "#....#....#......#..,..#",
+    "###D##....########.^^g.#",
+    "#........g#......#.^^..#",
     "#....#....D..c...####X##",
     "########################",
 ];
@@ -101,6 +101,7 @@ enum Cell {
 /// the editor's canvas, and maps arriving over the relay.
 struct Parsed {
     grid: Vec<Cell>,
+    heights: Vec<f32>, // raised floor per cell: 0 ground, 0.22 step, 0.45 deck
     guards: Vec<Guard>,
     pickups: Vec<Pickup>,
     px: f32,
@@ -114,6 +115,7 @@ struct Parsed {
 fn parse_office(rows: &[String]) -> Parsed {
     let mut out = Parsed {
         grid: vec![Cell::Open; MW * MH],
+        heights: vec![0.0; MW * MH],
         guards: Vec::new(),
         pickups: Vec::new(),
         px: 1.5,
@@ -172,6 +174,14 @@ fn parse_office(rows: &[String]) -> Parsed {
                 }
                 'v' => {
                     out.server_cell = (x, y);
+                    Cell::Open
+                }
+                ',' => {
+                    out.heights[y * MW + x] = 0.22; // the half step
+                    Cell::Open
+                }
+                '^' => {
+                    out.heights[y * MW + x] = 0.45; // the raised deck
                     Cell::Open
                 }
                 _ => Cell::Open,
@@ -277,6 +287,9 @@ struct Mission {
     nap_t: f32,
     pos_timer: Timer,
     fired_flag: bool,
+    heights: Vec<f32>, // per-cell floor elevation (steps and decks)
+    pitch: f32,        // vertical look, in screen pixels of horizon shear
+    pz: f32,           // your eye's current elevation (eases up steps)
     weapon: u8,       // 0 dart pistol, 1 rapid stapler, 2 memo launcher
     have_rapid: bool,
     have_memo: bool,
@@ -415,6 +428,9 @@ struct View {
     bills: Vec<Entity>, // reused for guards + pickups, nearest first
     gun: Entity,        // the dart gun in the corner; kicks on fire
     tracer: Entity,     // dart streak toward the crosshair
+    steps: Vec<Entity>, // step-face columns for raised decks
+    ceil: Entity,       // horizon plates, sheared by pitch
+    floor: Entity,
 }
 
 #[derive(Component)]
@@ -501,6 +517,7 @@ fn setup(
     let parsed = parse_office(&rows);
     let Parsed {
         grid,
+        heights: parsed_heights,
         mut guards,
         mut pickups,
         mut px,
@@ -579,6 +596,9 @@ fn setup(
         nap_t: 0.0,
         pos_timer: Timer::from_seconds(0.1, TimerMode::Repeating),
         fired_flag: false,
+        heights: parsed_heights,
+        pitch: 0.0,
+        pz: 0.0,
         weapon: 0,
         have_rapid: false,
         have_memo: false,
@@ -609,17 +629,22 @@ fn setup(
     commands.insert_resource(Guards(guards));
     commands.insert_resource(Pickups(pickups));
 
-    // Ceiling and floor plates behind the columns.
-    commands.spawn((
-        Sprite { color: Color::srgb(0.05, 0.06, 0.10), custom_size: Some(Vec2::new(720.0, VIEW_H / 2.0)), ..default() },
-        Transform::from_xyz(0.0, VIEW_CY + VIEW_H / 4.0, 0.5),
-        GameTag,
-    ));
-    commands.spawn((
-        Sprite { color: Color::srgb(0.09, 0.08, 0.07), custom_size: Some(Vec2::new(720.0, VIEW_H / 2.0)), ..default() },
-        Transform::from_xyz(0.0, VIEW_CY - VIEW_H / 4.0, 0.5),
-        GameTag,
-    ));
+    // Ceiling and floor plates behind the columns — oversized so the
+    // horizon can shear up and down with your pitch without gaps.
+    let ceil = commands
+        .spawn((
+            Sprite { color: Color::srgb(0.05, 0.06, 0.10), custom_size: Some(Vec2::new(720.0, VIEW_H)), ..default() },
+            Transform::from_xyz(0.0, VIEW_CY + VIEW_H / 2.0, 0.5),
+            GameTag,
+        ))
+        .id();
+    let floor = commands
+        .spawn((
+            Sprite { color: Color::srgb(0.09, 0.08, 0.07), custom_size: Some(Vec2::new(720.0, VIEW_H)), ..default() },
+            Transform::from_xyz(0.0, VIEW_CY - VIEW_H / 2.0, 0.5),
+            GameTag,
+        ))
+        .id();
     // The column pool.
     let mut cols = Vec::with_capacity(NCOL);
     for i in 0..NCOL {
@@ -669,7 +694,21 @@ fn setup(
             GameTag,
         ))
         .id();
-    commands.insert_resource(View { cols, depth: vec![f32::MAX; NCOL], bills, gun, tracer });
+    // Step faces: a second column pool for the fronts of raised decks.
+    let mut steps = Vec::with_capacity(NCOL);
+    for i in 0..NCOL {
+        let x = -360.0 + COLW / 2.0 + i as f32 * COLW;
+        let e = commands
+            .spawn((
+                Sprite { color: DIM, custom_size: Some(Vec2::new(COLW, 10.0)), ..default() },
+                Transform::from_xyz(x, VIEW_CY, 1.4),
+                Visibility::Hidden,
+                GameTag,
+            ))
+            .id();
+        steps.push(e);
+    }
+    commands.insert_resource(View { cols, depth: vec![f32::MAX; NCOL], bills, gun, tracer, steps, ceil, floor });
 
     // Crosshair.
     commands.spawn((
@@ -733,9 +772,19 @@ fn player_move(
     m.hurt = (m.hurt - dt).max(0.0);
     m.espresso_t = (m.espresso_t - dt).max(0.0);
     // Mouse turns the view, PC-shooter style (click the screen to lock the
-    // pointer). Arrows still work for the keyboard faithful.
-    let mouse_dx: f32 = motion.read().map(|ev| ev.delta.x).sum();
+    // pointer) — and tilts it: mouse Y shears the horizon so you can look
+    // up at the racks and down the stairwells. Arrows still work.
+    let (mut mouse_dx, mut mouse_dy) = (0.0f32, 0.0f32);
+    for ev in motion.read() {
+        mouse_dx += ev.delta.x;
+        mouse_dy += ev.delta.y;
+    }
     m.ang += mouse_dx * 0.0032;
+    m.pitch = (m.pitch - mouse_dy * 0.9).clamp(-170.0, 170.0);
+    // Your eye eases to the floor under you: stairs feel like stairs.
+    let here = (m.py.floor() as usize).min(MH - 1) * MW + (m.px.floor() as usize).min(MW - 1);
+    let target = m.heights[here];
+    m.pz += (target - m.pz) * (7.0 * dt).min(1.0);
     let turn = i32::from(keys.pressed(KeyCode::ArrowRight)) - i32::from(keys.pressed(KeyCode::ArrowLeft));
     m.ang += turn as f32 * TURN_SPEED * dt;
     // The armory: 1 pistol, 2 rapid stapler, 3 memo launcher, Q cycles.
@@ -1069,6 +1118,29 @@ fn finish_party(m: &mut Mission, scores: &[u32]) {
 }
 
 /// A grid ray via DDA: returns (distance, wall kind, vertical-face flag).
+/// March the ray for the first RAISED floor cell (deck or step) before a
+/// wall; returns (distance, deck height). Coarse steps are plenty here.
+fn cast_step(m: &Mission, ox: f32, oy: f32, ang: f32, max: f32) -> Option<(f32, f32)> {
+    let (dx, dy) = (ang.cos(), ang.sin());
+    let mut t = 0.12;
+    while t < max {
+        let (cx, cy) = (ox + dx * t, oy + dy * t);
+        let (ix, iy) = (cx.floor() as i32, cy.floor() as i32);
+        if ix < 0 || ix >= MW as i32 || iy < 0 || iy >= MH as i32 {
+            return None;
+        }
+        if m.solid(ix, iy) {
+            return None;
+        }
+        let h = m.heights[iy as usize * MW + ix as usize];
+        if h > 0.01 {
+            return Some((t, h));
+        }
+        t += 0.08;
+    }
+    None
+}
+
 fn cast(m: &Mission, ox: f32, oy: f32, ang: f32, max: f32) -> (f32, u8, bool) {
     let (dx, dy) = (ang.cos(), ang.sin());
     let (mut mx, mut my) = (ox.floor() as i32, oy.floor() as i32);
@@ -1380,11 +1452,35 @@ fn render_view(
         };
         let shade = (1.0 - (dcorr / 16.0)).clamp(0.15, 1.0) * if vertical { 1.0 } else { 0.78 };
         let c = base.to_srgba();
+        // Pitch shears the horizon; your eye height shifts near walls more
+        // than far ones — that parallax is what sells standing on a deck.
+        let hfull = VIEW_H * 0.9 / dcorr;
+        let ycenter = VIEW_CY + m.pitch - m.pz * hfull;
         if let Ok((mut sp, mut tf, mut vis)) = sprites.get_mut(view.cols[i]) {
             sp.color = Color::srgb(c.red * shade, c.green * shade, c.blue * shade);
             sp.custom_size = Some(Vec2::new(COLW, h));
-            tf.translation.y = VIEW_CY;
+            tf.translation.y = ycenter;
             *vis = if kind == 0 { Visibility::Hidden } else { Visibility::Inherited };
+        }
+        // A raised deck between you and that wall: draw its front face
+        // rising from the floor line.
+        if let Ok((mut sp, mut tf, mut vis)) = sprites.get_mut(view.steps[i]) {
+            match cast_step(&m, m.px, m.py, m.ang + lens, dcorr.min(14.0)) {
+                Some((ds, deck)) if ds < dcorr => {
+                    let dsc = (ds * lens.cos()).max(0.15);
+                    let hf = VIEW_H * 0.9 / dsc;
+                    let bottom = VIEW_CY + m.pitch - m.pz * hf - hf / 2.0;
+                    let face = deck * hf;
+                    let s2 = (1.0 - (dsc / 16.0)).clamp(0.2, 1.0);
+                    sp.color = Color::srgb(0.34 * s2, 0.33 * s2, 0.30 * s2);
+                    sp.custom_size = Some(Vec2::new(COLW, face.min(VIEW_H)));
+                    tf.translation.y = bottom + face / 2.0;
+                    *vis = Visibility::Inherited;
+                }
+                _ => {
+                    *vis = Visibility::Hidden;
+                }
+            }
         }
     }
     // Billboards, farthest first so near ones overwrite via z.
@@ -1394,8 +1490,9 @@ fn render_view(
         w: f32,
         h: f32,
         color: Color,
-        dy: f32, // vertical offset factor (pickups sit low)
-        zb: f32, // tiny z bump so heads draw over torsos
+        dy: f32,   // vertical offset factor (pickups sit low)
+        zb: f32,   // tiny z bump so heads draw over torsos
+        elev: f32, // floor elevation under this thing (decks lift it)
     }
     let mut items: Vec<(f32, Bill)> = Vec::new();
     // Guards and rival auditors are FIGURES now — torso plus a head —
@@ -1409,21 +1506,21 @@ fn render_view(
             AMBER
         };
         if g.hp <= 0 {
-            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0 }));
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0, elev: 0.0 }));
         } else {
-            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0 }));
-            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004 }));
-            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.24, h: 0.08, color: Color::srgb(0.12, 0.14, 0.22), dy: 0.42, zb: 0.006 })); // the cap
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0, elev: 0.0 }));
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004, elev: 0.0 }));
+            items.push((0.0, Bill { x: g.x, y: g.y, w: 0.24, h: 0.08, color: Color::srgb(0.12, 0.14, 0.22), dy: 0.42, zb: 0.006, elev: 0.0 })); // the cap
         }
     }
     for r in remotes.0.iter().filter(|r| r.heard) {
         let (x, y) = (r.px + (r.x - r.px) * r.t, r.py + (r.y - r.py) * r.t);
         let color = PLAYER_COLORS[r.seat % 12];
         if r.napping {
-            items.push((0.0, Bill { x, y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0 }));
+            items.push((0.0, Bill { x, y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0, elev: 0.0 }));
         } else {
-            items.push((0.0, Bill { x, y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0 }));
-            items.push((0.0, Bill { x, y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004 }));
+            items.push((0.0, Bill { x, y, w: 0.42, h: 0.62, color, dy: -0.14, zb: 0.0, elev: 0.0 }));
+            items.push((0.0, Bill { x, y, w: 0.20, h: 0.20, color: Color::srgb(0.85, 0.70, 0.55), dy: 0.30, zb: 0.004, elev: 0.0 }));
         }
     }
     for p in pickups.0.iter().filter(|p| !p.taken) {
@@ -1436,16 +1533,21 @@ fn render_view(
             PickupKind::Vest => GREEN,
             PickupKind::Espresso => Color::srgb(0.95, 0.55, 0.15),
         };
-        items.push((0.0, Bill { x: p.x, y: p.y, w: 0.28, h: 0.3, color, dy: -0.3, zb: 0.0 }));
+        items.push((0.0, Bill { x: p.x, y: p.y, w: 0.28, h: 0.3, color, dy: -0.3, zb: 0.0, elev: 0.0 }));
     }
     // The server console tile glows until bugged — the "go here" beacon.
     if !m.server_bugged && !m.dm {
         let (sx, sy) = m.server_cell;
-        items.push((0.0, Bill { x: sx as f32 + 0.5, y: sy as f32 + 0.5, w: 0.4, h: 0.2, color: GREEN, dy: -0.35, zb: 0.0 }));
+        items.push((0.0, Bill { x: sx as f32 + 0.5, y: sy as f32 + 0.5, w: 0.4, h: 0.2, color: GREEN, dy: -0.35, zb: 0.0, elev: 0.0 }));
     }
     for it in items.iter_mut() {
         let rel = Vec2::new(it.1.x - m.px, it.1.y - m.py);
         it.0 = rel.length();
+        let (cx, cy) = (
+            (it.1.x.floor() as usize).min(MW - 1),
+            (it.1.y.floor() as usize).min(MH - 1),
+        );
+        it.1.elev = m.heights[cy * MW + cx];
     }
     items.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut used = 0;
@@ -1476,7 +1578,7 @@ fn render_view(
             sp.color = b.color;
             sp.custom_size = Some(Vec2::new(scale * b.w, scale * b.h));
             tf.translation.x = sx;
-            tf.translation.y = VIEW_CY + scale * b.dy;
+            tf.translation.y = VIEW_CY + m.pitch + scale * b.dy + (b.elev - m.pz) * scale;
             tf.translation.z = 2.0 + (30.0 - dist) * 0.01 + b.zb;
             *vis = Visibility::Inherited;
         }
@@ -1485,6 +1587,13 @@ fn render_view(
         if let Ok((_, _, mut vis)) = sprites.get_mut(e) {
             *vis = Visibility::Hidden;
         }
+    }
+    // Horizon plates follow the pitch shear.
+    if let Ok((_, mut tf, _)) = sprites.get_mut(view.ceil) {
+        tf.translation.y = VIEW_CY + VIEW_H / 2.0 + m.pitch - m.pz * 40.0;
+    }
+    if let Ok((_, mut tf, _)) = sprites.get_mut(view.floor) {
+        tf.translation.y = VIEW_CY - VIEW_H / 2.0 + m.pitch - m.pz * 40.0;
     }
     // Veils: RED means you were hurt; firing never tints the screen red —
     // the gun kick and amber tracer carry that instead.
@@ -1691,6 +1800,8 @@ fn cell_color(ch: char) -> Color {
         'S' => Color::srgb(0.16, 0.30, 0.44),
         'D' => Color::srgb(0.55, 0.48, 0.30),
         'X' => Color::srgb(0.10, 0.55, 0.22),
+        '^' => Color::srgb(0.30, 0.30, 0.36),
+        ',' => Color::srgb(0.22, 0.22, 0.27),
         'f' => AMBER,
         'a' => CYAN,
         'c' => MAGENTA,
@@ -1834,6 +1945,14 @@ fn editor_update(
     }
 
     // Brush keys 1-0, then the single-placement markers.
+    if keys.just_pressed(KeyCode::Minus) {
+        editor.brush = '^';
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::Comma) {
+        editor.brush = ',';
+        sfx("tick");
+    }
     for (i, key) in [
         KeyCode::Digit1,
         KeyCode::Digit2,
