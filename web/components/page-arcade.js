@@ -61,7 +61,7 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P mission · 2-12 party (bots or online) · editor', controls: 'MOUSE turns the view — click the screen to lock the pointer (Esc releases). W/S walk · A/D strafe · C crouches · click or Space fires · RIGHT BUTTON is the scope · 1-9, Q, or the wheel switch weapons · F sets off your sticky mines · E opens doors and plants the bug. THE ARMORY hides on random floor tiles each shift: RAPID STAPLER, PARTY POPPER (spread), MEMO LAUNCHER (naps a cluster), LETTER OPENERS (silent throw), CONFETTI MORTAR (splash), STICKY MEMO MINES, a VEST, an ESPRESSO, the GHOST BADGE (invisible), THERMAL SPECS (warm bodies glow through walls) — and, some nights, the GOLDEN STAPLER: one tap, one nap. Bare-handed? The CLIPBOARD SLAP always works. Shoot the ceiling lamps out (aim up) and the dark hides you. MISSION: 3 amber files, bug the server, out the green door. PARTY: set PLAYERS to 2+ for a bot battle, or host a room below — pick FREE-FOR-ALL, TEAMS, CAPTURE THE BINDER, or GLADIATOR, and dress as any of 8 characters.',
+    players: '1P mission · 2-12 party (bots or online) · editor', controls: 'MOUSE turns the view — click the screen to lock the pointer (Esc releases). W/S walk · A/D strafe · C crouches · click or Space fires · RIGHT BUTTON is the scope · 1-9, Q, or the wheel switch weapons · F sets off your sticky mines · E opens doors and plants the bug. THE ARMORY is level design: weapon crates (blue) and utility crates (teal) sit exactly where the map puts them — the same spots for every player, and in parties a lifted crate restocks after 25 seconds. Weapon crates hold, in map order: RAPID STAPLER, PARTY POPPER (spread), MEMO LAUNCHER (naps a cluster), LETTER OPENERS (silent throw), CONFETTI MORTAR (splash), STICKY MEMO MINES — and the 7th crate on a map is the GOLDEN STAPLER: one tap, one nap. Utility crates cycle VEST, ESPRESSO, GHOST BADGE (invisible), THERMAL SPECS (warm bodies glow through walls), and popper shells. Bare-handed? The CLIPBOARD SLAP always works. Shoot the ceiling lamps out (aim up) and the dark hides you. MISSION: 3 amber files, bug the server, out the green door. PARTY: set PLAYERS to 2+ for a bot battle, or host a room below — pick FREE-FOR-ALL, TEAMS, CAPTURE THE BINDER, or GLADIATOR, and dress as any of 8 characters.',
   },
   {
     id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
@@ -136,7 +136,7 @@ const LEVELS = {
   'night-audit': {
     house: [['std', 'MISSION: THE LEDGER JOB']],
     blank: 'EDITOR: EMPTY OFFICE', playFallback: null,
-    toast: 'Editor: 1-0 brushes, X/V/P exit/console/start, O lamps, comma/minus steps/decks, B/N/M/K stamp whole rooms, halls, shafts, stairs, T walks the map in 3D, G test-plays, Shift+S saves, X returns',
+    toast: 'Editor: 1-0 brushes, X/V/P exit/console/start, O lamps, W/U weapon+utility crates (loot cycles in map order, same for everyone), 0 spawn pads, comma/minus steps/decks, B/N/M/K stamp rooms/halls/shafts/stairs, T walks the map in 3D, G test-plays, Shift+S saves, X returns',
   },
   chess: {
     house: [['std', 'STANDARD GAME'], ['fischer', 'FISCHER RANDOM']],

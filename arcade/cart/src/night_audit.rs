@@ -203,30 +203,33 @@ struct Mine {
 /// racks, 'D' a door that opens for anyone (E), 'X' the extraction door
 /// (opens only once the paperwork objectives are done). Lowercase letters
 /// are floor markers: p start, g guard post, f intel file, a darts,
-/// c coffee, v the server console (stand here, press E).
+/// c coffee, v the server console (stand here, press E), o a ceiling
+/// lamp, s a party spawn pad, w a weapon crate and u a utility crate
+/// (filled in scan order from WEAPON_CYCLE / UTILITY_CYCLE, so the loot
+/// layout is part of the floor plan and identical for every player).
 const MAP: [&str; MH] = [
     "########################",
-    "#p.o..D....#.o.f...#o..#",
-    "#.....#....#...#...#.g.#",
-    "###D###.g..#...#...D...#",
-    "#.....#....D...#...#####",
-    "#..g..#.o..#...#...o...#",
+    "#p.o..D....#.o.f...#os.#",
+    "#..w..#....#...#...#.g.#",
+    "###D###.g..#.u.#...D...#",
+    "#..s..#....D...#...#####",
+    "#..g..#.o..#.w.#...o...#",
     "#.....######...####D####",
-    "#.a...#....#......#....#",
-    "####D##.o..D..g...#..c.#",
-    "#....#..c..#......D....#",
+    "#.a...#..s.#......#..s.#",
+    "####D##.o.wD..g...#..c.#",
+    "#s...#..c..#....u.D....#",
     "#.o..#.....#.o.a..#..g.#",
-    "#.f..###D###......#....#",
+    "#.f..###D###...w..#....#",
     "#....#....########ded###",
-    "#.o..D....#..o...#ddd..#",
-    "######....#.vSSd.#ddd..#",
-    "#....#....D.dddd.#ddd..#",
+    "#.o..D..w.#..o...#ddd..#",
+    "######.u..#.vSSd.#ddd..#",
+    "#..s.#....D.dddd.#ddd..#",
     "#.g..#....#.dddd.####D##",
-    "#.o..######..o...#.....#",
-    "#.a.......D......D..f..#",
-    "#....#....#......#..,..#",
+    "#.ou.######..o...#..s..#",
+    "#.a....s..D..w...D..f..#",
+    "#....#..u.#......#..,..#",
     "###D##....########.^^g.#",
-    "#...o....g#..o...#.^^..#",
+    "#s..o....g#..o..w#.^^..#",
     "#....#....D..c...####X##",
     "########################",
 ];
@@ -253,6 +256,28 @@ struct Parsed {
     lamps: Vec<(usize, usize, bool)>,
 }
 
+// Loot is LEVEL DESIGN now: 'w' cells are weapon crates and 'u' cells are
+// utility crates, resolved in scan order from these cycles. The same rows
+// parse to the same loot on every machine — no dice involved — so the whole
+// party agrees on what's where. A map's 7th weapon crate (and its 14th,
+// and so on) is the GOLDEN STAPLER: gold costs floor space.
+const WEAPON_CYCLE: [PickupKind; 7] = [
+    PickupKind::Rapid,
+    PickupKind::Popper,
+    PickupKind::Memo,
+    PickupKind::Openers,
+    PickupKind::Mortar,
+    PickupKind::MinesKit,
+    PickupKind::Golden,
+];
+const UTILITY_CYCLE: [PickupKind; 5] = [
+    PickupKind::Vest,
+    PickupKind::Espresso,
+    PickupKind::Cloak,
+    PickupKind::Thermal,
+    PickupKind::Shells,
+];
+
 fn parse_office(rows: &[String]) -> Parsed {
     let mut out = Parsed {
         grid: vec![Cell::Open; MW * MH],
@@ -267,6 +292,7 @@ fn parse_office(rows: &[String]) -> Parsed {
         spawns: Vec::new(),
         lamps: Vec::new(),
     };
+    let (mut wn, mut un) = (0usize, 0usize);
     for (y, row) in rows.iter().enumerate().take(MH) {
         for (x, ch) in row.chars().enumerate().take(MW) {
             let fx = x as f32 + 0.5;
@@ -307,15 +333,27 @@ fn parse_office(rows: &[String]) -> Parsed {
                 }
                 'f' => {
                     out.files_total += 1;
-                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::File, taken: false });
+                    out.pickups.push(Pickup { respawn_t: 0.0, x: fx, y: fy, kind: PickupKind::File, taken: false });
                     Cell::Open
                 }
                 'a' => {
-                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Darts, taken: false });
+                    out.pickups.push(Pickup { respawn_t: 0.0, x: fx, y: fy, kind: PickupKind::Darts, taken: false });
                     Cell::Open
                 }
                 'c' => {
-                    out.pickups.push(Pickup { x: fx, y: fy, kind: PickupKind::Coffee, taken: false });
+                    out.pickups.push(Pickup { respawn_t: 0.0, x: fx, y: fy, kind: PickupKind::Coffee, taken: false });
+                    Cell::Open
+                }
+                'w' => {
+                    let kind = WEAPON_CYCLE[wn % WEAPON_CYCLE.len()];
+                    wn += 1;
+                    out.pickups.push(Pickup { respawn_t: 0.0, x: fx, y: fy, kind, taken: false });
+                    Cell::Open
+                }
+                'u' => {
+                    let kind = UTILITY_CYCLE[un % UTILITY_CYCLE.len()];
+                    un += 1;
+                    out.pickups.push(Pickup { respawn_t: 0.0, x: fx, y: fy, kind, taken: false });
                     Cell::Open
                 }
                 'v' => {
@@ -532,6 +570,12 @@ struct WireFlag {
 }
 
 #[derive(Serialize, Deserialize)]
+struct WireTake {
+    t: String, // "take" — someone lifted pickup #i off its spot
+    i: u16,
+}
+
+#[derive(Serialize, Deserialize)]
 struct WireLamp {
     t: String, // "lamp" — someone shot the lights out
     x: i32,
@@ -659,6 +703,7 @@ enum PickupKind {
 }
 
 struct Pickup {
+    respawn_t: f32, // party rounds: seconds until this spot restocks (0 = untouched)
     x: f32,
     y: f32,
     kind: PickupKind,
@@ -731,11 +776,6 @@ impl Plugin for NightAuditPlugin {
     }
 }
 
-/// True when the cell is walkable floor — where armory pickups may land.
-fn parsed_cell_for_armory(grid: &[Cell], x: usize, y: usize) -> bool {
-    matches!(grid[y * MW + x], Cell::Open)
-}
-
 fn setup(
     mut commands: Commands,
     net: Res<NetMode>,
@@ -805,7 +845,11 @@ fn setup(
         py = sy;
         guards.clear();
         for p in pickups.iter_mut() {
-            p.taken = true; // deathmatch is dart tag: no pickups, no errands
+            // No errands at the party: files and coffee go home. The
+            // crates stay — they're part of the floor plan now.
+            if matches!(p.kind, PickupKind::File | PickupKind::Coffee) {
+                p.taken = true;
+            }
         }
         // The host hands the room its map before anyone moves.
         if net.0.as_ref().map(|c| c.is_host()).unwrap_or(false) {
@@ -870,41 +914,6 @@ fn setup(
     }
     commands.insert_resource(Remotes(remotes));
     commands.insert_resource(Bots(bots));
-    // The armory scatter: the whole rack hides on random open floor
-    // tiles every shift; the GOLDEN STAPLER only some nights.
-    {
-        let mut placed = 0;
-        let mut tries = 0;
-        let mut kinds = vec![
-            PickupKind::Rapid,
-            PickupKind::Memo,
-            PickupKind::Popper,
-            PickupKind::Openers,
-            PickupKind::Mortar,
-            PickupKind::MinesKit,
-            PickupKind::Shells,
-            PickupKind::Vest,
-            PickupKind::Espresso,
-            PickupKind::Cloak,
-            PickupKind::Thermal,
-        ];
-        if rng.chance(0.4) {
-            kinds.push(PickupKind::Golden);
-        }
-        while placed < kinds.len() && tries < 900 {
-            tries += 1;
-            let cx = 1 + rng.range((MW - 2) as u32) as usize;
-            let cy = 1 + rng.range((MH - 2) as u32) as usize;
-            let open = pickups.iter().all(|p: &Pickup| {
-                (p.x - (cx as f32 + 0.5)).abs() + (p.y - (cy as f32 + 0.5)).abs() > 1.5
-            });
-            let cell_ok = matches!(parsed_cell_for_armory(&grid, cx, cy), true);
-            if cell_ok && open {
-                pickups.push(Pickup { x: cx as f32 + 0.5, y: cy as f32 + 0.5, kind: kinds[placed], taken: false });
-                placed += 1;
-            }
-        }
-    }
     let flag_homes = [
         FlagSt::at(spawns[0].0, spawns[0].1),
         FlagSt::at(spawns[1 % spawns.len()].0, spawns[1 % spawns.len()].1),
@@ -1200,13 +1209,23 @@ fn interact(keys: Res<ButtonInput<KeyCode>>, mut m: ResMut<Mission>, mut pickups
     if m.over.is_some() || m.nap_t > 0.0 {
         return;
     }
-    // Walk-over pickups need no key at all.
+    // Walk-over pickups need no key at all. In a party the take goes out
+    // on the wire so the spot empties for everyone at once (crates restock
+    // a while later; the parse order makes indexes agree everywhere).
     let (px, py) = (m.px, m.py);
-    for p in pickups.0.iter_mut() {
+    for (i, p) in pickups.0.iter_mut().enumerate() {
         if p.taken || (p.x - px).abs() + (p.y - py).abs() > 0.8 {
             continue;
         }
         p.taken = true;
+        if m.dm {
+            p.respawn_t = 25.0;
+            if !m.practice {
+                if let Ok(w) = serde_json::to_string(&WireTake { t: "take".into(), i: i as u16 }) {
+                    net_send(&w);
+                }
+            }
+        }
         match p.kind {
             PickupKind::File => {
                 m.files += 1;
@@ -1327,6 +1346,7 @@ fn net_apply(
     net: Res<NetMode>,
     mut m: ResMut<Mission>,
     mut remotes: ResMut<Remotes>,
+    mut pickups: ResMut<Pickups>,
 ) {
     let Some(cfg) = &net.0 else {
         events.clear();
@@ -1423,6 +1443,16 @@ fn net_apply(
                     }
                 }
             }
+            Some("take") => {
+                if let Ok(tk) = serde_json::from_str::<WireTake>(&ev.data) {
+                    if let Some(p) = pickups.0.get_mut(tk.i as usize) {
+                        if !p.taken {
+                            p.taken = true;
+                            p.respawn_t = 25.0;
+                        }
+                    }
+                }
+            }
             Some("lamp") => {
                 if let Ok(l) = serde_json::from_str::<WireLamp>(&ev.data) {
                     let mut any = false;
@@ -1486,6 +1516,14 @@ fn net_apply(
                             FlagSt::at(m.spawns[0].0, m.spawns[0].1),
                             FlagSt::at(m.spawns[1 % m.spawns.len()].0, m.spawns[1 % m.spawns.len()].1),
                         ];
+                        // The loot layout is part of the map: rebuild it so
+                        // this guest sees exactly the host's crates.
+                        pickups.0 = parsed.pickups;
+                        for p in pickups.0.iter_mut() {
+                            if matches!(p.kind, PickupKind::File | PickupKind::Coffee) {
+                                p.taken = true;
+                            }
+                        }
                         m.rows = lv.rows;
                         let (sx, sy) = m.spawns[m.my_seat % m.spawns.len()];
                         m.px = sx;
@@ -1619,6 +1657,7 @@ fn dm_run(
     net: Res<NetMode>,
     mut m: ResMut<Mission>,
     mut remotes: ResMut<Remotes>,
+    mut pickups: ResMut<Pickups>,
     mut rng: ResMut<Rng>,
 ) {
     if !m.dm || m.over.is_some() {
@@ -1626,6 +1665,17 @@ fn dm_run(
     }
     let dt = time.delta_secs();
     m.dm_clock -= dt;
+    // Crates restock 25s after they're lifted (every client started the
+    // same timer off the same take, so the spot refills for everyone).
+    for p in pickups.0.iter_mut() {
+        if p.taken && p.respawn_t > 0.0 {
+            p.respawn_t -= dt;
+            if p.respawn_t <= 0.0 {
+                p.respawn_t = 0.0;
+                p.taken = false;
+            }
+        }
+    }
     for r in remotes.0.iter_mut() {
         r.t = (r.t + dt / 0.1).min(1.0);
     }
@@ -3033,6 +3083,8 @@ fn cell_color(ch: char) -> Color {
         'g' => RED,
         's' => Color::srgb(0.30, 0.75, 0.35),
         'o' => Color::srgb(1.0, 0.92, 0.55),
+        'w' => Color::srgb(0.30, 0.60, 1.0),
+        'u' => Color::srgb(0.55, 0.90, 0.75),
         'v' => WHITE,
         'p' => GREEN,
         _ => Color::srgb(0.07, 0.08, 0.12),
@@ -3214,6 +3266,14 @@ fn editor_update(
         editor.brush = 'o';
         sfx("tick");
     }
+    if keys.just_pressed(KeyCode::KeyW) {
+        editor.brush = 'w';
+        sfx("tick");
+    }
+    if keys.just_pressed(KeyCode::KeyU) {
+        editor.brush = 'u';
+        sfx("tick");
+    }
     for (key, stamp) in [
         (KeyCode::KeyB, 'R'),
         (KeyCode::KeyN, 'H'),
@@ -3377,6 +3437,8 @@ fn editor_update(
                 'X' => "EXIT",
                 'v' => "CONSOLE",
                 'o' => "LAMP",
+                'w' => "WEAPON CRATE",
+                'u' => "UTILITY CRATE",
                 ',' => "STEP",
                 '^' => "DECK",
                 'R' => "ROOM STAMP",
@@ -3386,7 +3448,7 @@ fn editor_update(
                 _ => "START",
             });
         let s = format!(
-            "OFFICE EDITOR - BRUSH: {brush_name}\n1 WALL 2 WOOD 3 RACKS 4 DOOR 5 FLOOR 6 FILE 7 DARTS 8 COFFEE 9 GUARD 0 SPAWN - X EXIT V CONSOLE P START\nO LAMP , STEP - DECK | STAMPS: B ROOM N HALL M SHAFT K STAIRS | S+SHIFT SAVES G TESTS T WALKS-3D X RETURNS"
+            "OFFICE EDITOR - BRUSH: {brush_name}\n1 WALL 2 WOOD 3 RACKS 4 DOOR 5 FLOOR 6 FILE 7 DARTS 8 COFFEE 9 GUARD 0 SPAWN - X EXIT V CONSOLE P START\nO LAMP W/U CRATES , STEP - DECK | B ROOM N HALL M SHAFT K STAIRS | SHIFT+S SAVES G TESTS T WALKS-3D X RETURNS"
         );
         if t.0 != s {
             t.0 = s;
