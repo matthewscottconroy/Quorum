@@ -5,6 +5,7 @@
 use std::sync::Mutex;
 
 use bevy::input::gamepad::{Gamepad, GamepadButton};
+use bevy::input::mouse::MouseMotion;
 use bevy::input::InputSystem;
 use bevy::prelude::*;
 use serde::Deserialize;
@@ -257,11 +258,31 @@ struct Blink(Timer);
 /// pad 1 takes the P1 cluster (WASD/Space/E) and pad 2 the P2 cluster
 /// (arrows/Enter/R-Shift) — local versus, two chairs, no keyboard sharing.
 /// Extra buttons: East=E (utility), North=R (roll), West=B (buy).
+/// Per-cabinet controller profiles. Most games take the GENERIC mapping
+/// (pads pretend to be the keyboard), but cabinets with real genre muscle
+/// memory get their own layout — and none of this leaks between games,
+/// because exactly one cabinet is ever live in a module.
+///
+/// BUMPER CHAIRS (SNES kart layout, by physical button POSITION):
+///   bottom face (Xbox A, where SNES B sat)  = gas
+///   left face   (Xbox X, where SNES Y sat)  = brake / reverse
+///   right face  (Xbox B, where SNES A sat)  = item / stop the slot
+///   stick X + d-pad steer; the stick's Y axis does NOTHING — gas is a
+///   button, like it always was.
+///
+/// NIGHT AUDIT (TS2 / PD twin-stick):
+///   left stick moves and strafes, right stick looks (with pitch),
+///   RT fires, LT is the scope, A uses/opens, B crouches, X sets off
+///   mines, Y and RB cycle weapons, stick-click also crouches.
+#[allow(clippy::too_many_arguments)]
 fn gamepad_keys(
     pads: Query<(Entity, &Gamepad)>,
     mut order: Local<Vec<Entity>>,
     mut injected: Local<Vec<KeyCode>>,
+    mut injected_btns: Local<Vec<MouseButton>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut motion: EventWriter<MouseMotion>,
 ) {
     for (e, _) in pads.iter() {
         if !order.contains(&e) {
@@ -269,7 +290,9 @@ fn gamepad_keys(
         }
     }
     order.retain(|e| pads.get(*e).is_ok());
+    let profile = selected_game();
     let mut want: Vec<KeyCode> = Vec::new();
+    let mut want_btns: Vec<MouseButton> = Vec::new();
     let solo = order.len() <= 1;
     for (idx, e) in order.iter().enumerate() {
         let Ok((_, pad)) = pads.get(*e) else { continue };
@@ -288,6 +311,45 @@ fn gamepad_keys(
                 want.push(k);
             }
         };
+        if idx == 0 && profile == "bumper-chairs" {
+            // Steering is the stick's X (and the d-pad); pedals are FACE
+            // BUTTONS in the SNES positions. Stick Y is deliberately dead.
+            push(pad.pressed(GamepadButton::DPadLeft) || stick.x < -0.4, KeyCode::ArrowLeft);
+            push(pad.pressed(GamepadButton::DPadRight) || stick.x > 0.4, KeyCode::ArrowRight);
+            push(south, KeyCode::ArrowUp);   // gas (SNES B position)
+            push(west, KeyCode::ArrowDown);  // brake (SNES Y position)
+            push(east, KeyCode::Space);      // item (SNES A position)
+            push(start, KeyCode::Enter);
+            continue;
+        }
+        if idx == 0 && profile == "night-audit" {
+            // Twin-stick: the right stick becomes mouse-look. A cubic
+            // response keeps small deflections surgical, full tilt quick.
+            let look = pad.right_stick();
+            let (lx, ly) = (look.x, look.y);
+            if lx.abs() > 0.15 || ly.abs() > 0.15 {
+                let dx = lx * lx.abs() * lx.abs() * 16.0;
+                let dy = -ly * ly.abs() * ly.abs() * 9.0;
+                motion.write(MouseMotion { delta: Vec2::new(dx, dy) });
+            }
+            push(pad.pressed(GamepadButton::DPadUp) || stick.y > 0.4, KeyCode::KeyW);
+            push(pad.pressed(GamepadButton::DPadDown) || stick.y < -0.4, KeyCode::KeyS);
+            push(pad.pressed(GamepadButton::DPadLeft) || stick.x < -0.4, KeyCode::KeyA);
+            push(pad.pressed(GamepadButton::DPadRight) || stick.x > 0.4, KeyCode::KeyD);
+            push(pad.pressed(GamepadButton::RightTrigger2), KeyCode::Space); // fire
+            push(south, KeyCode::KeyE); // use / doors / plant
+            push(east, KeyCode::KeyC);  // crouch (hold)
+            push(pad.pressed(GamepadButton::LeftThumb), KeyCode::KeyC);
+            push(west, KeyCode::KeyF);  // sticky mines go off
+            push(north, KeyCode::KeyQ); // next weapon
+            push(pad.pressed(GamepadButton::RightTrigger), KeyCode::KeyQ);
+            push(start, KeyCode::Enter);
+            // LT is the scope: lean on it and the lens eases in.
+            if pad.pressed(GamepadButton::LeftTrigger2) && !want_btns.contains(&MouseButton::Right) {
+                want_btns.push(MouseButton::Right);
+            }
+            continue;
+        }
         if idx == 0 {
             push(up, KeyCode::KeyW);
             push(down, KeyCode::KeyS);
@@ -324,6 +386,17 @@ fn gamepad_keys(
         }
     }
     *injected = want;
+    let released_btns: Vec<MouseButton> =
+        injected_btns.iter().copied().filter(|b| !want_btns.contains(b)).collect();
+    for b in released_btns {
+        mouse.release(b);
+    }
+    for b in &want_btns {
+        if !mouse.pressed(*b) {
+            mouse.press(*b);
+        }
+    }
+    *injected_btns = want_btns;
 }
 
 pub struct ShellPlugin {

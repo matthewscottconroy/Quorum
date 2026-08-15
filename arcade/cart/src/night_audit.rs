@@ -184,6 +184,69 @@ const CHARACTERS: [CharDef; 8] = [
     ("INTERN FOREVER", 0.32, 0.54, (0.85, 0.70, 0.55), None),
 ];
 
+// ── paint ───────────────────────────────────────────────────────────────
+// Shots are PAINTBALLS now: every one that lands leaves a splat on the
+// wall, the floor, or the poor soul it caught — instant, legible feedback
+// on where your fire actually went. Splats persist for the round in a
+// ring buffer, Splatoon-style.
+const SPLAT_CAP: usize = 70;
+
+struct Splat {
+    x: f32,
+    y: f32,
+    dy: f32, // height on the surface, in billboard dy units
+    w: f32,
+    h: f32,
+    color: Color,
+}
+
+/// My paint color: team color in team modes, seat color at a party,
+/// audit-stamp green on a solo shift.
+fn my_paint(m: &Mission) -> Color {
+    if m.dm {
+        if m.mode == 1 || m.mode == 2 {
+            if team_of(m.my_seat) == 0 {
+                Color::srgb(1.0, 0.30, 0.25)
+            } else {
+                Color::srgb(0.30, 0.55, 1.0)
+            }
+        } else {
+            PLAYER_COLORS[m.my_seat % 12]
+        }
+    } else {
+        Color::srgb(0.35, 0.95, 0.45)
+    }
+}
+
+/// Drop a cluster of paint blobs at a point (ring buffer, oldest first).
+fn splat_at(m: &mut Mission, rng: &mut Rng, x: f32, y: f32, dy: f32, scale: f32) {
+    let color = my_paint(m).with_alpha(0.9);
+    for _ in 0..3 {
+        let j = |r: &mut Rng| r.range(100) as f32 / 100.0 - 0.5;
+        let s = Splat {
+            x: x + j(rng) * 0.16 * scale,
+            y: y + j(rng) * 0.16 * scale,
+            dy: dy + j(rng) * 0.20 * scale,
+            w: (0.16 + rng.range(14) as f32 / 100.0) * scale,
+            h: (0.12 + rng.range(12) as f32 / 100.0) * scale,
+            color,
+        };
+        if m.splats.len() < SPLAT_CAP {
+            m.splats.push(s);
+        } else {
+            let i = m.splat_head % SPLAT_CAP;
+            m.splats[i] = s;
+        }
+        m.splat_head = m.splat_head.wrapping_add(1);
+    }
+}
+
+/// Where a wall shot lands vertically: the splat sits under the reticle,
+/// which pitch and eye height both move.
+fn wall_splat_dy(m: &Mission, d: f32) -> f32 {
+    (m.pz - m.pitch * d / (VIEW_H * 0.9)).clamp(-0.42, 0.9)
+}
+
 /// A thrown or launched thing mid-flight.
 struct Proj {
     x: f32,
@@ -321,6 +384,7 @@ fn parse_office(rows: &[String]) -> Parsed {
                 }
                 'g' => {
                     out.guards.push(Guard {
+                        paint_t: 0.0,
                         x: fx,
                         y: fy,
                         hp: GUARD_HP,
@@ -492,6 +556,8 @@ struct Mission {
     my_char: u8,       // my pick from the CHARACTERS roster
     practice: bool,    // OFFICE PARTY vs local bots (no relay)
     bot_hits: Vec<u8>, // hits I claimed on bot seats this frame
+    splats: Vec<Splat>, // paint on the office, ring-buffered
+    splat_head: usize,
     mode: u8,          // party rules: 0 free-for-all, 1 teams, 2 ctf, 3 gladiator
     glad: usize,       // gladiator mode: who wears the crown right now
     flags: [FlagSt; 2], // ctf: the RED and BLUE team binders
@@ -671,6 +737,7 @@ impl Mission {
 }
 
 struct Guard {
+    paint_t: f32, // fresh paint: the last hit's splat color lingers
     x: f32,
     y: f32,
     hp: i32,
@@ -950,6 +1017,8 @@ fn setup(
         my_char: (crate::shell::page_knob("__ARCADE_CHAR") as u8).min(7),
         practice,
         bot_hits: Vec::new(),
+        splats: Vec::new(),
+        splat_head: 0,
         mode: party_mode,
         glad: 0,
         flags: flag_homes,
@@ -1012,8 +1081,8 @@ fn setup(
         cols.push(e);
     }
     // Billboard pool: plenty for every guard and pickup on screen at once.
-    let mut bills = Vec::with_capacity(88);
-    for _ in 0..88 {
+    let mut bills = Vec::with_capacity(168);
+    for _ in 0..168 {
         let e = commands
             .spawn((
                 Sprite { color: WHITE, custom_size: Some(Vec2::splat(10.0)), ..default() },
@@ -1039,10 +1108,12 @@ fn setup(
             ));
         })
         .id();
+    // The old amber tracer line is now a PAINTBALL: a blob that leaves
+    // the muzzle and shrinks toward the reticle while the shot resolves.
     let tracer = commands
         .spawn((
-            Sprite { color: Color::srgb(1.0, 0.85, 0.4), custom_size: Some(Vec2::new(3.0, 200.0)), ..default() },
-            Transform::from_xyz(78.0, VIEW_CY - 110.0, 5.7).with_rotation(Quat::from_rotation_z(-0.6)),
+            Sprite { color: Color::srgb(0.35, 0.95, 0.45), custom_size: Some(Vec2::splat(18.0)), ..default() },
+            Transform::from_xyz(78.0, VIEW_CY - 110.0, 5.7),
             Visibility::Hidden,
             GameTag,
         ))
@@ -1862,6 +1933,7 @@ fn los(m: &Mission, ax: f32, ay: f32, bx: f32, by: f32) -> bool {
 fn fire(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    mut rng: ResMut<Rng>,
     mut m: ResMut<Mission>,
     mut guards: ResMut<Guards>,
     remotes: Res<Remotes>,
@@ -1873,7 +1945,7 @@ fn fire(
     if keys.just_pressed(KeyCode::KeyF) && !m.mines.is_empty() {
         let planted = std::mem::take(&mut m.mines);
         for mn in planted {
-            boom(&mut m, &mut guards, &remotes, mn.x, mn.y);
+            boom(&mut m, &mut guards, &remotes, &mut rng, mn.x, mn.y);
         }
     }
     let pressed = keys.just_pressed(KeyCode::Space) || buttons.just_pressed(MouseButton::Left);
@@ -1986,7 +2058,7 @@ fn fire(
     }
     if m.dm {
         // OFFICE PARTY: the same aim, pointed at rival auditors.
-        let mut hits: Vec<(usize, f32)> = Vec::new();
+        let mut hits: Vec<(usize, f32, f32, f32)> = Vec::new();
         for r in remotes.0.iter().filter(|r| !r.napping && r.heard) {
             if same_team(&m, r.seat) {
                 continue; // no staplers at your own desk pod
@@ -2004,12 +2076,12 @@ fn fire(
                 da += std::f32::consts::TAU;
             }
             if da.abs() < cone_for(d) && los(&m, m.px, m.py, r.x, r.y) {
-                hits.push((r.seat, d));
+                hits.push((r.seat, d, r.x, r.y));
             }
         }
         hits.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut landed = false;
-        for (seat, d) in hits.into_iter().take(take) {
+        for (seat, d, rx, ry) in hits.into_iter().take(take) {
             // One wire hit per point of hurt: the golden stapler sends a
             // whole stack so one tap ends the argument, vest or not.
             let stack = match w {
@@ -2020,10 +2092,28 @@ fn fire(
             for _ in 0..stack {
                 claim(&mut m, seat as u8);
             }
+            // Paint them: a splash on the body, a drip on the carpet.
+            splat_at(&mut m, &mut rng, rx, ry, -0.05, 1.0);
+            splat_at(&mut m, &mut rng, rx, ry, -0.34, 0.7);
             landed = true;
         }
         if landed {
             sfx(if w == W_MEMO { "boom" } else { "rotate" });
+        } else if w != W_SLAP && wall_d < 22.0 {
+            // A miss still says exactly where it went: paint on the wall.
+            let hx = m.px + m.ang.cos() * (wall_d - 0.15);
+            let hy = m.py + m.ang.sin() * (wall_d - 0.15);
+            let dy = wall_splat_dy(&m, wall_d);
+            let scale = match w {
+                W_MEMO => 1.6,
+                W_POPPER => 0.8,
+                _ => 1.0,
+            };
+            let blobs = if w == W_POPPER { 3 } else { 1 };
+            for _ in 0..blobs {
+                splat_at(&mut m, &mut rng, hx, hy, dy, scale);
+            }
+            sfx("splat");
         }
         return;
     }
@@ -2056,18 +2146,39 @@ fn fire(
         _ => 1,
     };
     let mut any = false;
+    let mut painted: Vec<(f32, f32)> = Vec::new();
     for (i, _) in matched.into_iter().take(take) {
         let g = &mut guards.0[i];
         g.hp -= dmg;
         g.alert = true;
+        g.paint_t = 0.8;
+        painted.push((g.x, g.y));
         any = true;
         if g.hp <= 0 {
             m.score += 150;
             stat("guards_tranqed", 1);
         }
     }
+    for (gx, gy) in painted {
+        splat_at(&mut m, &mut rng, gx, gy, -0.05, 1.0);
+        splat_at(&mut m, &mut rng, gx, gy, -0.34, 0.7);
+    }
     if any {
         sfx(if w == W_MEMO { "boom" } else { "capture" });
+    } else if w != W_SLAP && wall_d < 22.0 {
+        let hx = m.px + m.ang.cos() * (wall_d - 0.15);
+        let hy = m.py + m.ang.sin() * (wall_d - 0.15);
+        let dy = wall_splat_dy(&m, wall_d);
+        let scale = match w {
+            W_MEMO => 1.6,
+            W_POPPER => 0.8,
+            _ => 1.0,
+        };
+        let blobs = if w == W_POPPER { 3 } else { 1 };
+        for _ in 0..blobs {
+            splat_at(&mut m, &mut rng, hx, hy, dy, scale);
+        }
+        sfx("splat");
     }
 }
 
@@ -2095,9 +2206,15 @@ fn break_lamp(m: &mut Mission, i: usize) {
 }
 
 /// Splash damage at a point: confetti mortar shells and sticky mines.
-fn boom(m: &mut Mission, guards: &mut Guards, remotes: &Remotes, x: f32, y: f32) {
+fn boom(m: &mut Mission, guards: &mut Guards, remotes: &Remotes, rng: &mut Rng, x: f32, y: f32) {
     sfx("boom");
     m.flash = 0.14;
+    // A mortar shell or a mine is mostly paint: ring the carpet with it.
+    for k in 0..6 {
+        let a = k as f32 * 1.047 + rng.range(60) as f32 / 100.0;
+        splat_at(m, rng, x + a.cos() * 0.55, y + a.sin() * 0.55, -0.32, 1.2);
+    }
+    splat_at(m, rng, x, y, -0.30, 1.6);
     for i in 0..m.lamps.len() {
         let (lx, ly, alive) = m.lamps[i];
         if alive && ((lx as f32 + 0.5 - x).powi(2) + (ly as f32 + 0.5 - y).powi(2)).sqrt() < 2.3 {
@@ -2147,6 +2264,7 @@ fn boom(m: &mut Mission, guards: &mut Guards, remotes: &Remotes, x: f32, y: f32)
 /// Letter openers and mortar shells in flight, frame by frame.
 fn munitions(
     time: Res<Time>,
+    mut rng: ResMut<Rng>,
     mut m: ResMut<Mission>,
     mut guards: ResMut<Guards>,
     remotes: Res<Remotes>,
@@ -2208,7 +2326,7 @@ fn munitions(
         claim(&mut m, seat);
     }
     for (bx, by) in booms {
-        boom(&mut m, &mut guards, &remotes, bx, by);
+        boom(&mut m, &mut guards, &remotes, &mut rng, bx, by);
     }
 }
 
@@ -2452,6 +2570,7 @@ fn guards_think(
     }
     let dt = time.delta_secs();
     for g in guards.0.iter_mut() {
+        g.paint_t = (g.paint_t - dt).max(0.0);
         if g.hp <= 0 {
             continue;
         }
@@ -2639,13 +2758,16 @@ fn render_view(
     // Guards and rival auditors are FIGURES now — torso plus a head —
     // instead of anonymous slabs. Sleepers stay lumps.
     for g in &guards.0 {
-        let color = if g.hp <= 0 {
+        let mut color = if g.hp <= 0 {
             Color::srgb(0.35, 0.35, 0.40)
         } else if g.alert {
             RED
         } else {
             AMBER
         };
+        if g.paint_t > 0.0 {
+            color = my_paint(&m); // freshly splatted: your color, briefly
+        }
         if g.hp <= 0 {
             items.push((0.0, Bill { x: g.x, y: g.y, w: 0.5, h: 0.35, color, dy: -0.28, zb: 0.0, elev: 0.0, person: true }));
         } else {
@@ -2745,6 +2867,10 @@ fn render_view(
         let color = if alive { Color::srgb(1.0, 0.92, 0.55) } else { Color::srgb(0.22, 0.22, 0.24) };
         items.push((0.0, Bill { x: lx as f32 + 0.5, y: ly as f32 + 0.5, w: 0.30, h: 0.10, color, dy: 0.52, zb: 0.001, elev: 0.0, person: false }));
     }
+    // The paint: every splat that's landed this round.
+    for s in m.splats.iter() {
+        items.push((0.0, Bill { x: s.x, y: s.y, w: s.w, h: s.h, color: s.color, dy: s.dy, zb: 0.0018, elev: 0.0, person: false }));
+    }
     // Things in flight, and the blinking sticky mines.
     for p in m.projs.iter() {
         let (w, h, color) = if p.kind == 1 {
@@ -2830,7 +2956,7 @@ fn render_view(
         tf.translation.y = VIEW_CY - VIEW_H / 2.0 + m.pitch - m.pz * 40.0;
     }
     // Veils: RED means you were hurt; firing never tints the screen red —
-    // the gun kick and amber tracer carry that instead.
+    // the gun kick and the flying paintball carry that instead.
     if let Ok(mut sp) = veil.single_mut() {
         if m.nap_t > 0.0 {
             sp.color = RED.with_alpha(0.55);
@@ -2846,8 +2972,17 @@ fn render_view(
     if let Ok((_, mut tf, _)) = sprites.get_mut(view.gun) {
         tf.translation.y = VIEW_CY - VIEW_H / 2.0 + 40.0 - m.flash * 220.0;
     }
-    if let Ok((_, _, mut vis)) = sprites.get_mut(view.tracer) {
-        *vis = if m.flash > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+    if let Ok((mut sp, mut tf, mut vis)) = sprites.get_mut(view.tracer) {
+        if m.flash > 0.0 {
+            let t = (1.0 - m.flash / 0.08).clamp(0.0, 1.0);
+            tf.translation.x = 78.0 * (1.0 - t);
+            tf.translation.y = (VIEW_CY - 110.0) * (1.0 - t) + (VIEW_CY + m.pitch * 0.2) * t;
+            sp.custom_size = Some(Vec2::splat(20.0 - 14.0 * t));
+            sp.color = my_paint(&m);
+            *vis = Visibility::Inherited;
+        } else {
+            *vis = Visibility::Hidden;
+        }
     }
 }
 

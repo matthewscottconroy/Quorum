@@ -854,6 +854,20 @@ fn solid_at(rows: &[String], pos: Vec2) -> bool {
     cell_at(rows, pos.x.floor() as i32, pos.y.floor() as i32) == '#'
 }
 
+/// The chair's collision footprint. A center-point test let the camera
+/// kiss the wall plane (hello, Mario 64 wall-cam); sampling the body's
+/// corners keeps a fixed air gap between your eye and the masonry.
+const BODY_R: f32 = 0.30;
+
+fn body_blocked(rows: &[String], pos: Vec2) -> bool {
+    for (dx, dy) in [(-BODY_R, -BODY_R), (BODY_R, -BODY_R), (-BODY_R, BODY_R), (BODY_R, BODY_R)] {
+        if solid_at(rows, Vec2::new(pos.x + dx, pos.y + dy)) {
+            return true;
+        }
+    }
+    false
+}
+
 fn fire_item(
     commands: &mut Commands,
     g: &mut Garage,
@@ -1138,10 +1152,11 @@ fn drive(
         let dirv = Vec2::new(c.mdir.cos(), -c.mdir.sin());
         let step = dirv * (c.speed / ACELL) * dt;
         let next = c.pos + step;
-        // Walls: glance off at an angle (motion direction reflects, your
-        // facing doesn't), square hits bounce you straight back.
-        let bx = solid_at(&rows, Vec2::new(next.x, c.pos.y));
-        let by = solid_at(&rows, Vec2::new(c.pos.x, next.y));
+        // Walls: the whole body collides, not just the center point.
+        // Glancing hits reflect your motion (facing stays put); square
+        // hits BOUNCE — you rebound off the wall, you don't sink into it.
+        let bx = body_blocked(&rows, Vec2::new(next.x, c.pos.y));
+        let by = body_blocked(&rows, Vec2::new(c.pos.x, next.y));
         if !bx {
             c.pos.x = next.x;
         }
@@ -1149,8 +1164,8 @@ fn drive(
             c.pos.y = next.y;
         }
         if bx && by {
-            c.speed *= -0.35;
-            if c.human && c.speed.abs() > 40.0 {
+            c.speed *= -0.5; // square hit: shoved straight back off the wall
+            if c.human && c.speed.abs() > 30.0 {
                 bumped = true;
             }
         } else if bx {
@@ -1165,6 +1180,22 @@ fn drive(
                 bumped = true;
             }
             c.speed *= 0.78;
+        }
+        // Belt and suspenders: if anything left the body overlapping a
+        // wall (spawn nudges, hop landings), push it back out along the
+        // shallowest axis so the camera never wakes up inside brick.
+        if body_blocked(&rows, c.pos) {
+            let cell = Vec2::new(c.pos.x.floor(), c.pos.y.floor());
+            let frac = c.pos - cell;
+            let push_x = if frac.x < 0.5 { BODY_R - frac.x } else { -(BODY_R - (1.0 - frac.x)) };
+            let push_y = if frac.y < 0.5 { BODY_R - frac.y } else { -(BODY_R - (1.0 - frac.y)) };
+            let try_x = Vec2::new(c.pos.x + push_x.clamp(-BODY_R, BODY_R), c.pos.y);
+            let try_y = Vec2::new(c.pos.x, c.pos.y + push_y.clamp(-BODY_R, BODY_R));
+            if !body_blocked(&rows, try_x) {
+                c.pos = try_x;
+            } else if !body_blocked(&rows, try_y) {
+                c.pos = try_y;
+            }
         }
     }
     if bumped && g.bump_t <= 0.0 {
