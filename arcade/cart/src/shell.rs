@@ -193,6 +193,25 @@ pub fn net_send(payload: &str) {
     }
 }
 
+/// A numeric page knob (character pick, party mode, ...). Missing or
+/// non-numeric globals read as 0, which is always the default option.
+pub fn page_knob(name: &str) -> u32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(v) = js_sys::Reflect::get(&js_sys::global(), &name.into()) {
+            if let Some(n) = v.as_f64() {
+                return n as u32;
+            }
+        }
+        0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = name;
+        0
+    }
+}
+
 /// Which cabinet did the page ask for? (window.__ARCADE_GAME)
 pub fn selected_game() -> String {
     #[cfg(target_arch = "wasm32")]

@@ -61,7 +61,7 @@ const CABINETS = [
   },
   {
     id: 'night-audit', name: 'NIGHT AUDIT', tag: 'After hours. Three objectives. Nobody gets hurt — they nap.',
-    players: '1P mission · 2-12 online deathmatch · editor', controls: 'MOUSE turns the view, PC-shooter style — click the screen to lock the pointer (Esc releases). W/S walk · A/D strafe · click or Space fires · E opens doors and plants the bug (on-screen prompts say when). Guards and rival auditors are proper figures now — torso, head, cap. THE ARMORY: a RAPID STAPLER, a MEMO LAUNCHER (costs 3 darts, naps a cluster), a VEST (soaks damage), and an ESPRESSO (fast feet) hide on random floor tiles each shift — 1/2/3 or Q switches weapons. MISSION: grab the 3 amber files, press E on the glowing green server tile, then walk out the green door. ONLINE: the OFFICE PARTY — host or join a room in the bar right below the screen; first to 10 tranqs wins, and the armory works on rivals too.',
+    players: '1P mission · 2-12 party (bots or online) · editor', controls: 'MOUSE turns the view — click the screen to lock the pointer (Esc releases). W/S walk · A/D strafe · C crouches · click or Space fires · RIGHT BUTTON is the scope · 1-9, Q, or the wheel switch weapons · F sets off your sticky mines · E opens doors and plants the bug. THE ARMORY hides on random floor tiles each shift: RAPID STAPLER, PARTY POPPER (spread), MEMO LAUNCHER (naps a cluster), LETTER OPENERS (silent throw), CONFETTI MORTAR (splash), STICKY MEMO MINES, a VEST, an ESPRESSO, the GHOST BADGE (invisible), THERMAL SPECS (warm bodies glow through walls) — and, some nights, the GOLDEN STAPLER: one tap, one nap. Bare-handed? The CLIPBOARD SLAP always works. Shoot the ceiling lamps out (aim up) and the dark hides you. MISSION: 3 amber files, bug the server, out the green door. PARTY: set PLAYERS to 2+ for a bot battle, or host a room below — pick FREE-FOR-ALL, TEAMS, CAPTURE THE BINDER, or GLADIATOR, and dress as any of 8 characters.',
   },
   {
     id: 'lucky-penny', name: 'LUCKY PENNY', tag: 'A coin with a face and everything to prove. Three boards up.',
@@ -110,7 +110,7 @@ const CABINETS = [
 ];
 
 // Local seat pickers (hotseat/bots) for the big cabinets.
-const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 }, 'texas-holdem': { min: 2, max: 6, humans: 1 }, 'bumper-chairs': { min: 2, max: 12, humans: 1 } };
+const MULTI = { 'powder-keg': { min: 2, max: 12, humans: 2 }, hexfection: { min: 2, max: 12, humans: 12 }, 'texas-holdem': { min: 2, max: 6, humans: 1 }, 'bumper-chairs': { min: 2, max: 12, humans: 1 }, 'night-audit': { min: 1, max: 12, humans: 1, def: 1 } };
 // Local mode pickers: fixed seat count, choice of how many humans sit down.
 const MODES = { chess: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], go: [{ label: 'VS MACHINE', humans: 1 }, { label: '2P HOTSEAT', humans: 2 }], interns: [{ label: '1 PLAYER', humans: 1 }, { label: '2P LOCAL', humans: 2 }] };
 // Networked cabinets: seat ranges for hosting a room.
@@ -136,7 +136,7 @@ const LEVELS = {
   'night-audit': {
     house: [['std', 'MISSION: THE LEDGER JOB']],
     blank: 'EDITOR: EMPTY OFFICE', playFallback: null,
-    toast: 'Editor: 1-0 pick brushes (walls, doors, files, guards, spawns), X/V/P place exit/console/start, click paints, right-click erases, Shift+S saves, G test-plays, X returns',
+    toast: 'Editor: 1-0 brushes, X/V/P exit/console/start, O lamps, comma/minus steps/decks, B/N/M/K stamp whole rooms, halls, shafts, stairs, T walks the map in 3D, G test-plays, Shift+S saves, X returns',
   },
   chess: {
     house: [['std', 'STANDARD GAME'], ['fischer', 'FISCHER RANDOM']],
@@ -624,7 +624,7 @@ class PageArcade extends HTMLElement {
               ${multi ? `
                 <label class="tsc-note">PLAYERS
                   <select id="sel-players" class="tsc-sel">${Array.from({ length: multi.max - multi.min + 1 },
-                    (_, i) => `<option ${multi.min + i === Math.min(4, multi.max) ? 'selected' : ''}>${multi.min + i}</option>`).join('')}</select>
+                    (_, i) => `<option ${multi.min + i === (multi.def ?? Math.min(4, multi.max)) ? 'selected' : ''}>${multi.min + i}</option>`).join('')}</select>
                 </label>
                 <label class="tsc-note">HUMANS
                   <select id="sel-humans" class="tsc-sel">${Array.from({ length: multi.humans },
@@ -638,6 +638,27 @@ class PageArcade extends HTMLElement {
                 </label>
                 ${LEVELS[cab.id].noEditor ? '' : `<button class="tsc-btn" id="editor-btn" disabled title="Opens the selected level as a template (or a blank canvas)">${cab.id === 'chess' ? 'POSITION EDITOR' : 'LEVEL EDITOR'}</button>`}
                 <button class="tsc-btn" id="del-level-btn" style="display:none;color:var(--color-danger,#f66);border-color:currentColor" title="Delete this community level (authors and admins)">✕</button>` : ''}
+              ${cab.id === 'night-audit' ? `
+                <label class="tsc-note">CHARACTER
+                  <select id="sel-char" class="tsc-sel" title="Purely cosmetic. Purely important.">
+                    <option value="0">THE TEMP</option>
+                    <option value="1">FACILITIES DAVE</option>
+                    <option value="2">AUDITOR PRIME</option>
+                    <option value="3">MAINFRAME MARY</option>
+                    <option value="4">THE NIGHT JANITOR</option>
+                    <option value="5">CUBICLE CRYPTID</option>
+                    <option value="6">H.R. SPECTRE</option>
+                    <option value="7">INTERN FOREVER</option>
+                  </select>
+                </label>
+                <label class="tsc-note">PARTY RULES
+                  <select id="sel-pmode" class="tsc-sel" title="Applies to practice parties (PLAYERS 2+) and to rooms you host">
+                    <option value="0">FREE-FOR-ALL</option>
+                    <option value="1">TEAMS</option>
+                    <option value="2">CAPTURE THE BINDER</option>
+                    <option value="3">GLADIATOR</option>
+                  </select>
+                </label>` : ''}
               ${cab.id === 'powder-keg' ? `
                 <label class="tsc-note">ROUNDS
                   <select id="sel-rounds" class="tsc-sel" title="Best-of-3: first to two round wins takes the match (local only)">
@@ -883,6 +904,7 @@ class PageArcade extends HTMLElement {
           this.resolveClock();
           const rounds = this.querySelector('#sel-rounds');
           if (rounds) window.__ARCADE_ROUNDS = Number(rounds.value); else delete window.__ARCADE_ROUNDS;
+          this._nightKnobs(cab);
           const res = await api('POST', `/arcade/${cab.id}/credit`);
           toast(`Credit ${res.credits} logged. Go!`, 'success');
           mod.arcade_insert_credit(players, humans);
@@ -900,6 +922,14 @@ class PageArcade extends HTMLElement {
   }
 
   // ---- community levels & editors ----
+
+  /** NIGHT AUDIT's costume and party rules ride window globals the
+      cartridge reads at round setup. */
+  _nightKnobs(cab) {
+    if (cab.id !== 'night-audit') return;
+    window.__ARCADE_CHAR = Number(this.querySelector('#sel-char')?.value ?? 0);
+    window.__ARCADE_PARTY_MODE = Number(this.querySelector('#sel-pmode')?.value ?? 0);
+  }
 
   /** Sets window.__ARCADE_LEVEL from the picker: house option, blank-canvas
       marker (editor only), or a fetched community document. */
@@ -1091,6 +1121,7 @@ class PageArcade extends HTMLElement {
             started = true;
             startBtn.style.display = 'none';
             lobby.textContent = `LIVE · SEAT ${m.seat + 1} OF ${m.seats}`;
+            this._nightKnobs(cab);
             window.__arcadeNetSend = s => {
               try { ws.send(JSON.stringify({ op: 'msg', data: JSON.parse(s) })); } catch { /* closed */ }
             };
