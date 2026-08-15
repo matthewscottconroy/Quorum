@@ -12,6 +12,9 @@
 //! points; the host's arena ships to the whole room at start.
 
 use bevy::prelude::*;
+use bevy::render::mesh::Indices;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::PrimitiveTopology;
 use serde::{Deserialize, Serialize};
 
 use crate::retro::{popup, text, PLAYER_COLORS, AMBER, CYAN, DIM, GREEN, MAGENTA, RED, WHITE};
@@ -109,14 +112,34 @@ struct Bill {
 #[derive(Component)]
 struct FixedView;
 
-/// One exposed wall face: a REAL surface between two floor corners, not a
-/// camera-facing billboard — projected as a rotated quad each frame so wall
-/// runs read as continuous, stationary geometry.
+/// A world quad rendered by projecting all four corners EXACTLY, every
+/// frame, into a private 4-vertex mesh. No rectangle approximations, no
+/// swimming: geometry that holds perfectly still while the camera moves.
+/// Vertical faces store the two bottom corners; caps store four flat ones.
 #[derive(Component)]
-struct WallFace {
-    a: Vec2, // cell-space corners of the bottom edge
+struct Quad3 {
+    a: Vec2, // cell-space bottom corners (faces) / first edge (caps)
     b: Vec2,
     base: Color,
+    cap: bool,
+}
+
+/// Every ground rectangle (tiles, gravel) baked into ONE mesh, re-projected
+/// per-vertex each frame. Coplanar, drawn in index order: cannot shuffle.
+#[derive(Resource)]
+struct Ground {
+    rects: Vec<(Vec2, Vec2, Color)>, // (min, max) in cell space
+    mesh: Handle<Mesh>,
+}
+
+fn blank_mesh() -> Mesh {
+    // Never zero vertices: wgpu refuses to slice an empty buffer, so the
+    // placeholder is one invisible degenerate quad at the origin.
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 4]);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32, 0.0, 0.0, 0.0]; 4]);
+    m.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+    m
 }
 
 const WALL_H: f32 = 0.5; // waist-high, in cells
@@ -387,6 +410,8 @@ fn setup(
     mut commands: Commands,
     config: Res<CabinetConfig>,
     net: Res<NetMode>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<ColorMaterial>>,
     existing_editor: Option<ResMut<ArenaEditor>>,
 ) {
     let editor_mode = crate::shell::take_editor_pending();
@@ -432,6 +457,7 @@ fn setup(
     // Walls, boxes, and floor markings become projected billboards.
     let mut spawns: Vec<Vec2> = Vec::new();
     let mut boxes = Vec::new();
+    let mut ground_rects: Vec<(Vec2, Vec2, Color)> = Vec::new();
     for y in 0..AH {
         for x in 0..AW {
             let ch = cell_at(&rows, x as i32, y as i32);
@@ -448,17 +474,28 @@ fn setup(
                 's' => spawns.push(center),
                 _ => {}
             }
-            // The mode-7 checkerboard: every open cell is a floor tile, so
-            // the ground streams under you the way a kart track should.
+            // Checkerboard + gravel go into ONE per-vertex-projected ground
+            // mesh (built after the scan): exact, coplanar, fixed draw
+            // order — the floor cannot shimmer, swim, or shuffle.
             if ch != '#' {
-                // Asphalt: warm, flat, unmistakably UNDER you.
                 let tone = if (x + y) % 2 == 0 {
                     Color::srgb(0.165, 0.155, 0.135)
                 } else {
                     Color::srgb(0.105, 0.10, 0.09)
                 };
-                let e = bill(&mut commands, center, 1.02, 1.0, 0.0, true, tone);
-                let _ = e;
+                ground_rects.push((center - Vec2::splat(0.51), center + Vec2::splat(0.51), tone));
+                let h = x.wrapping_mul(7).wrapping_add(y.wrapping_mul(13));
+                for k in 0..3usize {
+                    let hx = ((h + k * 29) % 10) as f32 / 10.0 - 0.5;
+                    let hy = ((h / 3 + k * 41) % 10) as f32 / 10.0 - 0.5;
+                    let fleck = if (h + k) % 2 == 0 {
+                        Color::srgb(0.21, 0.20, 0.17)
+                    } else {
+                        Color::srgb(0.06, 0.055, 0.05)
+                    };
+                    let p = center + Vec2::new(hx * 0.8, hy * 0.8);
+                    ground_rects.push((p - Vec2::splat(0.055), p + Vec2::splat(0.055), fleck));
+                }
             }
         }
     }
@@ -491,12 +528,19 @@ fn setup(
         let is_wall = |x: i32, y: i32| cell_at(&rows, x, y) == '#';
         let face_tone = Color::srgb(0.85, 0.66, 0.16); // hazard yellow
         let side_tone = Color::srgb(0.62, 0.48, 0.11); // E/W faces, shaded
-        let face = |commands: &mut Commands, a: Vec2, b: Vec2, base: Color| {
+        let white = mats.add(ColorMaterial::from(Color::WHITE));
+        let face = |commands: &mut Commands,
+                        meshes: &mut Assets<Mesh>,
+                        a: Vec2,
+                        b: Vec2,
+                        base: Color,
+                        cap: bool| {
             commands.spawn((
-                Sprite { color: base, custom_size: Some(Vec2::splat(2.0)), ..default() },
+                Mesh2d(meshes.add(blank_mesh())),
+                MeshMaterial2d(white.clone()),
                 Transform::from_xyz(0.0, 0.0, 1.0),
                 Visibility::Hidden,
-                WallFace { a, b, base },
+                Quad3 { a, b, base, cap },
                 GameTag,
             ));
         };
@@ -509,7 +553,7 @@ fn setup(
                     while x < AW as i32 && is_wall(x, y) && !is_wall(x, y - 1) {
                         x += 1;
                     }
-                    face(&mut commands, Vec2::new(x0 as f32, y as f32), Vec2::new(x as f32, y as f32), face_tone);
+                    face(&mut commands, &mut meshes, Vec2::new(x0 as f32, y as f32), Vec2::new(x as f32, y as f32), face_tone, false);
                 } else {
                     x += 1;
                 }
@@ -524,9 +568,11 @@ fn setup(
                     }
                     face(
                         &mut commands,
+                        &mut meshes,
                         Vec2::new(x0 as f32, y as f32 + 1.0),
                         Vec2::new(x as f32, y as f32 + 1.0),
                         face_tone,
+                        false,
                     );
                 } else {
                     x += 1;
@@ -540,15 +586,13 @@ fn setup(
                     while x < AW as i32 && is_wall(x, y) {
                         x += 1;
                     }
-                    let run = (x - x0) as f32;
-                    bill(
+                    face(
                         &mut commands,
-                        Vec2::new(x0 as f32 + run / 2.0, y as f32 + 0.5),
-                        run * 1.01,
-                        1.0,
-                        WALL_H,
-                        true,
+                        &mut meshes,
+                        Vec2::new(x0 as f32, y as f32),
+                        Vec2::new(x as f32, y as f32 + 1.0),
                         Color::srgb(0.42, 0.34, 0.10),
+                        true,
                     );
                 } else {
                     x += 1;
@@ -564,7 +608,7 @@ fn setup(
                     while y < AH as i32 && is_wall(x, y) && !is_wall(x - 1, y) {
                         y += 1;
                     }
-                    face(&mut commands, Vec2::new(x as f32, y0 as f32), Vec2::new(x as f32, y as f32), side_tone);
+                    face(&mut commands, &mut meshes, Vec2::new(x as f32, y0 as f32), Vec2::new(x as f32, y as f32), side_tone, false);
                 } else {
                     y += 1;
                 }
@@ -579,9 +623,11 @@ fn setup(
                     }
                     face(
                         &mut commands,
+                        &mut meshes,
                         Vec2::new(x as f32 + 1.0, y0 as f32),
                         Vec2::new(x as f32 + 1.0, y as f32),
                         side_tone,
+                        false,
                     );
                 } else {
                     y += 1;
@@ -729,6 +775,16 @@ fn setup(
     let slot_label = text(&mut commands, "", 11.0, WHITE, Vec3::new(-322.0, 204.0, 27.2));
     commands.entity(slot_label).insert((FixedView, GameTag));
     commands.entity(slot_label).insert(Visibility::Hidden);
+    let ground_mesh = meshes.add(blank_mesh());
+    commands.spawn((
+        Mesh2d(ground_mesh.clone()),
+        MeshMaterial2d(mats.add(ColorMaterial::from(Color::WHITE))),
+        Transform::from_xyz(0.0, 0.0, 0.45),
+        Visibility::Hidden,
+        FixedView, // shown/hidden with the rest of the view furniture
+        GameTag,
+    ));
+    commands.insert_resource(Ground { rects: ground_rects, mesh: ground_mesh });
     let veil = commands
         .spawn((
             Sprite { color: Color::NONE, custom_size: Some(Vec2::new(744.0, 664.0)), ..default() },
@@ -1692,10 +1748,12 @@ fn project(
     mut bills: Query<(&mut Bill, &mut Transform, &mut Sprite, &mut Visibility)>,
     mut fixed: Query<(&mut Visibility, &mut Transform), (With<FixedView>, Without<Bill>)>,
     mut fixed_sprites: Query<&mut Sprite, (With<FixedView>, Without<Bill>)>,
-    mut faces: Query<
-        (&WallFace, &mut Transform, &mut Sprite, &mut Visibility),
+    mut quads: Query<
+        (&Quad3, &Mesh2d, &mut Transform, &mut Visibility),
         (Without<Bill>, Without<FixedView>),
     >,
+    mut mesh_assets: ResMut<Assets<Mesh>>,
+    ground: Option<Res<Ground>>,
     mut texts: Query<&mut Text2d>,
 ) {
     let editing = editor.map(|e| e.active).unwrap_or(false);
@@ -1706,7 +1764,7 @@ fn project(
         for (mut vis, _) in fixed.iter_mut() {
             *vis = Visibility::Hidden;
         }
-        for (_, _, _, mut vis) in faces.iter_mut() {
+        for (_, _, _, mut vis) in quads.iter_mut() {
             *vis = Visibility::Hidden;
         }
         return;
@@ -1842,53 +1900,118 @@ fn project(
         tf.translation = Vec3::new(sx, sy, (21.0 - cy).clamp(1.0, 21.0) + zoff);
         *vis = Visibility::Inherited;
     }
-    // Wall faces: both bottom corners project, the quad stretches and
-    // rotates between them — a surface that stays put while you turn.
-    for (f, mut tf, mut sp, mut vis) in faces.iter_mut() {
-        let to_cam = |p: Vec2| {
-            let rel = p - cam;
-            Vec2::new(rel.dot(rt), rel.dot(fwd))
+    // Walls and caps: every corner projected EXACTLY into a private
+    // 4-vertex mesh. True trapezoids — no rectangle refitting, so the
+    // geometry is pixel-stable while you move and turn.
+    let to_cam = |p: Vec2| {
+        let rel = p - cam;
+        Vec2::new(rel.dot(rt), rel.dot(fwd))
+    };
+    const NEAR: f32 = 0.30;
+    let vshade = |cy: f32| (2.4 / cy.max(0.55)).clamp(0.30, 1.0);
+    for (q, mesh2d, mut tf, mut vis) in quads.iter_mut() {
+        let (positions, colors, cy_min) = if q.cap {
+            let corners = [q.a, Vec2::new(q.b.x, q.a.y), q.b, Vec2::new(q.a.x, q.b.y)];
+            let cams = corners.map(to_cam);
+            if cams.iter().all(|c| c.y < NEAR) || cams.iter().all(|c| c.y > 17.5) {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            let mut pos = Vec::with_capacity(4);
+            let mut cols = Vec::with_capacity(4);
+            let mut cy_min = f32::MAX;
+            let s = q.base.to_srgba();
+            for cpt in cams {
+                let cy = cpt.y.max(NEAR);
+                cy_min = cy_min.min(cy);
+                let inv = FOCAL / cy;
+                let sh = vshade(cy);
+                pos.push([(cpt.x * inv).clamp(-4000.0, 4000.0), HORIZON - (1.0 - WALL_H) * inv, 0.0]);
+                cols.push([s.red * sh, s.green * sh, s.blue * sh, 1.0]);
+            }
+            (pos, cols, cy_min)
+        } else {
+            let mut a = to_cam(q.a);
+            let mut b2 = to_cam(q.b);
+            if (a.y < NEAR && b2.y < NEAR) || (a.y > 17.5 && b2.y > 17.5) {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            if a.y < NEAR {
+                let t = (NEAR - a.y) / (b2.y - a.y);
+                a = a + (b2 - a) * t;
+            } else if b2.y < NEAR {
+                let t = (NEAR - b2.y) / (a.y - b2.y);
+                b2 = b2 + (a - b2) * t;
+            }
+            let ia = FOCAL / a.y;
+            let ib = FOCAL / b2.y;
+            let (sxa, sxb) = ((a.x * ia).clamp(-4000.0, 4000.0), (b2.x * ib).clamp(-4000.0, 4000.0));
+            if sxa.min(sxb) > 700.0 || sxa.max(sxb) < -700.0 {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            let s = q.base.to_srgba();
+            let (sha, shb) = (vshade(a.y), vshade(b2.y));
+            let ca = [s.red * sha, s.green * sha, s.blue * sha, 1.0];
+            let cb = [s.red * shb, s.green * shb, s.blue * shb, 1.0];
+            (
+                vec![
+                    [sxa, HORIZON - ia, 0.0],
+                    [sxb, HORIZON - ib, 0.0],
+                    [sxb, HORIZON - (1.0 - WALL_H) * ib, 0.0],
+                    [sxa, HORIZON - (1.0 - WALL_H) * ia, 0.0],
+                ],
+                vec![ca, cb, cb, ca],
+                a.y.min(b2.y),
+            )
         };
-        let mut a = to_cam(f.a);
-        let mut b2 = to_cam(f.b);
-        const NEAR: f32 = 0.32;
-        if (a.y < NEAR && b2.y < NEAR) || (a.y > 17.0 && b2.y > 17.0) {
-            *vis = Visibility::Hidden;
-            continue;
+        if let Some(m) = mesh_assets.get_mut(&mesh2d.0) {
+            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            m.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            m.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]));
         }
-        if a.y < NEAR {
-            let t = (NEAR - a.y) / (b2.y - a.y);
-            a = a + (b2 - a) * t;
-        } else if b2.y < NEAR {
-            let t = (NEAR - b2.y) / (a.y - b2.y);
-            b2 = b2 + (a - b2) * t;
-        }
-        let ia = FOCAL / a.y;
-        let ib = FOCAL / b2.y;
-        let sxa = a.x * ia;
-        let sxb = b2.x * ib;
-        if sxa.min(sxb) > 640.0 || sxa.max(sxb) < -640.0 {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        let (gya, gyb) = (HORIZON - ia, HORIZON - ib);
-        let (ha, hb) = (WALL_H * ia, WALL_H * ib);
-        let p0 = Vec2::new(sxa, gya + ha * 0.5);
-        let p1 = Vec2::new(sxb, gyb + hb * 0.5);
-        let d = p1 - p0;
-        let cy_avg = (a.y + b2.y) * 0.5;
-        // Painter's order by the NEAREST point of the run: a surface that
-        // reaches closer to you always draws over one that doesn't. Stable
-        // under rotation, so runs never leapfrog each other.
-        let cy_near_pt = a.y.min(b2.y);
-        let shade = (2.4 / cy_avg).clamp(0.30, 1.0);
-        let c = f.base.to_srgba();
-        sp.color = Color::srgb(c.red * shade, c.green * shade, c.blue * shade);
-        sp.custom_size = Some(Vec2::new(d.length().clamp(1.0, 1600.0), ((ha + hb) * 0.5).clamp(1.5, 640.0)));
-        let mid = (p0 + p1) / 2.0;
-        tf.translation = Vec3::new(mid.x, mid.y, (21.0 - cy_near_pt).clamp(1.0, 21.0));
-        tf.rotation = Quat::from_rotation_z(d.y.atan2(d.x));
+        tf.translation.z =
+            (21.0 - cy_min).clamp(1.0, 21.0) + if q.cap { 0.05 } else { 0.0 };
         *vis = Visibility::Inherited;
+    }
+    // The ground: every tile and gravel fleck re-projected per-vertex into
+    // one mesh, drawn in a fixed order underneath everything.
+    if let Some(gr) = ground.as_ref() {
+        if let Some(m) = mesh_assets.get_mut(&gr.mesh) {
+            let mut pos: Vec<[f32; 3]> = Vec::new();
+            let mut cols: Vec<[f32; 4]> = Vec::new();
+            let mut idx: Vec<u32> = Vec::new();
+            for (mn, mx, color) in &gr.rects {
+                let cc = to_cam((*mn + *mx) / 2.0);
+                if cc.y < -0.6 || cc.y > 17.5 || cc.x.abs() > cc.y.max(0.5) * 2.6 + 3.0 {
+                    continue;
+                }
+                let corners = [*mn, Vec2::new(mx.x, mn.y), *mx, Vec2::new(mn.x, mx.y)];
+                let cams = corners.map(to_cam);
+                if cams.iter().all(|c| c.y < NEAR) {
+                    continue;
+                }
+                let base_i = pos.len() as u32;
+                let s = color.to_srgba();
+                for cpt in cams {
+                    let cy = cpt.y.max(NEAR);
+                    let inv = FOCAL / cy;
+                    let sh = vshade(cy);
+                    pos.push([(cpt.x * inv).clamp(-4000.0, 4000.0), HORIZON - inv, 0.0]);
+                    cols.push([s.red * sh, s.green * sh, s.blue * sh, 1.0]);
+                }
+                idx.extend([base_i, base_i + 1, base_i + 2, base_i, base_i + 2, base_i + 3]);
+            }
+            if pos.is_empty() {
+                pos.extend([[0.0f32, 0.0, 0.0]; 4]);
+                cols.extend([[0.0f32, 0.0, 0.0, 0.0]; 4]);
+                idx.extend([0, 1, 2, 0, 2, 3]);
+            }
+            m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+            m.insert_attribute(Mesh::ATTRIBUTE_COLOR, cols);
+            m.insert_indices(Indices::U32(idx));
+        }
     }
     // Screen-fixed furniture on, then the per-chair minimap dots and the rig.
     for (mut vis, _) in fixed.iter_mut() {
