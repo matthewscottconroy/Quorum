@@ -174,6 +174,7 @@ struct Chair {
     boost_t: f32,
     inv_t: f32,
     star_t: f32, // OVERTIME: untouchable, fast, pops on contact
+    air_t: f32,  // the SNES hop: briefly airborne, sails over hazards
     pops: u32,
     think: f32,
     ent: Entity,        // seat cushion billboard
@@ -232,7 +233,8 @@ struct Garage {
     veil: Entity,   // full-screen flash for item drama
     fx_t: f32,
     fx_color: Color,
-    hop_t: f32,     // your EJECTOR arc
+    hop_t: f32,     // your airborne arc (ejector or hop)
+    hop_dur: f32,   // how long this arc is, for the render curve
     i_won: bool,
     gear: i8, // last engine-pitch step sent to the synth
 }
@@ -674,6 +676,7 @@ fn setup(
             boost_t: 0.0,
             inv_t: 0.0,
             star_t: 0.0,
+            air_t: 0.0,
             pops: 0,
             think: seat as f32 * 0.1,
             ent,
@@ -843,6 +846,7 @@ fn setup(
         fx_t: 0.0,
         fx_color: WHITE,
         hop_t: 0.0,
+        hop_dur: 0.45,
         i_won: false,
         gear: -1,
     });
@@ -1054,6 +1058,7 @@ fn drive(
     }
     let mut fire_req: Option<(usize, u8)> = None;
     let mut bumped = false;
+    let mut hop_fx = false;
     for i in 0..g.chairs.len() {
         let local = {
             let c = &g.chairs[i];
@@ -1070,18 +1075,37 @@ fn drive(
         c.spin_t = (c.spin_t - dt).max(0.0);
         c.boost_t = (c.boost_t - dt).max(0.0);
         c.inv_t = (c.inv_t - dt).max(0.0);
+        c.air_t = (c.air_t - dt).max(0.0);
         let mut coasting = false;
+        let mut sliding = false;
         if c.human {
             let turn = i32::from(keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA))
                 - i32::from(keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD));
             let gas = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
             let brake = keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS);
+            // The 16-bit hop: tap to leave the carpet (staplers and coffee
+            // pass underneath), keep it HELD through a corner and the chair
+            // powerslides — the tail hangs out, the nose turns harder.
+            let hop_held = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+            if (keys.just_pressed(KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight))
+                && c.spin_t <= 0.0
+                && c.air_t <= 0.0
+                && c.speed.abs() > 30.0
+            {
+                c.air_t = 0.30;
+                hop_fx = true;
+                sfx("place");
+            }
+            sliding = hop_held && turn != 0 && c.air_t <= 0.0 && c.speed.abs() > 60.0;
             if c.spin_t > 0.0 {
                 c.ang += 9.0 * dt; // the spin-out: all wheel, no say
             } else {
                 // A parked car doesn't pivot: steering authority comes with
-                // road speed.
-                let authority = (0.10 + 0.90 * (c.speed.abs() / MAX_SPEED).min(1.0).sqrt()).min(1.0);
+                // road speed. In a slide the wheel bites harder.
+                let mut authority = (0.10 + 0.90 * (c.speed.abs() / MAX_SPEED).min(1.0).sqrt()).min(1.0);
+                if sliding {
+                    authority *= 1.45;
+                }
                 c.ang += turn as f32 * TURN_RATE * dt * authority;
                 if gas {
                     // Gas pedal: hard launch off the line, tapering as the
@@ -1147,7 +1171,12 @@ fn drive(
         // Spins come from HITS, never from steering: hard cornering only
         // drifts (the slip below), it never punishes you with a spin-out.
         let slip = wrap_pi(c.ang - c.mdir);
-        let grip = 7.5 - 5.0 * (c.speed.abs() / MAX_SPEED).min(1.0);
+        let mut grip = 7.5 - 5.0 * (c.speed.abs() / MAX_SPEED).min(1.0);
+        if c.air_t > 0.0 {
+            grip = 0.0; // wheels off the carpet: momentum wins
+        } else if sliding {
+            grip *= 0.30; // powerslide: motion lags the nose, hence the drift
+        }
         c.mdir += slip * (grip * dt).min(1.0);
         let dirv = Vec2::new(c.mdir.cos(), -c.mdir.sin());
         let step = dirv * (c.speed / ACELL) * dt;
@@ -1198,6 +1227,10 @@ fn drive(
             }
         }
     }
+    if hop_fx {
+        g.hop_t = 0.30;
+        g.hop_dur = 0.30;
+    }
     if bumped && g.bump_t <= 0.0 {
         g.bump_t = 0.35;
         sfx("thud"); // upholstery meets masonry
@@ -1229,6 +1262,7 @@ fn drive(
                 eject_hop(&rows, &mut g, i);
                 if g.chairs[i].human {
                     g.hop_t = 0.45;
+                    g.hop_dur = 0.45;
                 }
             }
             7 => {
@@ -1407,6 +1441,7 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     // Homing shots steer toward the nearest rival first.
     let chair_spots: Vec<(usize, Vec2, i32)> =
         g.chairs.iter().map(|c| (c.seat, c.pos, c.balloons)).collect();
+    let my_pos = g.chairs.iter().find(|c| c.seat == g.my_seat).map(|c| c.pos);
     for si in 0..g.shots.len() {
         let s = &mut g.shots[si];
         s.ttl -= dt;
@@ -1436,7 +1471,16 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
                 } else {
                     s.vel.y = -s.vel.y;
                 }
-                sfx("tick");
+                // A puck ricocheting across the room shouldn't be as loud
+                // as one at your wheels: inverse-square falloff, and past
+                // earshot it's silent instead of noise.
+                if let Some(mp) = my_pos {
+                    let d = s.pos.distance(mp);
+                    let vol = (8.0 / (1.0 + (d / 2.5) * (d / 2.5))).round() as i32;
+                    if vol >= 1 {
+                        sfx(&format!("bounce{}", vol.min(8)));
+                    }
+                }
             } else {
                 dead_shots.push(si);
                 continue;
@@ -1449,8 +1493,8 @@ fn shots_fly(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
     // chairs cannot be popped by anything.
     for (ci, c) in g.chairs.iter().enumerate() {
         let owned = c.human || (!net && !c.remote);
-        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 {
-            continue;
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 || c.air_t > 0.0 {
+            continue; // airborne: the puck slides right underneath you
         }
         for (si, s) in g.shots.iter().enumerate() {
             if s.owner != c.seat && s.pos.distance(c.pos) < 0.6 {
@@ -1586,8 +1630,8 @@ fn hazards(time: Res<Time>, mut commands: Commands, mut g: ResMut<Garage>) {
         .collect();
     for (ci, c) in g.chairs.iter_mut().enumerate() {
         let owned = c.human || (!net && !c.remote);
-        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 {
-            continue;
+        if !owned || c.balloons <= 0 || c.inv_t > 0.0 || c.star_t > 0.0 || c.air_t > 0.0 {
+            continue; // you jumped the spill, like the box art promised
         }
         for &(owner, pos) in &puds {
             if owner != c.seat && c.pos.distance(pos) < 0.7 && c.spin_t <= 0.0 {
@@ -2073,7 +2117,7 @@ fn project(
             let (slip, spd) = me.map(|c| (wrap_pi(c.ang - c.mdir), c.speed)).unwrap_or((0.0, 0.0));
             tf.rotation = Quat::from_rotation_z((lean * 0.05 + slip * 0.55).clamp(-0.5, 0.5));
             let bob = (g.clock * 11.0).sin() * (spd.abs() / MAX_SPEED).min(1.0) * 3.0;
-            let hop = (std::f32::consts::PI * (1.0 - g.hop_t / 0.45).clamp(0.0, 1.0)).sin() * 46.0;
+            let hop = (std::f32::consts::PI * (1.0 - g.hop_t / g.hop_dur.max(0.01)).clamp(0.0, 1.0)).sin() * 46.0;
             tf.translation.y = -238.0 + bob + if g.hop_t > 0.0 { hop } else { 0.0 };
         }
     }

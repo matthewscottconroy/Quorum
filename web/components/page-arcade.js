@@ -81,7 +81,7 @@ const CABINETS = [
   },
   {
     id: 'bumper-chairs', name: 'BUMPER CHAIRS', tag: 'Last chair rolling wins. Facilities is furious.',
-    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — rivals are proper chairs (hub, seat, backrest), your balloons float over your seat, the minimap top-right sees the whole garage, and the ITEM BOX (top left) spins like a slot machine when you grab a crate (Space stops the spin early; the next press uses it). ← →/A D steer · ↑/W drives · ↓/S brakes, and only once stopped does holding it reverse. Chairs drift in hard corners, spin out if you yank the wheel flat-out, glance off walls, and coast down off the gas. Space uses the item. The full kit: STAPLER · TRIPLE · SMART STAPLER (it seeks) · COFFEE PUDDLE · ESPRESSO · OVERTIME (untouchable rush — brushing rivals pops them) · EJECTOR (hop a wall) · BLACKOUT (spins every rival) · GHOST VENDOR (steals a balloon, up to five). Last chair holding a balloon wins. GAMEPAD (16-bit kart layout, by button position): stick or d-pad steers, BOTTOM face button is the gas, LEFT face is the brake, RIGHT face uses the item / stops the slot — the stick never drives for you.',
+    players: '1P vs bots · 2-12 online · editor', controls: 'You ride BEHIND your chair, 16-bit kart style — rivals are proper chairs (hub, seat, backrest), your balloons float over your seat, the minimap top-right sees the whole garage, and the ITEM BOX (top left) spins like a slot machine when you grab a crate (Space stops the spin early; the next press uses it). ← →/A D steer · ↑/W drives · ↓/S brakes, and only once stopped does holding it reverse. Chairs drift in hard corners, spin out if you yank the wheel flat-out, glance off walls, and coast down off the gas. Space uses the item. The full kit: STAPLER · TRIPLE · SMART STAPLER (it seeks) · COFFEE PUDDLE · ESPRESSO · OVERTIME (untouchable rush — brushing rivals pops them) · EJECTOR (hop a wall) · BLACKOUT (spins every rival) · GHOST VENDOR (steals a balloon, up to five). Last chair holding a balloon wins. SHIFT (or the shoulder buttons) HOPS, 16-bit style: tap it and staplers and coffee spills pass underneath; hold it through a corner and the chair POWERSLIDES — tail out, nose turning harder. GAMEPAD (16-bit kart layout, by button position): stick or d-pad steers, BOTTOM face button is the gas, LEFT face is the brake, RIGHT face uses the item / stops the slot, SHOULDERS hop — the stick never drives for you. Puck ricochets are loud up close and fade with distance now instead of clattering at one volume from across the arena.',
   },
   {
     id: 'roll-call', name: 'ROLL CALL', tag: 'Five dice, three throws, thirteen boxes, no excuses.',
@@ -308,6 +308,10 @@ window.__arcadeSfx = name => {
   try {
     if (name !== 'engine_off' && name.startsWith('engine')) {
       return _engine(Math.max(0, Math.min(32, Number(name.slice(6)) || 0)));
+    }
+    if (name.startsWith('bounce')) {
+      const v = Math.max(1, Math.min(8, Number(name.slice(6)) || 1)) / 8;
+      return _tone(660, 660, 0.03, 0, 0.05 * v);
     }
     SFX[name]?.();
   } catch { /* silence is golden */ }

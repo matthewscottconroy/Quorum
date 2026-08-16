@@ -319,6 +319,13 @@ fn gamepad_keys(
             push(south, KeyCode::ArrowUp);   // gas (SNES B position)
             push(west, KeyCode::ArrowDown);  // brake (SNES Y position)
             push(east, KeyCode::Space);      // item (SNES A position)
+            // The shoulders hop, exactly like L/R on the 16-bit karts;
+            // hold one through a corner and the chair powerslides.
+            let shoulder = pad.pressed(GamepadButton::LeftTrigger)
+                || pad.pressed(GamepadButton::RightTrigger)
+                || pad.pressed(GamepadButton::LeftTrigger2)
+                || pad.pressed(GamepadButton::RightTrigger2);
+            push(shoulder, KeyCode::ShiftLeft);
             push(start, KeyCode::Enter);
             continue;
         }
