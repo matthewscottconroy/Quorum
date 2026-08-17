@@ -287,7 +287,10 @@ func (r *PurchasesRepo) Approve(ctx context.Context, requestID, approverID, ip s
 	if err := tx.QueryRow(ctx, `
 		SELECT pr.status, pr.fund_id::text, f.approvals_required
 		FROM purchase_requests pr JOIN funds f ON f.id = pr.fund_id
-		WHERE pr.id = $1::uuid FOR UPDATE OF pr`, requestID).Scan(&status, &fundID, &required); err != nil {
+		WHERE pr.id = $1::uuid FOR UPDATE OF pr, f`, requestID).Scan(&status, &fundID, &required); err != nil {
+		// (Locking f as well as pr: approvals_required must be stable against
+		// a concurrent UpdatePolicy, or an approval could count toward — or
+		// promote at — a bar the org just abolished.)
 		return nil, err
 	}
 	if status != "pending" {

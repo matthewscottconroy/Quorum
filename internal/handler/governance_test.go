@@ -462,3 +462,22 @@ func TestUpdateMotion_TextFrozenWhileOpen(t *testing.T) {
 		t.Fatalf("title edit while open: got %d, want 409 (%s)", rr.Code, rr.Body)
 	}
 }
+
+// Opening a vote on a meeting whose minutes are finalized is refused: the
+// outcome could never enter the closed record.
+func TestOpenMotion_FinalizedMeetingRefused(t *testing.T) {
+	sec := "u-sec"
+	repo2 := &mockGovernanceRepo{
+		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
+			return &model.Motion{ID: testMotionID, MeetingID: testMeetingID, Status: "seconded", SeconderID: &sec}, nil
+		},
+		MeetingMinutesFinalizedFn: func(_ context.Context, _ string) (bool, error) { return true, nil },
+	}
+	req := reqWithParam("POST", "/motions/"+testMotionID+"/open", "", map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(repo2).OpenMotion(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("open on finalized meeting: got %d, want 409 (%s)", rr.Code, rr.Body)
+	}
+}

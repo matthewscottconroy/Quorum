@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"quorum/internal/model"
 	"quorum/internal/repo"
@@ -309,11 +310,18 @@ func (h *MeetingsHandler) AddCorrection(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Body string `json:"body"`
 	}
-	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Body) == "" || len(body.Body) > 4000 {
+	if err := decodeJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
+		return
+	}
+	trimmed := strings.TrimSpace(body.Body)
+	// Runes, not bytes, matching the DB's char_length CHECK — a multibyte
+	// correction near the limit must not bounce here and pass there.
+	if trimmed == "" || utf8.RuneCountInString(trimmed) > 4000 {
 		writeError(w, http.StatusBadRequest, "body (1-4000 chars) required", "bad_request")
 		return
 	}
-	c, err := h.repo.AddCorrection(r.Context(), id, strings.TrimSpace(body.Body), userIDFromCtx(r))
+	c, err := h.repo.AddCorrection(r.Context(), id, trimmed, userIDFromCtx(r))
 	if errors.Is(err, repo.ErrMinutesNotFinal) {
 		writeError(w, http.StatusConflict, "minutes are still a draft: edit the journal directly instead of filing a correction", "conflict")
 		return

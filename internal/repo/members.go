@@ -316,6 +316,19 @@ func scanMember(row scannable) (model.Member, error) {
 // (ErrErasureLinkedAdmin): retiring such an account as a side effect of a member
 // operation could lock the org out — demote or unlink it first, deliberately.
 // Returns pgx.ErrNoRows if no such member exists.
+// regexpEscape neutralizes POSIX-regex metacharacters in user text so a
+// display name like "R. (Bob) O'Neil++" can ride inside regexp_replace.
+func regexpEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune(`\.+*?()|[]{}^$`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -348,10 +361,17 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 		return err
 	}
 	if oldName != "" {
+		// Word-boundary regex, not raw replace(): erasing "Ann" must not
+		// mangle "Annette Wu" or the word "May" in prose — this rewrites the
+		// permanent official record, so collateral damage is forever. The
+		// name is regex-escaped (names are arbitrary user text) and the
+		// placeholder matches the member-row spelling exactly (lowercased id).
+		placeholder := "Erased member " + strings.ToLower(id)[:8]
 		if _, err := tx.Exec(ctx, `
-			UPDATE meetings SET minutes_snapshot = replace(minutes_snapshot, $1, $2)
-			WHERE minutes_snapshot LIKE '%' || $1 || '%'`,
-			oldName, "Erased member "+id[:8]); err != nil {
+			UPDATE meetings
+			SET minutes_snapshot = regexp_replace(minutes_snapshot, '\m' || $1 || '\M', $2, 'g')
+			WHERE minutes_snapshot ~ ('\m' || $1 || '\M')`,
+			regexpEscape(oldName), placeholder); err != nil {
 			return err
 		}
 	}

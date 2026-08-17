@@ -361,7 +361,11 @@ class PageMeetings extends HTMLElement {
         // guard on a notes-only save when the stored time carried seconds.
         const body = {};
         const title = dialog.querySelector('#f-title').value.trim();
-        if (title && title !== mt.title) body.title = title;
+        // Title and start time are REQUIRED: an emptied field is a mistake to
+        // flag, not a change to drop silently while toasting "Saved".
+        if (!title) { toast('Title is required', 'error'); return; }
+        if (!dt) { toast('Start time is required', 'error'); return; }
+        if (title !== mt.title) body.title = title;
         if (dt !== toLocalInputValue(mt.scheduled_at)) body.scheduled_at = new Date(dt).toISOString();
         const origEnd = mt.ends_at ? toLocalInputValue(mt.ends_at) : '';
         if (end !== origEnd) body.ends_at = end ? new Date(end).toISOString() : null;

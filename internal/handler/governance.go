@@ -396,6 +396,19 @@ func (h *GovernanceHandler) OpenMotion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a motion must be seconded before voting opens", "bad_request")
 		return
 	}
+	// The mirror of finalize's open-motion gate: once the minutes are the
+	// official record, a newly opened vote's outcome could never enter them
+	// (every post-finalize side record is trigger-refused). Advisory rather
+	// than transactional, like the finalize side — officer actions at human
+	// speed, and the damage either gate prevents is merely an orphaned
+	// outcome, not corruption.
+	if finalized, err := h.repo.MeetingMinutesFinalized(r.Context(), m.MeetingID); err != nil {
+		writeError(w, http.StatusInternalServerError, "meeting lookup error", "internal_error")
+		return
+	} else if finalized {
+		writeError(w, http.StatusConflict, "this meeting's minutes are finalized: its record is closed to new votes", "conflict")
+		return
+	}
 	out, err := h.repo.SetMotionStatus(r.Context(), id, "open", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")

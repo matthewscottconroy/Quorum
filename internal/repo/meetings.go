@@ -539,7 +539,7 @@ func (r *MeetingsRepo) ListCorrections(ctx context.Context, meetingID string) ([
 		LEFT JOIN users u ON u.id = c.created_by
 		LEFT JOIN members m ON m.id = u.member_id
 		WHERE c.meeting_id = $1::uuid
-		ORDER BY c.created_at`, meetingID)
+		ORDER BY c.created_at, c.id`, meetingID)
 	if err != nil {
 		return nil, err
 	}

@@ -340,6 +340,10 @@ func (h *WebhooksHandler) handlePayPalRefund(r *http.Request, eventID string, ra
 			CurrencyCode string `json:"currency_code"`
 		} `json:"amount"`
 		CustomID string `json:"custom_id"`
+		Links    []struct {
+			Rel  string `json:"rel"`
+			Href string `json:"href"`
+		} `json:"links"`
 	}
 	if err := json.Unmarshal(raw, &resource); err != nil {
 		log.Printf("paypal: parse refund resource error: %v", err)
@@ -357,12 +361,17 @@ func (h *WebhooksHandler) handlePayPalRefund(r *http.Request, eventID string, ra
 			invoiceID = id
 		}
 	}
-	if invoiceID == "" && resource.ID != "" {
-		id, err := h.dues.FindInvoiceByProviderRef(r.Context(), resource.ID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
+	if invoiceID == "" {
+		// The refund resource's own id was never stored anywhere — the
+		// provider ref on file is the CAPTURE id, which the refund links to
+		// via rel="up" (…/v2/payments/captures/{id}). Follow that.
+		if capID := paypalUpID(resourceLinks(resource.Links)); capID != "" {
+			id, err := h.dues.FindInvoiceByProviderRef(r.Context(), capID)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			invoiceID = id
 		}
-		invoiceID = id
 	}
 	if invoiceID == "" {
 		log.Printf("paypal: refund %s not linked to an invoice — record manually", eventID)
@@ -440,6 +449,32 @@ func (h *WebhooksHandler) handlePayPalCapture(r *http.Request, eventID string, r
 		return nil
 	}
 	return err
+}
+
+// resourceLinks flattens the anonymous links struct into rel→href pairs.
+func resourceLinks(links []struct {
+	Rel  string `json:"rel"`
+	Href string `json:"href"`
+}) map[string]string {
+	out := make(map[string]string, len(links))
+	for _, l := range links {
+		out[l.Rel] = l.Href
+	}
+	return out
+}
+
+// paypalUpID extracts the trailing path segment of a rel="up" link — for a
+// refund that is the capture id the original payment was recorded under.
+func paypalUpID(links map[string]string) string {
+	href, ok := links["up"]
+	if !ok {
+		return ""
+	}
+	href = strings.TrimRight(href, "/")
+	if i := strings.LastIndex(href, "/"); i >= 0 && i+1 < len(href) {
+		return href[i+1:]
+	}
+	return ""
 }
 
 func verifyStripeSignature(payload []byte, header, secret string) bool {

@@ -230,8 +230,12 @@ func (h *ExportHandler) ExportMyStatement(w http.ResponseWriter, r *http.Request
 		}
 		payCount++
 		paid[t.Currency] += t.AmountMinor
-		d.Line(fmt.Sprintf("%s  %10s  via %s",
-			t.OccurredAt.Format("2006-01-02"), model.FormatMoney(t.AmountMinor, t.Currency), t.Provider))
+		kind := ""
+		if t.AmountMinor < 0 {
+			kind = "  (refund)"
+		}
+		d.Line(fmt.Sprintf("%s  %10s  via %s%s",
+			t.OccurredAt.Format("2006-01-02"), model.FormatMoney(t.AmountMinor, t.Currency), t.Provider, kind))
 	}
 	if payCount == 0 {
 		d.Line("(no payments this year)")

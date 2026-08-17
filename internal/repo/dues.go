@@ -320,16 +320,15 @@ func (r *DuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transa
 	} else if -t.AmountMinor > paid {
 		return nil, max(paid, 0), ErrExceedsPaid
 	}
-	var id string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO transactions
 		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,
 		     provider_status, payment_method_type, recorded_by, occurred_at, notes)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)
-		RETURNING id::text`,
+		RETURNING id::text, occurred_at`,
 		t.InvoiceID, t.MemberID, t.AmountMinor, t.Currency, t.Provider,
 		t.ProviderReferenceID, t.ProviderStatus, t.PaymentMethodType,
-		t.RecordedBy, t.OccurredAt, t.Notes).Scan(&id); err != nil {
+		t.RecordedBy, t.OccurredAt, t.Notes).Scan(&t.ID, &t.OccurredAt); err != nil {
 		return nil, 0, err
 	}
 	if _, err := tx.Exec(ctx, recomputeInvoiceStatusSQL, *t.InvoiceID); err != nil {
@@ -338,7 +337,6 @@ func (r *DuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transa
 	if err := tx.Commit(ctx); err != nil {
 		return nil, 0, err
 	}
-	t.ID = id
 	return t, 0, nil
 }
 
@@ -504,10 +502,21 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	// FOR UPDATE is load-bearing: every writer that reads the invoice's paid
 	// total (ConfirmAndPost, CreateGuardedTransaction, this path) must take
 	// the invoice row lock FIRST, or two of them can interleave their reads
-	// and double-post — the lock is the whole serialization story.
+	// and double-post — the lock is the whole serialization story. The
+	// member id rides along: webhook callers rarely know it, and a NULL
+	// member_id makes the payment invisible on the member's year-end
+	// statement (fetched strictly by member).
 	if t.InvoiceID != nil {
 		var st string
-		if err := tx.QueryRow(ctx, `SELECT status FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`, *t.InvoiceID).Scan(&st); err == nil && st == "waived" {
+		var memberID *string
+		if err := tx.QueryRow(ctx,
+			`SELECT status, member_id::text FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`,
+			*t.InvoiceID).Scan(&st, &memberID); err == nil {
+			if t.MemberID == nil {
+				t.MemberID = memberID
+			}
+		}
+		if st == "waived" {
 			if cerr := tx.Commit(ctx); cerr != nil {
 				return false, cerr
 			}
@@ -556,9 +565,14 @@ func (r *DuesRepo) RecordWebhookRefund(ctx context.Context, eventID string, t *m
 		return true, nil
 	}
 	var st string
+	var memberID *string
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`, *t.InvoiceID).Scan(&st); err != nil {
+		`SELECT status, member_id::text FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`,
+		*t.InvoiceID).Scan(&st, &memberID); err != nil {
 		return false, err
+	}
+	if t.MemberID == nil {
+		t.MemberID = memberID // statements fetch by member: attribute the refund
 	}
 	if st == "waived" {
 		if cerr := tx.Commit(ctx); cerr != nil {

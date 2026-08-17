@@ -453,3 +453,94 @@ func TestIntegration_CloseAndDecide(t *testing.T) {
 		t.Fatalf("re-close: err=%v, want ErrMotionDecided", err)
 	}
 }
+
+// ── final-pass round ─────────────────────────────────────────────────────
+
+// The erase scrub respects word boundaries: erasing "Ann" must not mangle
+// "Annette" in the permanent record, and the placeholder matches the
+// member-row spelling.
+func TestIntegration_EraseScrubWordBoundary(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	mtRepo := repo.NewMeetingsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	// A member with a deliberately collision-prone name.
+	email := uniq("ann") + "@example.com"
+	m, err := mr.Create(ctx, &model.Member{DisplayName: "Ann", Email: &email, Tier: uniq("t"), Status: "active", JoinedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	mt, err := mtRepo.Create(ctx, &model.Meeting{
+		Title: uniq("Meeting"), ScheduledAt: time.Now().Add(-time.Hour), Status: "completed",
+	}, uid)
+	if err != nil {
+		t.Fatalf("meeting: %v", err)
+	}
+	if _, err := mtRepo.AddMinutesEntry(ctx, mt.ID, "note", "x", nil, uid); err != nil {
+		t.Fatalf("journal: %v", err)
+	}
+	if err := mtRepo.FinalizeMinutes(ctx, mt.ID, uid); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	snapshot := "Present: Ann, Annette Wu. Motion by Ann; Annexation report in May."
+	if err := mtRepo.SetMinutesSnapshot(ctx, mt.ID, snapshot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if err := mr.Erase(ctx, m.ID); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	got, err := mtRepo.GetMinutesSnapshot(ctx, mt.ID)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	placeholder := "Erased member " + strings.ToLower(m.ID)[:8]
+	want := "Present: " + placeholder + ", Annette Wu. Motion by " + placeholder + "; Annexation report in May."
+	if got != want {
+		t.Fatalf("scrub result:\n  got  %q\n  want %q", got, want)
+	}
+}
+
+// An email ballot from a member deactivated after the mailing is refused —
+// the same voting roll as every other entrance.
+func TestIntegration_BallotRespectsRoll(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	gov := repo.NewGovernanceRepo(pool)
+	mtRepo := repo.NewMeetingsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+	memberID := newMember(t, mr, uniq("tier"), "active")
+	mt, err := mtRepo.Create(ctx, &model.Meeting{Title: uniq("Meeting"), ScheduledAt: time.Now(), Status: "scheduled"}, uid)
+	if err != nil {
+		t.Fatalf("meeting: %v", err)
+	}
+	mo, err := gov.CreateMotion(ctx, &model.Motion{MeetingID: mt.ID, Title: uniq("Motion"), Threshold: "majority", Status: "draft"}, uid)
+	if err != nil {
+		t.Fatalf("motion: %v", err)
+	}
+	if _, err := gov.SetMotionStatus(ctx, mo.ID, "open", nil); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	hash := repo.HashToken(uniq("ballot-token"))
+	if err := gov.UpsertBallotToken(ctx, mo.ID, memberID, hash, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	// Suspend the member AFTER the mailing; the outstanding link must die.
+	if _, err := pool.Exec(ctx, `UPDATE members SET status = 'inactive' WHERE id = $1::uuid`, memberID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+	if _, err := gov.ConsumeBallotAndVote(ctx, hash, "for"); err == nil {
+		t.Fatal("inactive member's ballot was counted")
+	}
+	// Reactivate: the unused token works again (it was refused, not burned).
+	if _, err := pool.Exec(ctx, `UPDATE members SET status = 'active' WHERE id = $1::uuid`, memberID); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if _, err := gov.ConsumeBallotAndVote(ctx, hash, "for"); err != nil {
+		t.Fatalf("active member's ballot refused: %v", err)
+	}
+}

@@ -483,24 +483,26 @@ func (r *GovernanceRepo) CloseAndDecide(ctx context.Context, id, requested strin
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var status, threshold string
-	if err := tx.QueryRow(ctx,
-		`SELECT status, threshold FROM motions WHERE id = $1::uuid FOR UPDATE`, id).Scan(&status, &threshold); err != nil {
+	var status, threshold, meetingID, title string
+	if err := tx.QueryRow(ctx, `
+		SELECT status, threshold, meeting_id::text, title
+		FROM motions WHERE id = $1::uuid FOR UPDATE`, id).Scan(&status, &threshold, &meetingID, &title); err != nil {
 		return nil, "", err
 	}
 	if status == "carried" || status == "failed" || status == "tabled" || status == "withdrawn" {
 		return nil, "", ErrMotionDecided
 	}
 	final := requested
+	var votesFor, against, abstain int
 	if requested == "" || requested == "carried" || requested == "failed" {
 		if status != "open" {
 			return nil, "", ErrMotionNotOpen // a never-opened draft must not be recorded failed
 		}
-		var votesFor, against int
 		if err := tx.QueryRow(ctx, `
 			SELECT count(*) FILTER (WHERE choice = 'for'),
-			       count(*) FILTER (WHERE choice = 'against')
-			FROM motion_votes WHERE motion_id = $1::uuid`, id).Scan(&votesFor, &against); err != nil {
+			       count(*) FILTER (WHERE choice = 'against'),
+			       count(*) FILTER (WHERE choice = 'abstain')
+			FROM motion_votes WHERE motion_id = $1::uuid`, id).Scan(&votesFor, &against, &abstain); err != nil {
 			return nil, "", err
 		}
 		if ComputeMotionOutcome(threshold, votesFor, against) {
@@ -520,8 +522,31 @@ func (r *GovernanceRepo) CloseAndDecide(ctx context.Context, id, requested strin
 	if err := tx.Commit(ctx); err != nil {
 		return nil, "", err
 	}
+	// The close is COMMITTED; a transient failure on this convenience
+	// re-read must not surface as an error (the caller would skip the
+	// outcome paper trail, and a retry meets ErrMotionDecided — the decision
+	// log entry would be unrecoverable through the API). Fall back to what
+	// the transaction already knew.
 	m, err := r.GetMotion(ctx, id)
-	return m, final, err
+	if err != nil {
+		m = &model.Motion{ID: id, MeetingID: meetingID, Title: title, Status: final, Threshold: threshold,
+			Tally: model.MotionTally{For: votesFor, Against: against, Abstain: abstain,
+				Total: votesFor + against + abstain, Carried: final == "carried"}}
+	}
+	return m, final, nil
+}
+
+// MeetingMinutesFinalized reports whether the motion's parent meeting has
+// finalized minutes — after which no motion outcome could ever enter the
+// record, so voting must not open.
+func (r *GovernanceRepo) MeetingMinutesFinalized(ctx context.Context, meetingID string) (bool, error) {
+	var finalized bool
+	err := r.db.QueryRow(ctx,
+		`SELECT minutes_finalized_at IS NOT NULL FROM meetings WHERE id = $1::uuid`, meetingID).Scan(&finalized)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	return finalized, err
 }
 
 // MemberIsActive reports whether the member exists and has status 'active'.
@@ -702,12 +727,16 @@ func (r *GovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice 
 	defer tx.Rollback(ctx) //nolint:errcheck
 
 	// Lock the motion (SHARE) via the token join FIRST, so this async ballot
-	// serializes against CloseAndDecide exactly like a live CastVote.
+	// serializes against CloseAndDecide exactly like a live CastVote. The
+	// members join applies the same voting roll as every other entrance:
+	// tokens live 14 days, and a member suspended after the mailing must not
+	// vote through the one door that forgot to check.
 	var memberID, status string
 	err = tx.QueryRow(ctx, `
 		SELECT t.motion_id::text, t.member_id::text, mo.status
 		FROM ballot_tokens t
 		JOIN motions mo ON mo.id = t.motion_id
+		JOIN members m ON m.id = t.member_id AND m.status = 'active'
 		WHERE t.token_hash = $1 AND t.used = FALSE AND t.expires_at > now()
 		FOR UPDATE OF t FOR SHARE OF mo`, hash).
 		Scan(&motionID, &memberID, &status)

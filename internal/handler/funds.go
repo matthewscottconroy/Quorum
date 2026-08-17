@@ -171,8 +171,10 @@ func (h *FundsHandler) Transfer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "direction must be in or out", "bad_request")
 		return
 	}
-	if body.AmountMinor <= 0 || len(body.Currency) != 3 {
-		writeError(w, http.StatusBadRequest, "amount_minor (positive) and 3-letter currency required", "bad_request")
+	cur, curOK := validCurrencyCode(body.Currency)
+	body.Currency = cur
+	if body.AmountMinor <= 0 || !curOK {
+		writeError(w, http.StatusBadRequest, "amount_minor (positive) and a 3-8 letter currency required", "bad_request")
 		return
 	}
 	memo := strings.TrimSpace(body.Memo)
@@ -233,10 +235,12 @@ func (h *FundsHandler) CreatePurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.Payee = strings.TrimSpace(body.Payee)
-	if !isValidUUID(body.FundID) || body.AmountMinor <= 0 || len(body.Currency) != 3 ||
+	cur, curOK := validCurrencyCode(body.Currency)
+	body.Currency = cur
+	if !isValidUUID(body.FundID) || body.AmountMinor <= 0 || !curOK ||
 		body.Payee == "" || len(body.Payee) > 120 {
 		writeError(w, http.StatusBadRequest,
-			"fund_id, positive amount_minor, 3-letter currency, and payee are required", "bad_request")
+			"fund_id, positive amount_minor, a 3-8 letter currency, and payee are required", "bad_request")
 		return
 	}
 	if body.ResourceID != nil {

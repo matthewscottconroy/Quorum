@@ -542,7 +542,12 @@ func (h *BudgetHandler) ReorderLines(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if status, _, _, err := h.repo.ScenarioGuard(r.Context(), id); err == nil && status == "archived" {
+	status, _, _, err := h.repo.ScenarioGuard(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "scenario not found", "query error")
+		return
+	}
+	if status == "archived" {
 		writeError(w, http.StatusConflict, "archived scenarios are read-only", "conflict")
 		return
 	}

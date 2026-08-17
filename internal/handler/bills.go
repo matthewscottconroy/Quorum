@@ -69,10 +69,13 @@ func (h *BillsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid body", "bad_request")
 		return
 	}
-	body.Currency = strings.ToUpper(strings.TrimSpace(body.Currency))
+	// Same currency validator as invoices/schedules/GL entries: letters only,
+	// 3-8 long — "12$" must not reach journal_lines where reports exact-match.
+	cur, curOK := validCurrencyCode(body.Currency)
+	body.Currency = cur
 	if !isValidUUID(body.ContactID) || !isValidUUID(body.ExpenseAccountID) ||
-		body.AmountMinor <= 0 || len(body.Currency) != 3 {
-		writeError(w, 400, "contact_id, expense_account_id, positive amount_minor, and 3-letter currency required", "bad_request")
+		body.AmountMinor <= 0 || !curOK {
+		writeError(w, 400, "contact_id, expense_account_id, positive amount_minor, and a 3-8 letter currency required", "bad_request")
 		return
 	}
 	for _, d := range []string{body.BillDate, body.DueDate} {

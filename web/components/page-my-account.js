@@ -221,12 +221,13 @@ class PageMyAccount extends HTMLElement {
         </div>
         <div class="modal-footer">
           <button class="btn-ghost" id="cal-rotate" style="color:var(--color-danger)">Reset link</button>
-          <button class="btn-secondary" id="cal-copy">Copy</button>
+          <button class="btn-secondary" id="cal-copy" ${url ? '' : 'disabled title="The URL was shown when the feed was created — use Reset link to get a new one"'}>Copy</button>
           <button class="btn-primary" id="cal-done">Done</button>
         </div>`,
     });
     dialog.querySelector('#cal-done').addEventListener('click', close);
     dialog.querySelector('#cal-copy').addEventListener('click', () => {
+      if (!url) return; // never blank someone's clipboard and call it a copy
       navigator.clipboard?.writeText(url).then(() => toast('Copied', 'success')).catch(() => {});
     });
     dialog.querySelector('#cal-rotate').addEventListener('click', async () => {
@@ -234,6 +235,8 @@ class PageMyAccount extends HTMLElement {
         const res = await api('POST', '/calendar/rotate');
         dialog.querySelector('#cal-url').value = res.url;
         url = res.url;
+        dialog.querySelector('#cal-copy').disabled = false;
+        dialog.querySelector('#cal-copy').removeAttribute('title');
         toast('New link generated — the old one no longer works', 'success');
       } catch { toast('Could not reset', 'error'); }
     });
