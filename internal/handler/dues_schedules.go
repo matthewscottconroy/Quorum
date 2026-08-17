@@ -161,6 +161,14 @@ func (h *DuesHandler) GenerateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeRepoError(w, err, "schedule not found", "query error")
 		return
 	}
+	// An inactive schedule must not generate: the 0053 dedupe deactivated
+	// duplicate tier schedules exactly so members stop being double-billed,
+	// and "Generate now" on one of them re-opens that hole one click at a
+	// time (different cadences → different period labels → no ON CONFLICT).
+	if !s.Active {
+		writeError(w, http.StatusConflict, "schedule is inactive: activate it before generating invoices", "conflict")
+		return
+	}
 	label, _, due := repo.PeriodFor(s.Cadence, s.DueDays, time.Now())
 	created, err := h.repo.GenerateInvoicesForSchedule(r.Context(), *s, label, due)
 	if err != nil {

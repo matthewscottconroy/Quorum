@@ -188,6 +188,16 @@ func (r *FundsRepo) UpdatePolicy(ctx context.Context, id string, purpose *string
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Lock the fund row first. This does three jobs at once: a nonexistent
+	// fund surfaces as ErrNoRows (a 404, not a downstream 500); a Complete
+	// in flight (which locks pr AND f) serializes against us so we can never
+	// delete the approval evidence of a purchase mid-completion; and every
+	// later statement in this transaction sees a stable policy.
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM funds WHERE id = $1::uuid FOR UPDATE`, id).Scan(&one); err != nil {
+		return 0, err
+	}
+
 	policyChanged := false
 	if purpose != nil {
 		if _, err := tx.Exec(ctx, `UPDATE funds SET purpose = $1 WHERE id = $2::uuid`, *purpose, id); err != nil {
@@ -204,17 +214,33 @@ func (r *FundsRepo) UpdatePolicy(ctx context.Context, id string, purpose *string
 		policyChanged = policyChanged || tag.RowsAffected() > 0
 	}
 	if signerIDs != nil {
-		if _, err := tx.Exec(ctx, `DELETE FROM fund_signers WHERE fund_id = $1::uuid`, id); err != nil {
+		// Diff before declaring a policy change: the UI sends the full
+		// signer list on every fund edit, and an UNCHANGED roster must not
+		// void every approval collected so far.
+		var same bool
+		if err := tx.QueryRow(ctx, `
+			SELECT NOT EXISTS (
+			    SELECT user_id FROM fund_signers WHERE fund_id = $1::uuid
+			    EXCEPT SELECT unnest($2::uuid[])
+			) AND NOT EXISTS (
+			    SELECT unnest($2::uuid[])
+			    EXCEPT SELECT user_id FROM fund_signers WHERE fund_id = $1::uuid
+			)`, id, *signerIDs).Scan(&same); err != nil {
 			return 0, err
 		}
-		for _, uid := range *signerIDs {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO fund_signers (fund_id, user_id) VALUES ($1::uuid, $2::uuid)
-				ON CONFLICT DO NOTHING`, id, uid); err != nil {
+		if !same {
+			if _, err := tx.Exec(ctx, `DELETE FROM fund_signers WHERE fund_id = $1::uuid`, id); err != nil {
 				return 0, err
 			}
+			for _, uid := range *signerIDs {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO fund_signers (fund_id, user_id) VALUES ($1::uuid, $2::uuid)
+					ON CONFLICT DO NOTHING`, id, uid); err != nil {
+					return 0, err
+				}
+			}
+			policyChanged = true
 		}
-		policyChanged = true
 	}
 
 	voided := 0

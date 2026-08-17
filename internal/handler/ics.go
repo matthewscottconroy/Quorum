@@ -29,6 +29,7 @@ func icsEscape(s string) string {
 		",", `\,`,
 		"\r\n", `\n`,
 		"\n", `\n`,
+		"\r", `\n`, // a lone CR must not reach the feed as a raw control byte
 	).Replace(s)
 }
 
@@ -67,15 +68,17 @@ func writeICS(w http.ResponseWriter, meetings []model.Meeting, filename string) 
 	icsFold(&b, "CALSCALE:GREGORIAN")
 	icsFold(&b, "METHOD:PUBLISH")
 	icsFold(&b, "X-WR-CALNAME:Quorum meetings")
-	now := icsTime(time.Now())
 	for _, m := range meetings {
 		icsFold(&b, "BEGIN:VEVENT")
 		icsFold(&b, "UID:"+m.ID+"@quorum")
-		icsFold(&b, "DTSTAMP:"+now)
-		// SEQUENCE bumps with every edit (derived from updated_at) so
+		// DTSTAMP is the event's last-modified instant, not "now": stamping
+		// each poll made some clients re-process every unchanged event.
+		icsFold(&b, "DTSTAMP:"+icsTime(m.UpdatedAt))
+		// SEQUENCE bumps with every edit (updated_at as a revision clock) so
 		// subscribed clients pick up changes to an event they already hold;
-		// without it many ignore the update entirely.
-		icsFold(&b, fmt.Sprintf("SEQUENCE:%d", m.UpdatedAt.Unix()-m.CreatedAt.Unix()))
+		// without it many ignore the update entirely. RFC 5545 only requires
+		// it to increase per revision — magnitude is irrelevant.
+		icsFold(&b, fmt.Sprintf("SEQUENCE:%d", m.UpdatedAt.Unix()))
 		icsFold(&b, "DTSTART:"+icsTime(m.ScheduledAt))
 		if m.EndsAt != nil {
 			icsFold(&b, "DTEND:"+icsTime(*m.EndsAt))

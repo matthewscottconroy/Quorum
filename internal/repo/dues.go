@@ -18,6 +18,13 @@ import (
 // posting would drive the GL receivable wrong and break reconciliation.
 var ErrInvoiceNotPayable = errors.New("invoice is not in a payable state")
 
+// ErrExceedsRemaining / ErrExceedsPaid are the money guards' refusals; the
+// repo returns the applicable limit alongside so handlers can say the number.
+var (
+	ErrExceedsRemaining = errors.New("payment exceeds the remaining balance")
+	ErrExceedsPaid      = errors.New("refund exceeds the amount actually paid")
+)
+
 // DuesRepo provides PostgreSQL data access for invoices.
 type DuesRepo struct {
 	db *pgxpool.Pool
@@ -207,6 +214,7 @@ const batchRecomputeStatusSQL = `
 			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = dues_invoices.id AND provider_status != 'failed' AND currency = dues_invoices.currency)
 			     > 0 THEN 'partial'
 			WHEN due_date < CURRENT_DATE THEN 'overdue'
+			WHEN status = 'overdue' THEN 'overdue'
 			ELSE 'pending'
 		END,
 		updated_at = now()
@@ -255,6 +263,9 @@ const recomputeInvoiceStatusSQL = `
 			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = dues_invoices.currency)
 			     > 0 THEN 'partial'
 			WHEN due_date < CURRENT_DATE THEN 'overdue'
+			-- An officer may mark an invoice overdue EARLY (dunning before the
+			-- date); with no payments on file that judgment call stands.
+			WHEN status = 'overdue' THEN 'overdue'
 			ELSE 'pending'
 		END,
 		updated_at = now()
@@ -264,6 +275,71 @@ const recomputeInvoiceStatusSQL = `
 func (r *DuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {
 	_, err := r.db.Exec(ctx, recomputeInvoiceStatusSQL, id)
 	return err
+}
+
+// CreateGuardedTransaction records a manual payment (positive amount) or
+// refund (negative) with its money guard evaluated UNDER THE INVOICE ROW
+// LOCK, then recomputes the status — all in one transaction. The read-guard-
+// insert sequences the handlers used to run were TOCTOU races: two
+// concurrent full refunds could both pass the cap, and a payment landing
+// beside a webhook could overshoot. Guards:
+//   - waived invoice        → ErrInvoiceNotPayable (nothing may post)
+//   - payment > remaining   → ErrExceedsRemaining unless allowOverpay
+//   - refund > net paid     → ErrExceedsPaid, always
+//
+// The returned limit is the remaining balance (payments) or the refundable
+// total (refunds) at the moment of the locked read.
+func (r *DuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var status string
+	var amount int64
+	if err := tx.QueryRow(ctx, `
+		SELECT status, amount FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`,
+		*t.InvoiceID).Scan(&status, &amount); err != nil {
+		return nil, 0, err
+	}
+	if status == "waived" {
+		return nil, 0, ErrInvoiceNotPayable
+	}
+	var paid int64
+	if err := tx.QueryRow(ctx, `
+		SELECT coalesce(sum(amount),0) FROM transactions
+		WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = $2`,
+		*t.InvoiceID, t.Currency).Scan(&paid); err != nil {
+		return nil, 0, err
+	}
+	if t.AmountMinor > 0 {
+		if remaining := amount - paid; t.AmountMinor > remaining && !allowOverpay {
+			return nil, max(remaining, 0), ErrExceedsRemaining
+		}
+	} else if -t.AmountMinor > paid {
+		return nil, max(paid, 0), ErrExceedsPaid
+	}
+	var id string
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO transactions
+		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,
+		     provider_status, payment_method_type, recorded_by, occurred_at, notes)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)
+		RETURNING id::text`,
+		t.InvoiceID, t.MemberID, t.AmountMinor, t.Currency, t.Provider,
+		t.ProviderReferenceID, t.ProviderStatus, t.PaymentMethodType,
+		t.RecordedBy, t.OccurredAt, t.Notes).Scan(&id); err != nil {
+		return nil, 0, err
+	}
+	if _, err := tx.Exec(ctx, recomputeInvoiceStatusSQL, *t.InvoiceID); err != nil {
+		return nil, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 0, err
+	}
+	t.ID = id
+	return t, 0, nil
 }
 
 // MarkOverdue flips past-due pending invoices to overdue and returns the count.
@@ -424,9 +500,14 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	// retrying) but refuse to record: this is an exceptional case an operator
 	// must resolve (un-waive then re-apply, or refund). Committing keeps the
 	// claim; the caller logs ErrInvoiceNotPayable for follow-up.
+	//
+	// FOR UPDATE is load-bearing: every writer that reads the invoice's paid
+	// total (ConfirmAndPost, CreateGuardedTransaction, this path) must take
+	// the invoice row lock FIRST, or two of them can interleave their reads
+	// and double-post — the lock is the whole serialization story.
 	if t.InvoiceID != nil {
 		var st string
-		if err := tx.QueryRow(ctx, `SELECT status FROM dues_invoices WHERE id = $1::uuid`, *t.InvoiceID).Scan(&st); err == nil && st == "waived" {
+		if err := tx.QueryRow(ctx, `SELECT status FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`, *t.InvoiceID).Scan(&st); err == nil && st == "waived" {
 			if cerr := tx.Commit(ctx); cerr != nil {
 				return false, cerr
 			}
@@ -454,6 +535,66 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	return false, tx.Commit(ctx)
 }
 
+// RecordWebhookRefund handles a provider whose refund events carry the
+// CUMULATIVE total refunded (Stripe's charge.refunded), atomically: claim
+// the event, lock the invoice, subtract what this provider reference has
+// already refunded, and record only the DELTA. Two partial refunds of $30
+// then $40 therefore post -30 then -40, not -30 then -70.
+func (r *DuesRepo) RecordWebhookRefund(ctx context.Context, eventID string, t *model.Transaction, cumulative int64) (already bool, err error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO processed_events (provider_event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return true, nil
+	}
+	var st string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`, *t.InvoiceID).Scan(&st); err != nil {
+		return false, err
+	}
+	if st == "waived" {
+		if cerr := tx.Commit(ctx); cerr != nil {
+			return false, cerr
+		}
+		return false, ErrInvoiceNotPayable
+	}
+	var refunded int64
+	if err := tx.QueryRow(ctx, `
+		SELECT coalesce(-sum(amount), 0) FROM transactions
+		WHERE invoice_id = $1::uuid AND provider = $2
+		  AND provider_reference_id = $3 AND amount < 0`,
+		*t.InvoiceID, t.Provider, t.ProviderReferenceID).Scan(&refunded); err != nil {
+		return false, err
+	}
+	delta := cumulative - refunded
+	if delta <= 0 {
+		// Everything in this event is already on the books (replays, or a
+		// same-total re-send): keep the claim, post nothing.
+		return false, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO transactions
+		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,
+		     provider_status, recorded_by, occurred_at, notes)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::uuid, $9, $10)`,
+		t.InvoiceID, t.MemberID, -delta, t.Currency, t.Provider,
+		t.ProviderReferenceID, t.ProviderStatus, t.RecordedBy, t.OccurredAt, t.Notes); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, recomputeInvoiceStatusSQL, *t.InvoiceID); err != nil {
+		return false, err
+	}
+	return false, tx.Commit(ctx)
+}
+
 // MarkEventProcessed records a webhook event id so provider retries are idempotent.
 func (r *DuesRepo) MarkEventProcessed(ctx context.Context, eventID string) error {
 	_, err := r.db.Exec(ctx, `INSERT INTO processed_events (provider_event_id) VALUES ($1) ON CONFLICT DO NOTHING`, eventID)
@@ -463,22 +604,26 @@ func (r *DuesRepo) MarkEventProcessed(ctx context.Context, eventID string) error
 // OverdueReminder is an overdue invoice with the data needed to email its
 // member a dues reminder and track escalation.
 type OverdueReminder struct {
-	InvoiceID     string
-	MemberName    string
-	MemberEmail   string
-	AmountMinor   int64
-	Currency      string
-	PeriodLabel   string
-	DueDate       time.Time
-	ReminderStage int
+	InvoiceID      string
+	MemberName     string
+	MemberEmail    string
+	AmountMinor    int64
+	RemainingMinor int64 // amount minus same-currency net payments: what to dun for
+	Currency       string
+	PeriodLabel    string
+	DueDate        time.Time
+	ReminderStage  int
 }
 
 // OverdueForReminders returns overdue invoices whose member has an email on
 // file, along with the reminder stage already sent, for the nightly escalation.
 func (r *DuesRepo) OverdueForReminders(ctx context.Context) ([]OverdueReminder, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT di.id::text, m.display_name, m.email, di.amount, di.currency,
-		       di.period_label, di.due_date, di.reminder_stage
+		SELECT di.id::text, m.display_name, m.email, di.amount,
+		       di.amount - (SELECT coalesce(sum(t.amount),0) FROM transactions t
+		                    WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
+		                      AND t.currency = di.currency) AS remaining,
+		       di.currency, di.period_label, di.due_date, di.reminder_stage
 		FROM dues_invoices di
 		JOIN members m ON m.id = di.member_id
 		WHERE (di.status = 'overdue' OR (di.status = 'partial' AND di.due_date < CURRENT_DATE))
@@ -493,7 +638,7 @@ func (r *DuesRepo) OverdueForReminders(ctx context.Context) ([]OverdueReminder, 
 	for rows.Next() {
 		var rem OverdueReminder
 		if err := rows.Scan(&rem.InvoiceID, &rem.MemberName, &rem.MemberEmail,
-			&rem.AmountMinor, &rem.Currency, &rem.PeriodLabel, &rem.DueDate, &rem.ReminderStage); err != nil {
+			&rem.AmountMinor, &rem.RemainingMinor, &rem.Currency, &rem.PeriodLabel, &rem.DueDate, &rem.ReminderStage); err != nil {
 			return nil, err
 		}
 		out = append(out, rem)

@@ -31,8 +31,13 @@ type ActionItemFilter struct {
 	// SprintID filters by sprint; the special value "none" selects the backlog
 	// (items with no sprint).
 	SprintID string
-	Limit    int
-	Offset   int
+	// CarryoverExcluding selects items born in SOME meeting other than this
+	// one — the "old business from earlier meetings" view. Client-side
+	// filtering capped at one page silently lost exactly the backlog the
+	// carry-over feature exists to surface.
+	CarryoverExcluding string
+	Limit              int
+	Offset             int
 }
 
 // List returns a page of action items matching the filter, plus the total count.
@@ -49,6 +54,11 @@ func (r *ActionItemsRepo) List(ctx context.Context, f ActionItemFilter) ([]model
 	if f.MeetingID != "" {
 		conds = append(conds, fmt.Sprintf("ai.meeting_id = $%d::uuid", idx))
 		args = append(args, f.MeetingID)
+		idx++
+	}
+	if f.CarryoverExcluding != "" {
+		args = append(args, f.CarryoverExcluding)
+		conds = append(conds, fmt.Sprintf("ai.meeting_id IS NOT NULL AND ai.meeting_id <> $%d::uuid", idx))
 		idx++
 	}
 	if f.PlanID != "" {

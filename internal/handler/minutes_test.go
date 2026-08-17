@@ -156,3 +156,32 @@ func TestMinutes_FinalizePreconditions(t *testing.T) {
 		t.Fatalf("empty-journal finalize: got %d, want 409 (%s)", rr2.Code, rr2.Body)
 	}
 }
+
+// Finalizing with a motion still OPEN would freeze the record mid-vote and
+// orphan the eventual outcome (post-finalize side records are refused).
+func TestMinutes_FinalizeRefusesOpenMotions(t *testing.T) {
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
+			return &model.Meeting{ID: "m1", Title: "T", ScheduledAt: time.Now().Add(-time.Hour)}, nil
+		},
+		ListMinutesFn: func(_ context.Context, _ string) ([]model.MinutesEntry, error) {
+			return []model.MinutesEntry{{ID: "e1"}}, nil
+		},
+		FinalizeMinutesFn: func(_ context.Context, _, _ string) error {
+			t.Fatal("finalize ran with an open motion")
+			return nil
+		},
+	})
+	h.SetGovernanceSource(&mockGovernanceRepo{
+		ListMotionsFn: func(_ context.Context, _ string) ([]model.Motion, error) {
+			return []model.Motion{{ID: "mo1", Status: "open"}}, nil
+		},
+	})
+	req := chiRequest("POST", "/meetings/m1/minutes/finalize?confirm=T", "",
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.FinalizeMinutes(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("open-motion finalize: got %d, want 409 (%s)", rr.Code, rr.Body)
+	}
+}

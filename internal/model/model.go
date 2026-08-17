@@ -463,6 +463,17 @@ type Motion struct {
 	Recusals  []Recusal    `json:"recusals,omitempty"`
 }
 
+// MeetingCorrection is an append-only erratum to finalized minutes: the
+// snapshot stays verbatim, corrections render beneath it, and a wrong
+// correction gets its own correction (never an edit).
+type MeetingCorrection struct {
+	ID         string    `json:"id"`
+	MeetingID  string    `json:"meeting_id"`
+	Body       string    `json:"body"`
+	AuthorName string    `json:"author_name,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // MotionTally aggregates the ballots on a motion. Carried is set relative to the
 // motion's threshold, counting only for/against (abstentions don't count toward
 // the bar but are reported).

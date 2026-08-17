@@ -201,11 +201,14 @@ class PageMyAccount extends HTMLElement {
     }));
   }
 
-  /** Shows the personal calendar-subscription URL (created on demand). */
+  /** Shows the personal calendar-subscription URL (created on demand).
+      Tokens are hashed server-side, so an existing feed's URL cannot be
+      re-shown — only a fresh one from Reset link. */
   async _openCalendarModal() {
     let url = '';
     try { url = (await api('POST', '/calendar/subscription'))?.url ?? ''; }
     catch { toast('Could not create your calendar feed', 'error'); return; }
+    const placeholder = url ? '' : 'Your feed is active. Its URL was shown when created — use “Reset link” to get a new one (the old one stops working).';
     const { dialog, close } = openModal({
       title: 'Subscribe to the meeting calendar',
       maxWidth: '520px',
@@ -213,7 +216,7 @@ class PageMyAccount extends HTMLElement {
         <div class="modal-body">
           <p style="font-size:.88rem">Add this URL as a <strong>subscribed calendar</strong> in Google
             Calendar, Apple Calendar, or Outlook — meetings then appear and stay up to date automatically.</p>
-          <input id="cal-url" readonly value="${esc(url)}" style="font-family:monospace;font-size:.8rem">
+          <input id="cal-url" readonly value="${esc(url)}" placeholder="${esc(placeholder)}" style="font-family:monospace;font-size:.8rem">
           <p style="font-size:.78rem;color:var(--color-text-muted)">Keep this URL private — anyone with it can see the meeting schedule.</p>
         </div>
         <div class="modal-footer">

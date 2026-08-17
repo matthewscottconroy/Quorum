@@ -251,15 +251,26 @@ func reminderMessage(rem repo.OverdueReminder, stage int, baseURL string) (subje
 	default:
 		subject = "Notice: your dues are overdue"
 	}
+	// Dun for what is actually OWED: a member who half-paid gets the
+	// remaining balance, not the full face value all over again.
+	owed := rem.RemainingMinor
+	if owed <= 0 || owed > rem.AmountMinor {
+		owed = rem.AmountMinor
+	}
+	partialNote := ""
+	if owed < rem.AmountMinor {
+		partialNote = fmt.Sprintf("  (of %s %s originally billed — thank you for your partial payment)\n",
+			rem.Currency, model.FormatMoney(rem.AmountMinor, rem.Currency))
+	}
 	body = fmt.Sprintf(
 		"Hello %s,\n\n"+
 			"Our records show the following dues invoice is overdue:\n\n"+
-			"  Period:   %s\n"+
-			"  Amount:   %s %s\n"+
-			"  Due date: %s\n\n"+
+			"  Period:      %s\n"+
+			"  Amount due:  %s %s\n%s"+
+			"  Due date:    %s\n\n"+
 			"Please arrange payment at your earliest convenience. If you have already\n"+
 			"paid, thank you — you can disregard this message.\n",
-		rem.MemberName, rem.PeriodLabel, rem.Currency, model.FormatMoney(rem.AmountMinor, rem.Currency), rem.DueDate.Format("2006-01-02"))
+		rem.MemberName, rem.PeriodLabel, rem.Currency, model.FormatMoney(owed, rem.Currency), partialNote, rem.DueDate.Format("2006-01-02"))
 	if baseURL != "" {
 		body += fmt.Sprintf("\nAccount: %s\n", baseURL)
 	}

@@ -44,7 +44,7 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	// UUID filters are validated up front so garbage input gets a 400 instead
 	// of failing the ::uuid cast in Postgres and surfacing as a 500.
-	for _, p := range []string{"assignee_id", "meeting_id", "plan_id"} {
+	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "carryover_excluding"} {
 		if v := q.Get(p); v != "" && !isValidUUID(v) {
 			writeError(w, 400, p+" must be a UUID", "bad_request")
 			return
@@ -56,12 +56,13 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := repo.ActionItemFilter{
-		AssigneeID: q.Get("assignee_id"),
-		MeetingID:  q.Get("meeting_id"),
-		PlanID:     q.Get("plan_id"),
-		Status:     q.Get("status"),
-		SprintID:   q.Get("sprint_id"),
-		Limit:      clampLimit(q.Get("limit"), 100),
+		AssigneeID:         q.Get("assignee_id"),
+		MeetingID:          q.Get("meeting_id"),
+		PlanID:             q.Get("plan_id"),
+		Status:             q.Get("status"),
+		SprintID:           q.Get("sprint_id"),
+		CarryoverExcluding: q.Get("carryover_excluding"),
+		Limit:              clampLimit(q.Get("limit"), 100),
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
 		f.Offset = v

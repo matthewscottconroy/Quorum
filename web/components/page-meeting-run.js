@@ -90,10 +90,18 @@ class PageMeetingRun extends HTMLElement {
     renderDecisions();
     // Motion lifecycle actions rewrite the decision log and minutes journal
     // server-side; the sibling panels follow along here just like the modal.
-    this.addEventListener('gov-changed', () => {
-      renderDecisions();
-      this._pm.renderMinutes(this, mt.id, mt);
-    });
+    // load() re-runs after every editor close, so keep exactly ONE listener —
+    // the handler reads instance state instead of closing over stale locals,
+    // or each edit would stack another round of redundant refetches.
+    this._govMt = mt;
+    this._govDecisions = renderDecisions;
+    if (!this._govWired) {
+      this._govWired = true;
+      this.addEventListener('gov-changed', () => {
+        this._govDecisions?.();
+        if (this._govMt) this._pm.renderMinutes(this, this._govMt.id, this._govMt);
+      });
+    }
   }
 }
 customElements.define('page-meeting-run', PageMeetingRun);

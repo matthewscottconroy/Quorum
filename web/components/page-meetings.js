@@ -201,6 +201,11 @@ class PageMeetings extends HTMLElement {
         || v('f-notes') !== (mt.notes ?? '')
         || (dialog?.querySelector('#min-body')?.value ?? '') !== '';
     };
+    // A finalized meeting's header IS the official minutes header: the
+    // server refuses edits (0054 trigger), so don't render editable fields
+    // that invite a 409. Status and prep notes stay live.
+    const frozen = !!mt.minutes_finalized_at;
+    const dis = frozen ? 'disabled title="Finalized minutes: this field is part of the official record"' : '';
     const { dialog, close } = openModal({
       title: mt.title,
       maxWidth: '880px',
@@ -208,10 +213,11 @@ class PageMeetings extends HTMLElement {
       body: `
         <div class="modal-body" style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem">
           <div>
-            <div class="form-group"><label for="f-title">Title</label><input id="f-title" value="${esc(mt.title)}"></div>
+            ${frozen ? '<p style="font-size:.78rem;color:var(--color-text-muted);margin:0 0 .5rem">🔒 Minutes are finalized — the header fields are frozen into the official record. Use a correction for errata.</p>' : ''}
+            <div class="form-group"><label for="f-title">Title</label><input id="f-title" value="${esc(mt.title)}" ${dis}></div>
             <div class="form-row">
-              <div class="form-group"><label for="f-dt">Starts</label><input id="f-dt" type="datetime-local" value="${esc(toLocalInputValue(mt.scheduled_at))}"></div>
-              <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local" value="${mt.ends_at ? esc(toLocalInputValue(mt.ends_at)) : ''}"></div>
+              <div class="form-group"><label for="f-dt">Starts</label><input id="f-dt" type="datetime-local" value="${esc(toLocalInputValue(mt.scheduled_at))}" ${dis}></div>
+              <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local" value="${mt.ends_at ? esc(toLocalInputValue(mt.ends_at)) : ''}" ${dis}></div>
               <div class="form-group">
                 <label for="f-status">Status</label>
                 <select id="f-status">
@@ -219,8 +225,8 @@ class PageMeetings extends HTMLElement {
                 </select>
               </div>
             </div>
-            <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" value="${esc(mt.location??'')}"></div>
-            <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="5">${esc(mt.agenda??'')}</textarea></div>
+            <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" value="${esc(mt.location??'')}" ${dis}></div>
+            <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="5" ${dis}>${esc(mt.agenda??'')}</textarea></div>
             <div class="form-group"><label for="f-notes">Prep notes (informal — the journal below is the official minutes)</label><textarea id="f-notes" rows="7">${esc(mt.notes??'')}</textarea></div>
           </div>
           <div>
@@ -310,10 +316,16 @@ class PageMeetings extends HTMLElement {
     // but only while still mounted and authenticated so a logout-triggered close
     // (openModal force-closes on auth-changed) doesn't fire a stray authed fetch.
     dialog.addEventListener('close', () => { if (this.isConnected && isAuthenticated()) this.load(); });
-    dialog.querySelector('#cancel-btn').addEventListener('click', close);
-    dialog.querySelector('#run-page-btn').addEventListener('click', () => {
+    // Every exit consults the same guard as Escape/✕ — the visually-primary
+    // Close button was the one path that silently discarded a half-edited form.
+    const guardedClose = () => {
+      if (dirty() && !window.confirm('Discard unsaved changes?')) return false;
       close();
-      location.hash = `#/meeting-run?id=${id}`;
+      return true;
+    };
+    dialog.querySelector('#cancel-btn').addEventListener('click', guardedClose);
+    dialog.querySelector('#run-page-btn').addEventListener('click', () => {
+      if (guardedClose()) location.hash = `#/meeting-run?id=${id}`;
     });
 
     dialog.querySelector('#add-decision-btn')?.addEventListener('click', async () => {
@@ -342,16 +354,29 @@ class PageMeetings extends HTMLElement {
       const end = dialog.querySelector('#f-end').value;
       if (dt && end && new Date(end) <= new Date(dt)) { toast('End must be after the start','error'); return; }
       try {
-        await api('PATCH', `/meetings/${id}`, {
-          title:        dialog.querySelector('#f-title').value.trim()||null,
-          scheduled_at: dt ? new Date(dt).toISOString() : null,
-          // Always present: an emptied field clears the end time (null = clear).
-          ends_at:      end ? new Date(end).toISOString() : null,
-          location:     dialog.querySelector('#f-loc').value.trim()||null,
-          agenda:       dialog.querySelector('#f-agenda').value.trim()||null,
-          notes:        dialog.querySelector('#f-notes').value.trim()||null,
-          status:       dialog.querySelector('#f-status').value,
-        });
+        // Send only what CHANGED. Two bugs lived here: emptied text fields
+        // mapped to null (= "unchanged" server-side, so a deleted agenda kept
+        // coming back), and an always-sent scheduled_at round-tripped through
+        // minute-granular datetime-local — tripping the finalized-header
+        // guard on a notes-only save when the stored time carried seconds.
+        const body = {};
+        const title = dialog.querySelector('#f-title').value.trim();
+        if (title && title !== mt.title) body.title = title;
+        if (dt !== toLocalInputValue(mt.scheduled_at)) body.scheduled_at = new Date(dt).toISOString();
+        const origEnd = mt.ends_at ? toLocalInputValue(mt.ends_at) : '';
+        if (end !== origEnd) body.ends_at = end ? new Date(end).toISOString() : null;
+        for (const [field, sel] of [['location','#f-loc'], ['agenda','#f-agenda'], ['notes','#f-notes']]) {
+          const v = dialog.querySelector(sel).value.trim();
+          if (v !== (mt[field] ?? '')) body[field] = v; // '' = clear, server-side
+        }
+        const st = dialog.querySelector('#f-status').value;
+        if (st !== mt.status) body.status = st;
+        if (Object.keys(body).length) {
+          const saved = await api('PATCH', `/meetings/${id}`, body);
+          // dirty() compares against mt: without this refresh, a saved form
+          // still read as dirty and Escape cried wolf about saved work.
+          if (saved) mt = saved;
+        }
         toast('Saved','success');
       } catch { toast('Save failed','error'); }
     }));
@@ -767,8 +792,8 @@ class PageMeetings extends HTMLElement {
       secretary would otherwise have to remember to chase — with a one-click
       way to note each into this meeting's journal. */
   async renderCarryover(host, meetingId) {
-    const pg = await api('GET', '/action-items?status=open&limit=100');
-    const items = (pg?.data ?? pg ?? []).filter(ai => ai.meeting_id && ai.meeting_id !== meetingId);
+    const pg = await api('GET', `/action-items?status=open&carryover_excluding=${meetingId}&limit=200`);
+    const items = pg?.data ?? pg ?? [];
     if (!items.length) return;
     const box = document.createElement('div');
     box.id = 'min-carryover';
@@ -795,6 +820,40 @@ class PageMeetings extends HTMLElement {
         bodyEl.setSelectionRange(bodyEl.value.length, bodyEl.value.length);
       }
     }));
+  }
+
+  /** Corrections to finalized minutes: the approved snapshot never changes;
+      errata are APPEND-ONLY (the DB refuses edits), rendered beneath it here
+      and in the exported document. Robert's Rules, not SQL surgery. */
+  async renderErrata(host, meetingId) {
+    const box = host.querySelector('#min-errata');
+    if (!box) return;
+    const list = await api('GET', `/meetings/${meetingId}/corrections`) ?? [];
+    box.innerHTML = `
+      <div style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.6rem .75rem">
+        <div style="font-size:.8rem;font-weight:700;color:var(--color-text-muted)">CORRECTIONS${list.length ? ` (${list.length})` : ''}</div>
+        ${list.length ? list.map((c, i) => `
+          <div style="font-size:.85rem;padding:.3rem 0;border-bottom:1px solid var(--color-border)">
+            ${i + 1}. ${esc(c.body)}
+            <div style="font-size:.72rem;color:var(--color-text-muted)">${esc(c.author_name ?? '')} · ${esc(fmtDateTime(c.created_at))}</div>
+          </div>`).join('')
+        : '<p style="font-size:.8rem;color:var(--color-text-muted);margin:.3rem 0">The approved minutes stand uncorrected.</p>'}
+        ${canWrite() ? `
+          <div style="display:flex;gap:.4rem;margin-top:.5rem">
+            <input id="err-body" placeholder="Correction, e.g. “The vote on the budget motion was 7–2, not 6–2.”" style="flex:1;font-size:.85rem">
+            <button class="btn-secondary" id="err-add" style="font-size:.8rem">File correction</button>
+          </div>
+          <p style="font-size:.7rem;color:var(--color-text-muted);margin:.25rem 0 0">Corrections are permanent and render beneath the official minutes — a wrong correction gets its own correction.</p>` : ''}
+      </div>`;
+    box.querySelector('#err-add')?.addEventListener('click', async () => {
+      const body = box.querySelector('#err-body').value.trim();
+      if (!body) { toast('Correction text is required', 'error'); return; }
+      try {
+        await api('POST', `/meetings/${meetingId}/corrections`, { body });
+        toast('Correction recorded', 'success');
+        await this.renderErrata(host, meetingId);
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    });
   }
 
   async renderMinutes(dialog, meetingId, mt) {
@@ -870,8 +929,12 @@ class PageMeetings extends HTMLElement {
           <div class="form-group"><textarea id="min-body" rows="2" placeholder="What happened? e.g. “Meeting called to order at 6:03 PM by Chair Alvarez.”"></textarea></div>
           <button class="btn-secondary" id="min-add" style="width:100%">+ Record entry</button>
         </div>` : ''}
+      ${finalized ? '<div id="min-errata" style="margin-top:.6rem"></div>' : ''}
     `;
 
+    if (finalized) {
+      this.renderErrata(host, meetingId).catch(() => {});
+    }
     // Restore the in-flight draft the rebuild just wiped.
     if (draft.body || draft.kind || draft.motion) {
       const bodyEl = host.querySelector('#min-body');
@@ -914,6 +977,11 @@ class PageMeetings extends HTMLElement {
           body,
           motion_id: host.querySelector('#min-motion').value || null,
         });
+        // Clear BEFORE the re-render: the draft-preservation block would
+        // otherwise faithfully restore the just-submitted text, priming a
+        // duplicate entry on the next habitual click.
+        host.querySelector('#min-body').value = '';
+        host.querySelector('#min-motion').value = '';
         await reload();
       } catch (err) { toast(err.error ?? 'Failed to record', 'error'); }
     });

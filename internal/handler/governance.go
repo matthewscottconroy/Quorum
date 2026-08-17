@@ -284,6 +284,14 @@ func (h *GovernanceHandler) UpdateMotion(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid body", "bad_request")
 		return
 	}
+	// Changing WHAT a motion says after ballots are cast is the same
+	// retroactive rewrite as changing its threshold (already blocked): a
+	// member voted on specific words. Title/detail freeze while voting is
+	// open; procedural fields (mover, seconder) may still be corrected.
+	if status == "open" && (body.Title != nil || body.Detail != nil) {
+		writeError(w, http.StatusConflict, "voting is open: the motion's text can no longer change (close or withdraw it first)", "conflict")
+		return
+	}
 	if body.Threshold != nil {
 		if !model.ValidThresholds[*body.Threshold] {
 			writeError(w, http.StatusBadRequest, "invalid threshold", "bad_request")
@@ -416,39 +424,28 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = decodeJSON(r, &body) // optional
 
-	m, err := h.repo.GetMotion(r.Context(), id)
-	if err != nil {
-		writeRepoError(w, err, "motion not found", "query error")
-		return
-	}
-	if terminalMotionStatus(m.Status) {
-		writeError(w, http.StatusConflict, "motion is already decided", "conflict")
-		return
-	}
-
-	final := body.Status
-	switch final {
-	case "tabled", "withdrawn":
-		// explicit non-decision close — allowed from any non-terminal state.
-	case "", "carried", "failed":
-		// auto-decide from the tally — only a motion whose vote is actually open
-		// can be decided, otherwise a never-opened draft would be recorded failed.
-		if m.Status != "open" {
-			writeError(w, http.StatusConflict, "voting must be open before a motion can be decided", "conflict")
-			return
-		}
-		if m.Tally.Carried {
-			final = "carried"
-		} else {
-			final = "failed"
-		}
+	switch body.Status {
+	case "", "carried", "failed", "tabled", "withdrawn":
 	default:
 		writeError(w, http.StatusBadRequest, "status must be tabled or withdrawn (or omitted to auto-decide)", "bad_request")
 		return
 	}
-	out, err := h.repo.SetMotionStatus(r.Context(), id, final, nil)
+	// The repo closes and decides ATOMICALLY: it takes the motion's exclusive
+	// lock (waiting out in-flight ballots, blocking new ones), tallies the
+	// frozen ballots, and flips the status in one transaction — an async
+	// email ballot landing mid-close is either counted in the decision or
+	// refused, never recorded-but-ignored.
+	out, final, err := h.repo.CloseAndDecide(r.Context(), id, body.Status)
+	if errors.Is(err, repo.ErrMotionDecided) {
+		writeError(w, http.StatusConflict, "motion is already decided", "conflict")
+		return
+	}
+	if errors.Is(err, repo.ErrMotionNotOpen) {
+		writeError(w, http.StatusConflict, "voting must be open before a motion can be decided", "conflict")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
+		writeRepoError(w, err, "motion not found", "update error")
 		return
 	}
 	if final == "carried" || final == "failed" {
@@ -457,9 +454,6 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 		// carried motion's plan decision. Best-effort by design — the decided
 		// motion stands even if a side record is refused (e.g. finalized
 		// minutes), so surface trouble in the audit detail instead of a 500.
-		// Record from OUT — the post-close re-read — not the pre-close m: a
-		// ballot cast between the tally read and the close would otherwise be
-		// stored in motion_votes yet missing from the recorded counts.
 		if err := h.repo.RecordMotionOutcome(r.Context(), out, final, userIDFromCtx(r)); err != nil {
 			setAuditDetail(r, map[string]any{"outcome_records": "partial: " + err.Error()})
 		}
@@ -535,6 +529,12 @@ func (h *GovernanceHandler) CastVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.CastVote(r.Context(), id, memberID, body.Choice, false, userIDFromCtx(r)); err != nil {
+		if errors.Is(err, repo.ErrMotionNotOpen) {
+			// Voting closed between our status read and the insert — the
+			// repo's motion lock refused the ballot rather than losing it.
+			writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not record vote", "internal_error")
 		return
 	}
@@ -566,7 +566,21 @@ func (h *GovernanceHandler) RecordVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
 		return
 	}
+	// The same voting-roll policy as self-service CastVote: quorum and
+	// eligible-ballot math both exclude inactive members, so an officer
+	// recording a floor vote for one would skew every derived number.
+	if active, err := h.repo.MemberIsActive(r.Context(), body.MemberID); err != nil {
+		writeError(w, http.StatusInternalServerError, "member lookup error", "internal_error")
+		return
+	} else if !active {
+		writeError(w, http.StatusConflict, "member is not active: only active members may vote", "conflict")
+		return
+	}
 	if err := h.repo.CastVote(r.Context(), id, body.MemberID, body.Choice, body.IsProxy, userIDFromCtx(r)); err != nil {
+		if errors.Is(err, repo.ErrMotionNotOpen) {
+			writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
+			return
+		}
 		if isFKViolation(err) {
 			writeError(w, http.StatusBadRequest, "member does not exist", "bad_request")
 			return
@@ -681,12 +695,19 @@ func (h *GovernanceHandler) SendBallots(w http.ResponseWriter, r *http.Request) 
 	base := strings.TrimRight(h.cfg.BaseURL, "/")
 	type outbound struct{ to, subject, body string }
 	var queue []outbound
+	failed := 0
 	for _, rec := range recipients {
 		plain, hashed, gerr := auth.GenerateResetToken()
 		if gerr != nil {
+			// A member who never receives a ballot link is a governance
+			// problem, not a log line to lose: count and report it.
+			log.Printf("ballot token generation for member %s: %v", rec.MemberID, gerr)
+			failed++
 			continue
 		}
 		if serr := h.repo.UpsertBallotToken(r.Context(), id, rec.MemberID, hashed, time.Now().Add(ballotTokenTTL)); serr != nil {
+			log.Printf("ballot token store for member %s: %v", rec.MemberID, serr)
+			failed++
 			continue
 		}
 		link := fmt.Sprintf("%s/#/ballot?token=%s", base, plain)
@@ -704,7 +725,7 @@ func (h *GovernanceHandler) SendBallots(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}(queue)
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(queue), "eligible": len(recipients)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(queue), "eligible": len(recipients), "failed": failed})
 }
 
 // GetBallot returns the motion context for a ballot token (public, unauthenticated).

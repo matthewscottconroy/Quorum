@@ -223,6 +223,11 @@ func (h *ExportHandler) ExportMyStatement(w http.ResponseWriter, r *http.Request
 		if t.OccurredAt.Year() != year {
 			continue
 		}
+		// Failed provider transactions never counted toward an invoice; a
+		// donation/reimbursement statement must not count them either.
+		if t.ProviderStatus != nil && *t.ProviderStatus == "failed" {
+			continue
+		}
 		payCount++
 		paid[t.Currency] += t.AmountMinor
 		d.Line(fmt.Sprintf("%s  %10s  via %s",

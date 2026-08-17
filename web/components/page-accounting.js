@@ -230,6 +230,12 @@ class PageAccounting extends HTMLElement {
         debit: Number(row.querySelector('.en-debit').value || 0),
         credit: Number(row.querySelector('.en-credit').value || 0),
       })).filter(l => l.debit > 0 || l.credit > 0);
+      // Amounts are MINOR units (cents): "10.50" would otherwise reach the
+      // server's int decode and bounce with an unrelated error message.
+      if (lines.some(l => !Number.isInteger(l.debit) || !Number.isInteger(l.credit))) {
+        toast('Amounts are in minor units (cents) — whole numbers only, e.g. 1050 for $10.50', 'error');
+        return;
+      }
       try {
         await api('POST', '/accounting/entries', {
           entry_date: dialog.querySelector('#en-date').value, memo, lines,

@@ -477,12 +477,15 @@ func TestDuesTransaction_OverpaymentGuard(t *testing.T) {
 			return &model.DuesInvoice{ID: id, MemberID: "22222222-2222-2222-2222-222222222222",
 				Status: "partial", AmountMinor: 1000, Currency: "USD"}, nil
 		},
-		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 600, nil },
-		CreateTransactionFn: func(_ context.Context, tr *model.Transaction) (*model.Transaction, error) {
+		// The guard lives in the repo now (under the invoice lock): 400 of
+		// 1000 remains, so 500 without the flag is refused.
+		CreateGuardedTransactionFn: func(_ context.Context, tr *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error) {
+			if tr.AmountMinor > 400 && !allowOverpay {
+				return nil, 400, repo.ErrExceedsRemaining
+			}
 			recorded = true
-			return tr, nil
+			return tr, 0, nil
 		},
-		RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
 	}
 	h := NewDuesHandler(mock)
 	// 500 > the 400 remaining → 409, nothing recorded.

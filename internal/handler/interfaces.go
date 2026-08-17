@@ -59,7 +59,8 @@ type duesRepo interface {
 	UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error
 	BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error)
 	RecomputeInvoiceStatus(ctx context.Context, id string) error
-	PaidSum(ctx context.Context, invoiceID, currency string) (int64, error)
+	CreateGuardedTransaction(ctx context.Context, t *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error)
+	RecordWebhookRefund(ctx context.Context, eventID string, t *model.Transaction, cumulative int64) (already bool, err error)
 	CountByStatus(ctx context.Context, status string) (int, error)
 	ListTransactions(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
 	CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
@@ -92,6 +93,8 @@ type meetingsRepo interface {
 	DeleteDecision(ctx context.Context, meetingID, id string) error
 	SetMinutesSnapshot(ctx context.Context, meetingID, doc string) error
 	GetMinutesSnapshot(ctx context.Context, meetingID string) (string, error)
+	AddCorrection(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error)
+	ListCorrections(ctx context.Context, meetingID string) ([]model.MeetingCorrection, error)
 	Upcoming(ctx context.Context, n int) ([]model.Meeting, error)
 	ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error)
 	AddMinutesEntry(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error)
@@ -201,6 +204,7 @@ type governanceRepo interface {
 	CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
 	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error)
 	SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
+	CloseAndDecide(ctx context.Context, id, requested string) (*model.Motion, string, error)
 	DeleteMotion(ctx context.Context, id string) error
 	MotionStatus(ctx context.Context, id string) (status, meetingID string, err error)
 	CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error

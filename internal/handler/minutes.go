@@ -169,6 +169,28 @@ func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, "the minutes journal is empty: record the meeting before finalizing", "conflict")
 		return
 	}
+	// A motion still OPEN at finalization would be frozen mid-vote in the
+	// official record — and its eventual outcome could never enter the
+	// minutes, because every post-finalize side record is refused by design.
+	if h.gov != nil {
+		motions, err := h.gov.ListMotions(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
+		}
+		open := 0
+		for _, mo := range motions {
+			if mo.Status == "open" {
+				open++
+			}
+		}
+		if open > 0 {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("%d motion(s) still have voting open: close them before finalizing the minutes", open),
+				"conflict")
+			return
+		}
+	}
 	if err := h.repo.FinalizeMinutes(r.Context(), id, userIDFromCtx(r)); err != nil {
 		if errors.Is(err, repo.ErrMinutesFinalized) {
 			writeError(w, http.StatusConflict, "minutes are already finalized", "conflict")
@@ -178,15 +200,27 @@ func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// Snapshot the document EXACTLY as approved: whatever later happens to
-	// the source rows, this copy is what the org sees. Best-effort — if the
-	// snapshot write fails, the document still renders live (and the source
-	// rows are now trigger-guarded anyway).
+	// the source rows, this copy is what the org sees. Re-list the journal
+	// AFTER the finalize commits — an entry a second officer squeezed in
+	// between our precondition read and the lock must be in the snapshot,
+	// not frozen into the journal yet missing from the document. Best-effort
+	// but LOUD on failure: a snapshotless finalized meeting is invisible
+	// until someone exports.
 	if final, err := h.repo.Get(r.Context(), id); err == nil {
-		if doc, derr := h.renderMinutes(r.Context(), final, entries); derr == nil {
+		frozen, lerr := h.repo.ListMinutes(r.Context(), id)
+		if lerr != nil {
+			frozen = entries
+			log.Printf("minutes snapshot for %s: re-list failed (%v), using pre-finalize journal", id, lerr)
+		}
+		if doc, derr := h.renderMinutes(r.Context(), final, frozen); derr == nil {
 			if serr := h.repo.SetMinutesSnapshot(r.Context(), id, doc); serr != nil {
 				log.Printf("minutes snapshot for %s: %v", id, serr)
 			}
+		} else {
+			log.Printf("minutes snapshot for %s: render failed: %v", id, derr)
 		}
+	} else {
+		log.Printf("minutes snapshot for %s: meeting re-read failed: %v", id, err)
 	}
 	setAuditDetail(r, map[string]any{"minutes": "finalized"})
 	if h.events != nil {
@@ -233,8 +267,11 @@ func (h *MeetingsHandler) MinutesDocument(w http.ResponseWriter, r *http.Request
 	}
 	var doc string
 	if mt.MinutesFinalizedAt != nil {
-		if snap, err := h.repo.GetMinutesSnapshot(r.Context(), id); err == nil && snap != "" {
+		snap, err := h.repo.GetMinutesSnapshot(r.Context(), id)
+		if err == nil && snap != "" {
 			doc = snap
+		} else {
+			log.Printf("minutes %s: finalized but serving a live render (snapshot err=%v, empty=%v)", id, err, err == nil && snap == "")
 		}
 	}
 	if doc == "" {
@@ -249,11 +286,76 @@ func (h *MeetingsHandler) MinutesDocument(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	// Corrections render OUTSIDE the snapshot: the approved document stays
+	// byte-identical, the errata trail beneath it.
+	if mt.MinutesFinalizedAt != nil {
+		doc += h.renderCorrections(r.Context(), id, h.location(r.Context()))
+	}
 	auditExport(r, h.audit, "meetings/"+id+"/minutes.md", map[string]any{"meeting": mt.Title})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf("attachment; filename=%q", "minutes-"+mt.ScheduledAt.In(h.location(r.Context())).Format("2006-01-02")+".md"))
 	_, _ = w.Write([]byte(doc))
+}
+
+// AddCorrection appends an erratum to finalized minutes (officer+): the
+// Robert's-Rules "amend something previously adopted" path. The snapshot
+// stays verbatim; corrections render beneath it, append-only by DB trigger.
+func (h *MeetingsHandler) AddCorrection(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := decodeJSON(r, &body); err != nil || strings.TrimSpace(body.Body) == "" || len(body.Body) > 4000 {
+		writeError(w, http.StatusBadRequest, "body (1-4000 chars) required", "bad_request")
+		return
+	}
+	c, err := h.repo.AddCorrection(r.Context(), id, strings.TrimSpace(body.Body), userIDFromCtx(r))
+	if errors.Is(err, repo.ErrMinutesNotFinal) {
+		writeError(w, http.StatusConflict, "minutes are still a draft: edit the journal directly instead of filing a correction", "conflict")
+		return
+	}
+	if err != nil {
+		writeRepoError(w, err, "meeting not found", "create error")
+		return
+	}
+	setAuditDetail(r, map[string]any{"correction": c.ID})
+	writeJSON(w, http.StatusCreated, c)
+}
+
+// ListCorrections returns a meeting's errata (member+).
+func (h *MeetingsHandler) ListCorrections(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	out, err := h.repo.ListCorrections(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	if out == nil {
+		out = []model.MeetingCorrection{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// renderCorrections appends the errata section to an exported document.
+func (h *MeetingsHandler) renderCorrections(ctx context.Context, meetingID string, loc *time.Location) string {
+	corrections, err := h.repo.ListCorrections(ctx, meetingID)
+	if err != nil || len(corrections) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n---\n\n## Corrections\n\n")
+	b.WriteString("_The minutes above are preserved exactly as approved; the following corrections were recorded afterward._\n\n")
+	for i, c := range corrections {
+		fmt.Fprintf(&b, "%d. %s — _%s, %s_\n", i+1, c.Body, c.AuthorName, c.CreatedAt.In(loc).Format("2006-01-02 15:04 MST"))
+	}
+	return b.String()
 }
 
 // minutesKindLabels renders journal kinds as document headings.

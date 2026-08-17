@@ -4,6 +4,7 @@ package repo
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"time"
 
@@ -12,6 +13,13 @@ import (
 
 	"quorum/internal/model"
 )
+
+// HashToken is the at-rest form of opaque feed tokens (SHA-256 hex), the
+// same construction the auth package uses for refresh/reset tokens.
+func HashToken(plain string) string {
+	sum := sha256.Sum256([]byte(plain))
+	return hex.EncodeToString(sum[:])
+}
 
 // newOpaqueToken returns a 256-bit URL-safe hex token for feed/subscription
 // URLs — a scoped read credential, not a session token.
@@ -352,26 +360,28 @@ func (r *AuthRepo) RevokeOtherRefreshTokensForUser(ctx context.Context, userID, 
 	return tag.RowsAffected(), nil
 }
 
-// EnsureCalendarToken returns the user's calendar-subscription token, minting
-// one on first use. Idempotent.
-func (r *AuthRepo) EnsureCalendarToken(ctx context.Context, userID string) (string, error) {
+// HasCalendarToken reports whether the user already holds a feed credential.
+// The token itself is stored HASHED (like ballot and reset tokens): a leaked
+// DB backup must not yield working feed URLs, so the plaintext exists only in
+// the response that minted it.
+func (r *AuthRepo) HasCalendarToken(ctx context.Context, userID string) (bool, error) {
 	var tok *string
 	if err := r.db.QueryRow(ctx, `SELECT calendar_token FROM users WHERE id = $1::uuid`, userID).Scan(&tok); err != nil {
-		return "", err
+		return false, err
 	}
-	if tok != nil && *tok != "" {
-		return *tok, nil
-	}
-	return r.RotateCalendarToken(ctx, userID)
+	return tok != nil && *tok != "", nil
 }
 
-// RotateCalendarToken issues a fresh token (invalidating any existing feed URL).
+// RotateCalendarToken issues a fresh token (invalidating any existing feed
+// URL), storing its hash and returning the plaintext — the only time the
+// plaintext ever exists server-side.
 func (r *AuthRepo) RotateCalendarToken(ctx context.Context, userID string) (string, error) {
 	t, err := newOpaqueToken()
 	if err != nil {
 		return "", err
 	}
-	if _, err := r.db.Exec(ctx, `UPDATE users SET calendar_token = $1 WHERE id = $2::uuid`, t, userID); err != nil {
+	if _, err := r.db.Exec(ctx, `UPDATE users SET calendar_token = $1 WHERE id = $2::uuid`,
+		HashToken(t), userID); err != nil {
 		return "", err
 	}
 	return t, nil
@@ -385,6 +395,7 @@ func (r *AuthRepo) RotateCalendarToken(ctx context.Context, userID string) (stri
 func (r *AuthRepo) UserIDByCalendarToken(ctx context.Context, token string) (string, error) {
 	var id string
 	err := r.db.QueryRow(ctx,
-		`SELECT id::text FROM users WHERE calendar_token = $1 AND role <> 'restricted'`, token).Scan(&id)
+		`SELECT id::text FROM users WHERE calendar_token = $1 AND role <> 'restricted'`,
+		HashToken(token)).Scan(&id)
 	return id, err
 }

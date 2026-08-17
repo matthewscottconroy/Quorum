@@ -123,14 +123,12 @@ func TestOpenMotion_RequiresSeconder(t *testing.T) {
 func TestCloseMotion_AutoDecidesFromTally(t *testing.T) {
 	var closedStatus string
 	repo := &mockGovernanceRepo{
-		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
-			// Carried tally under majority.
-			return &model.Motion{ID: testMotionID, Status: "open", Threshold: "majority",
-				Tally: model.MotionTally{For: 7, Against: 2, Carried: true}}, nil
-		},
-		SetMotionStatusFn: func(_ context.Context, _, status string, _ *string) (*model.Motion, error) {
-			closedStatus = status
-			return &model.Motion{ID: testMotionID, Status: status}, nil
+		CloseAndDecideFn: func(_ context.Context, id, requested string) (*model.Motion, string, error) {
+			if requested != "" {
+				t.Fatalf("auto-decide must pass an empty request, got %q", requested)
+			}
+			closedStatus = "carried" // the repo decides under the motion lock
+			return &model.Motion{ID: id, Status: "carried"}, "carried", nil
 		},
 	}
 	req := reqWithParam("POST", "/motions/"+testMotionID+"/close", "", map[string]string{"id": testMotionID})
@@ -148,13 +146,9 @@ func TestCloseMotion_AutoDecidesFromTally(t *testing.T) {
 func TestCloseMotion_FailedWhenTallyShort(t *testing.T) {
 	var closedStatus string
 	repo := &mockGovernanceRepo{
-		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
-			return &model.Motion{ID: testMotionID, Status: "open", Threshold: "majority",
-				Tally: model.MotionTally{For: 2, Against: 7, Carried: false}}, nil
-		},
-		SetMotionStatusFn: func(_ context.Context, _, status string, _ *string) (*model.Motion, error) {
-			closedStatus = status
-			return &model.Motion{ID: testMotionID, Status: status}, nil
+		CloseAndDecideFn: func(_ context.Context, id, _ string) (*model.Motion, string, error) {
+			closedStatus = "failed"
+			return &model.Motion{ID: id, Status: "failed"}, "failed", nil
 		},
 	}
 	req := reqWithParam("POST", "/motions/"+testMotionID+"/close", "", map[string]string{"id": testMotionID})
@@ -169,12 +163,9 @@ func TestCloseMotion_FailedWhenTallyShort(t *testing.T) {
 func TestCloseMotion_ExplicitTabled(t *testing.T) {
 	var closedStatus string
 	repo := &mockGovernanceRepo{
-		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
-			return &model.Motion{ID: testMotionID, Status: "open", Threshold: "majority", Tally: model.MotionTally{For: 9, Carried: true}}, nil
-		},
-		SetMotionStatusFn: func(_ context.Context, _, status string, _ *string) (*model.Motion, error) {
-			closedStatus = status
-			return &model.Motion{ID: testMotionID, Status: status}, nil
+		CloseAndDecideFn: func(_ context.Context, id, requested string) (*model.Motion, string, error) {
+			closedStatus = requested
+			return &model.Motion{ID: id, Status: requested}, requested, nil
 		},
 	}
 	req := reqWithParam("POST", "/motions/"+testMotionID+"/close", `{"status":"tabled"}`, map[string]string{"id": testMotionID})
@@ -350,8 +341,8 @@ func TestGetBallot_InvalidToken(t *testing.T) {
 
 func TestCloseMotion_RejectsNeverOpened(t *testing.T) {
 	repo := &mockGovernanceRepo{
-		GetMotionFn: func(_ context.Context, _ string) (*model.Motion, error) {
-			return &model.Motion{ID: testMotionID, Status: "draft"}, nil // never opened
+		CloseAndDecideFn: func(_ context.Context, _, _ string) (*model.Motion, string, error) {
+			return nil, "", repo.ErrMotionNotOpen // never opened: repo refuses under lock
 		},
 	}
 	req := reqWithParam("POST", "/motions/"+testMotionID+"/close", "", map[string]string{"id": testMotionID})
@@ -453,5 +444,21 @@ func TestDeleteMotion_AllowsDraft(t *testing.T) {
 	h.DeleteMotion(rr, withCtxUser(req, "u", "officer"))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 deleting a draft, got %d", rr.Code)
+	}
+}
+
+// Editing WHAT a motion says after ballots may exist is a retroactive
+// rewrite: title/detail freeze while voting is open (procedural fields stay
+// editable).
+func TestUpdateMotion_TextFrozenWhileOpen(t *testing.T) {
+	repo2 := &mockGovernanceRepo{
+		MotionStatusFn: func(_ context.Context, _ string) (string, string, error) { return "open", testMeetingID, nil },
+	}
+	req := reqWithParam("PATCH", "/motions/"+testMotionID, `{"title":"Reworded"}`, map[string]string{"id": testMotionID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	govHandler(repo2).UpdateMotion(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("title edit while open: got %d, want 409 (%s)", rr.Code, rr.Body)
 	}
 }

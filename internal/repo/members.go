@@ -335,6 +335,27 @@ func (r *MembersRepo) Erase(ctx context.Context, id string) error {
 		return ErrErasureLinkedAdmin
 	}
 
+	// Right-to-erasure vs the immutable minutes snapshot: the snapshot is
+	// the one place a finalized document preserves the member's real name
+	// verbatim (attendance, ballots by name), and legal erasure outranks
+	// finality. Scrub the display name from every snapshot BEFORE the
+	// member row is anonymized, using the same placeholder — the document
+	// stays structurally intact, the identity goes. (The core-guard trigger
+	// only protects the meeting HEADER columns, so this write is allowed.)
+	var oldName string
+	if err := tx.QueryRow(ctx,
+		`SELECT display_name FROM members WHERE id = $1::uuid`, id).Scan(&oldName); err != nil {
+		return err
+	}
+	if oldName != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE meetings SET minutes_snapshot = replace(minutes_snapshot, $1, $2)
+			WHERE minutes_snapshot LIKE '%' || $1 || '%'`,
+			oldName, "Erased member "+id[:8]); err != nil {
+			return err
+		}
+	}
+
 	// A stable, non-identifying placeholder keeps display_name's NOT NULL
 	// constraint satisfied and keeps rows distinguishable in listings.
 	tag, err := tx.Exec(ctx, `

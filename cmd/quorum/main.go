@@ -665,6 +665,8 @@ func main() {
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}/minutes/{eid}", meetingsH.UpdateMinutesEntry)
 			r.With(mw.RequireRole("officer")).Delete("/meetings/{id}/minutes/{eid}", meetingsH.DeleteMinutesEntry)
 			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/minutes/finalize", meetingsH.FinalizeMinutes)
+			r.With(mw.RequireRole("member")).Get("/meetings/{id}/corrections", meetingsH.ListCorrections)
+			r.With(mw.RequireRole("officer")).Post("/meetings/{id}/corrections", meetingsH.AddCorrection)
 			r.With(mw.RequireRole("officer")).Patch("/meetings/{id}", meetingsH.Update)
 			r.With(mw.RequireRole("superadmin")).Delete("/meetings/{id}", meetingsH.Delete)
 			r.With(mw.RequireRole("officer")).Put("/meetings/{id}/attendees", meetingsH.SetAttendees)

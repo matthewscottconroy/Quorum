@@ -136,18 +136,19 @@ func (r *MeetingsRepo) Create(ctx context.Context, mt *model.Meeting, createdBy 
 }
 
 // Update applies the given field changes to the meeting and returns the
-// updated row. endsAt is tri-state: clearEndsAt removes the end time, a non-nil
-// endsAt sets it, and nil/false leaves it unchanged (coalesce semantics like
-// every other field).
+// updated row. endsAt is tri-state via clearEndsAt; the free-text fields
+// (location/agenda/notes) are tri-state by VALUE: nil leaves the field
+// unchanged, "" clears it, anything else sets it — plain coalesce made a
+// deleted agenda quietly come back on save.
 func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, scheduledAt, endsAt *time.Time, clearEndsAt bool, location, agenda, notes, status *string) (*model.Meeting, error) {
 	_, err := r.db.Exec(ctx, `
 		UPDATE meetings SET
 			title        = coalesce($1, title),
 			scheduled_at = coalesce($2, scheduled_at),
 			ends_at      = CASE WHEN $3 THEN NULL ELSE coalesce($4, ends_at) END,
-			location     = coalesce($5, location),
-			agenda       = coalesce($6, agenda),
-			notes        = coalesce($7, notes),
+			location     = CASE WHEN $5::text IS NULL THEN location ELSE nullif($5, '') END,
+			agenda       = CASE WHEN $6::text IS NULL THEN agenda   ELSE nullif($6, '') END,
+			notes        = CASE WHEN $7::text IS NULL THEN notes    ELSE nullif($7, '') END,
 			status       = coalesce($8, status),
 			updated_at   = now()
 		WHERE id = $9::uuid`,
@@ -364,6 +365,10 @@ func scanMeeting(row scannable) (model.Meeting, error) {
 // ErrMinutesFinalized is returned when attempting to finalize minutes twice.
 var ErrMinutesFinalized = errors.New("minutes are already finalized")
 
+// ErrMinutesNotFinal marks a correction against a draft — drafts are edited
+// directly; corrections exist only for the frozen official record.
+var ErrMinutesNotFinal = errors.New("minutes are not finalized")
+
 // ListMinutes returns a meeting's journal in chronological order, with the
 // linked motion's title and the recorder's email resolved for display.
 func (r *MeetingsRepo) ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error) {
@@ -499,6 +504,55 @@ func (r *MeetingsRepo) GetMinutesSnapshot(ctx context.Context, meetingID string)
 		return "", nil
 	}
 	return *doc, nil
+}
+
+// AddCorrection appends an erratum to FINALIZED minutes (the DB trigger
+// makes rows immutable once written). Refused with ErrMinutesNotFinal on a
+// draft — drafts are edited directly, corrections exist for the frozen record.
+func (r *MeetingsRepo) AddCorrection(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error) {
+	var finalized *time.Time
+	if err := r.db.QueryRow(ctx,
+		`SELECT minutes_finalized_at FROM meetings WHERE id = $1::uuid`, meetingID).Scan(&finalized); err != nil {
+		return nil, err
+	}
+	if finalized == nil {
+		return nil, ErrMinutesNotFinal
+	}
+	var c model.MeetingCorrection
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO meeting_corrections (meeting_id, body, created_by)
+		VALUES ($1::uuid, $2, $3::uuid)
+		RETURNING id::text, meeting_id::text, body, created_at`,
+		meetingID, body, createdBy).Scan(&c.ID, &c.MeetingID, &c.Body, &c.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListCorrections returns a meeting's errata, oldest first, with author names.
+func (r *MeetingsRepo) ListCorrections(ctx context.Context, meetingID string) ([]model.MeetingCorrection, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT c.id::text, c.meeting_id::text, c.body, c.created_at,
+		       coalesce(m.display_name, u.email, 'former user')
+		FROM meeting_corrections c
+		LEFT JOIN users u ON u.id = c.created_by
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE c.meeting_id = $1::uuid
+		ORDER BY c.created_at`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.MeetingCorrection
+	for rows.Next() {
+		var c model.MeetingCorrection
+		if err := rows.Scan(&c.ID, &c.MeetingID, &c.Body, &c.CreatedAt, &c.AuthorName); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // SetRSVP records or updates a member's RSVP for a meeting ('yes'/'no'/'maybe').

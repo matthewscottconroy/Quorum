@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 // ---- refunds ----
@@ -17,14 +19,11 @@ func TestRecordRefund_Success(t *testing.T) {
 		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
 			return testInvoice(id, "m1"), nil // USD invoice
 		},
-		CreateTransactionFn: func(_ context.Context, tx *model.Transaction) (*model.Transaction, error) {
+		CreateGuardedTransactionFn: func(_ context.Context, tx *model.Transaction, _ bool) (*model.Transaction, int64, error) {
 			captured = tx
 			tx.ID = "tx1"
-			return tx, nil
+			return tx, 0, nil
 		},
-		RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
-		// The refund cap: 5000 was actually collected, so 5000 may go back.
-		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 5000, nil },
 	})
 	body := `{"amount_minor":5000,"currency":"USD","provider":"manual","note":"overpaid"}`
 	req := chiRequest("POST", "/dues/"+testUUID+"/refund", body, map[string]string{"id": testUUID})
@@ -82,13 +81,20 @@ func TestRecordRefund_NonPositiveAmount(t *testing.T) {
 // ---- installments ----
 
 func TestSetInstallments_Success(t *testing.T) {
-	h := NewDuesHandler(&mockDuesRepo{})
+	h := NewDuesHandler(&mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
+			return testInvoice(id, "m1"), nil // 10000 minor: the plan sums exactly
+		},
+	})
 	body := `{"installments":[{"amount_minor":5000,"due_date":"2026-01-15"},{"amount_minor":5000,"due_date":"2026-02-15"}]}`
 	req := chiRequest("PUT", "/dues/"+testUUID+"/installments", body, map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.SetInstallments(rr, req)
 	if rr.Code != 200 {
 		t.Fatalf("status: got %d; body: %s", rr.Code, rr.Body)
+	}
+	if !strings.Contains(rr.Body.String(), `"delta_minor":null`) {
+		t.Fatalf("an exact plan must report a null delta: %s", rr.Body)
 	}
 }
 
@@ -205,7 +211,10 @@ func TestRecordRefund_Bounds(t *testing.T) {
 		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
 			return testInvoice(id, "m1"), nil
 		},
-		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 2000, nil },
+		// Only 2000 was collected: the locked repo guard refuses 5000.
+		CreateGuardedTransactionFn: func(_ context.Context, _ *model.Transaction, _ bool) (*model.Transaction, int64, error) {
+			return nil, 2000, repo.ErrExceedsPaid
+		},
 	})
 	body := `{"amount_minor":5000,"currency":"USD","provider":"manual"}`
 	req := chiRequest("POST", "/dues/"+testUUID+"/refund", body, map[string]string{"id": testUUID})
@@ -220,6 +229,9 @@ func TestRecordRefund_Bounds(t *testing.T) {
 	waived.Status = "waived"
 	h2 := NewDuesHandler(&mockDuesRepo{
 		GetInvoiceFn: func(_ context.Context, _ string) (*model.DuesInvoice, error) { return waived, nil },
+		CreateGuardedTransactionFn: func(_ context.Context, _ *model.Transaction, _ bool) (*model.Transaction, int64, error) {
+			return nil, 0, repo.ErrInvoiceNotPayable
+		},
 	})
 	req2 := chiRequest("POST", "/dues/"+testUUID+"/refund", `{"amount_minor":100,"currency":"USD","provider":"manual"}`, map[string]string{"id": testUUID})
 	req2 = withCtxUser(req2, "u1", "officer")

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -322,7 +323,21 @@ func (h *DuesHandler) SetInstallments(w http.ResponseWriter, r *http.Request) {
 	}
 	setAuditDetail(r, map[string]any{"invoice": id, "installments": len(plan)})
 	out, _ := h.repo.ListInstallments(r.Context(), id)
-	writeJSON(w, 200, out)
+	// The plan is tracking-only, but a plan that doesn't sum to the invoice
+	// silently misleads the member — report the delta so the UI can warn.
+	var planTotal int64
+	for _, p := range plan {
+		planTotal += p.AmountMinor
+	}
+	var deltaMinor *int64
+	if len(plan) > 0 {
+		if inv, err := h.repo.GetInvoice(r.Context(), id); err == nil {
+			if d := planTotal - inv.AmountMinor; d != 0 {
+				deltaMinor = &d
+			}
+		}
+	}
+	writeJSON(w, 200, map[string]any{"installments": out, "delta_minor": deltaMinor})
 }
 
 // RecordRefund records a refund against an invoice (officer+): a negative
@@ -358,29 +373,15 @@ func (h *DuesHandler) RecordRefund(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "refund currency must match the invoice currency", "bad_request")
 		return
 	}
-	// A waived invoice's receivable was already written to zero; a refund
-	// posting against it corrupts A/R exactly like a payment would.
-	if inv.Status == "waived" {
-		writeError(w, 409, "invoice is waived: un-waive it before recording a refund", "conflict")
-		return
-	}
-	// You can only give back what actually came in: cap the refund at the
-	// net recorded total so repeated refunds can't mint money out of A/R.
-	paid, err := h.repo.PaidSum(r.Context(), invoiceID, inv.Currency)
-	if err != nil {
-		writeError(w, 500, "payment total lookup error", "internal_error")
-		return
-	}
-	if body.AmountMinor > paid {
-		writeError(w, 409, fmt.Sprintf("refund exceeds the amount actually paid: at most %d minor units are refundable", max(paid, 0)), "conflict")
-		return
-	}
 	status := "refunded"
 	var memberPtr *string
 	if inv.MemberID != "" {
 		memberPtr = &inv.MemberID
 	}
-	tx, err := h.repo.CreateTransaction(r.Context(), &model.Transaction{
+	// The waived check and the refund cap both run inside the repo under the
+	// invoice row lock — the unlocked read-then-write this replaced let two
+	// concurrent full refunds each pass the cap and mint money out of A/R.
+	tx, limit, err := h.repo.CreateGuardedTransaction(r.Context(), &model.Transaction{
 		InvoiceID:      &invoiceID,
 		MemberID:       memberPtr,
 		AmountMinor:    -body.AmountMinor, // negative → reversing GL entry
@@ -390,13 +391,18 @@ func (h *DuesHandler) RecordRefund(w http.ResponseWriter, r *http.Request) {
 		RecordedBy:     &userID,
 		OccurredAt:     time.Now(),
 		Notes:          body.Note,
-	})
+	}, false)
+	if errors.Is(err, repo.ErrExceedsPaid) {
+		writeError(w, 409, fmt.Sprintf("refund exceeds the amount actually paid: at most %d minor units are refundable", limit), "conflict")
+		return
+	}
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		writeError(w, 409, "invoice is waived: un-waive it before recording a refund", "conflict")
+		return
+	}
 	if err != nil {
 		writeRepoError(w, err, "", "refund error")
 		return
-	}
-	if err := h.repo.RecomputeInvoiceStatus(r.Context(), invoiceID); err != nil {
-		log.Printf("recompute invoice %s after refund: %v", invoiceID, err)
 	}
 	setAuditDetail(r, map[string]any{"invoice": invoiceID, "refund_minor": body.AmountMinor, "currency": currency})
 	writeJSON(w, 201, tx)
@@ -448,26 +454,6 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "transaction currency must match the invoice currency", "bad_request")
 		return
 	}
-	// A waived invoice's receivable was already written to zero; posting a
-	// payment against it would drive GL A/R negative and break reconciliation.
-	// Un-waive it first if the payment is genuine.
-	if inv.Status == "waived" {
-		writeError(w, 409, "invoice is waived: un-waive it before recording a payment", "conflict")
-		return
-	}
-	// Guard the fat-fingered extra zero: a payment past the remaining balance
-	// needs an explicit acknowledgement.
-	paid, err := h.repo.PaidSum(r.Context(), invoiceID, inv.Currency)
-	if err != nil {
-		writeError(w, 500, "payment total lookup error", "internal_error")
-		return
-	}
-	if remaining := inv.AmountMinor - paid; body.AmountMinor > remaining && !body.AllowOverpayment {
-		writeError(w, 409,
-			fmt.Sprintf("payment exceeds the remaining balance (%d minor units): resend with allow_overpayment if intentional", max(remaining, 0)),
-			"conflict")
-		return
-	}
 	status := "succeeded"
 	providerStr := &status
 
@@ -479,7 +465,11 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		memberPtr = &inv.MemberID
 	}
 
-	tx, err := h.repo.CreateTransaction(r.Context(), &model.Transaction{
+	// The waived check and the fat-fingered-extra-zero guard both run inside
+	// the repo under the invoice row lock, and the recompute commits with the
+	// insert — no window for a webhook to slip a payment between our read
+	// and our write.
+	tx, limit, err := h.repo.CreateGuardedTransaction(r.Context(), &model.Transaction{
 		InvoiceID:           &invoiceID,
 		MemberID:            memberPtr,
 		AmountMinor:         body.AmountMinor,
@@ -491,14 +481,20 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		RecordedBy:          &userID,
 		OccurredAt:          time.Now(),
 		Notes:               body.Notes,
-	})
+	}, body.AllowOverpayment)
+	if errors.Is(err, repo.ErrExceedsRemaining) {
+		writeError(w, 409,
+			fmt.Sprintf("payment exceeds the remaining balance (%d minor units): resend with allow_overpayment if intentional", limit),
+			"conflict")
+		return
+	}
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		writeError(w, 409, "invoice is waived: un-waive it before recording a payment", "conflict")
+		return
+	}
 	if err != nil {
 		writeRepoError(w, err, "", "create error")
 		return
-	}
-
-	if err := h.repo.RecomputeInvoiceStatus(r.Context(), invoiceID); err != nil {
-		log.Printf("recompute invoice %s: %v", invoiceID, err)
 	}
 
 	writeJSON(w, 201, tx)

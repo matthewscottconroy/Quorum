@@ -14,7 +14,7 @@ import (
 
 // calendarTokenRepo is the slice of *repo.AuthRepo the calendar feed needs.
 type calendarTokenRepo interface {
-	EnsureCalendarToken(ctx context.Context, userID string) (string, error)
+	HasCalendarToken(ctx context.Context, userID string) (bool, error)
 	RotateCalendarToken(ctx context.Context, userID string) (string, error)
 	UserIDByCalendarToken(ctx context.Context, token string) (string, error)
 }
@@ -40,14 +40,26 @@ func NewCalendarHandler(t calendarTokenRepo, m calendarMeetings, baseURL string)
 	return &CalendarHandler{tokens: t, meetings: m, baseURL: strings.TrimRight(baseURL, "/")}
 }
 
-// Subscription returns (creating if needed) the caller's calendar feed URL.
+// Subscription reports the caller's feed state, minting a token on first
+// use. Tokens are hashed at rest, so the URL is only revealed at mint or
+// rotate time — for an existing feed the response says active with no URL
+// (rotate to get a fresh one), exactly like an API key shown once.
 func (h *CalendarHandler) Subscription(w http.ResponseWriter, r *http.Request) {
-	tok, err := h.tokens.EnsureCalendarToken(r.Context(), userIDFromCtx(r))
+	has, err := h.tokens.HasCalendarToken(r.Context(), userIDFromCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check feed", "internal_error")
+		return
+	}
+	if has {
+		writeJSON(w, http.StatusOK, map[string]any{"active": true})
+		return
+	}
+	tok, err := h.tokens.RotateCalendarToken(r.Context(), userIDFromCtx(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create feed", "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": h.feedURL(tok)})
+	writeJSON(w, http.StatusOK, map[string]any{"active": true, "url": h.feedURL(tok)})
 }
 
 // Rotate issues a new token, invalidating the old feed URL.

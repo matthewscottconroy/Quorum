@@ -116,7 +116,7 @@ class PageDues extends HTMLElement {
             <div style="font-weight:600;font-size:.9rem">${esc(s.tier)} — ${formatMoney(s.amount_minor, s.currency)}</div>
             <div style="font-size:.78rem;color:var(--color-text-muted)">${CADENCE[s.cadence]||s.cadence} · due ${s.due_days}d after period start ${s.active?'':'· <em>inactive</em>'}</div>
           </div>
-          <button class="btn-secondary sched-gen" style="font-size:.78rem;padding:.25rem .6rem">Generate now</button>
+          ${s.active ? '<button class="btn-secondary sched-gen" style="font-size:.78rem;padding:.25rem .6rem">Generate now</button>' : ''}
           <button class="btn-ghost sched-del" style="font-size:.78rem;color:var(--color-danger)">Delete</button>
         </div>`).join('') : '<p style="font-size:.85rem;color:var(--color-text-muted)">No schedules yet.</p>';
     };
@@ -379,7 +379,11 @@ class PageDues extends HTMLElement {
         installments.push({ due_date: due, amount_minor: amt });
       }
       try {
-        await api('PUT', `/dues/${inv.id}/installments`, { installments });
+        const res = await api('PUT', `/dues/${inv.id}/installments`, { installments });
+        if (res?.delta_minor) {
+          const d = res.delta_minor;
+          toast(`Plan saved, but it ${d > 0 ? 'EXCEEDS' : 'falls short of'} the invoice by ${formatMoney(Math.abs(d), inv.currency)}`, 'error');
+        }
         toast('Payment plan saved', 'success'); close();
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
     }));
@@ -629,7 +633,10 @@ class PageDues extends HTMLElement {
         // The server guards against a typo'd extra zero: a payment past the
         // remaining balance needs an explicit acknowledgement.
         if (err?.code === 'conflict' && (err.error ?? '').includes('allow_overpayment')) {
-          if (confirm('This payment is MORE than the remaining balance.\n\nRecord it as an intentional overpayment?')) {
+          // NB: this is the imported Promise-returning confirm — await it, or
+          // the truthy Promise records the overpayment while the dialog is
+          // still asking.
+          if (await confirm('This payment is MORE than the remaining balance. Record it as an intentional overpayment?', 'Overpayment')) {
             try {
               await api('POST', `/dues/${invoiceID}/transactions`, { ...body, allow_overpayment: true });
               toast('Overpayment recorded', 'success');

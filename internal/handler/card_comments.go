@@ -91,6 +91,10 @@ func (h *CardCommentsHandler) Create(w http.ResponseWriter, r *http.Request) {
 // Delete removes a comment: the author may delete their own words, an admin
 // may moderate anyone's. Everyone else gets 403.
 func (h *CardCommentsHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	itemID, ok := h.requireItem(w, r)
+	if !ok {
+		return
+	}
 	cid := chi.URLParam(r, "cid")
 	if !isValidUUID(cid) {
 		writeError(w, http.StatusBadRequest, "invalid comment id", "bad_request")
@@ -98,6 +102,13 @@ func (h *CardCommentsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := h.repo.Get(r.Context(), cid)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "comment not found", "not_found")
+		return
+	}
+	// The comment must belong to the card in the path: deleting card B's
+	// comment through card A's URL would stamp the audit trail with the
+	// wrong card — the same class of hole the decision routes had.
+	if c.ActionItemID != itemID {
 		writeError(w, http.StatusNotFound, "comment not found", "not_found")
 		return
 	}

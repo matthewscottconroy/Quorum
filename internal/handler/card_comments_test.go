@@ -40,10 +40,19 @@ const (
 	otherUID  = "5f9f1a2b-0000-4000-8000-0000000000bb"
 )
 
+// cardID anchors every comment to a real card: Delete verifies the comment
+// belongs to the card in the path.
+const cardID = "7c9f1a2b-0000-4000-8000-0000000000cc"
+
 func commentDeleteReq(t *testing.T, userID, role string, repo *mockCardCommentsRepo) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewCardCommentsHandler(repo, nil)
-	req := reqWithParam("DELETE", "/action-items/x/comments/"+commentID, "", map[string]string{"cid": commentID})
+	h := NewCardCommentsHandler(repo, &mockActionItemsRepo{
+		GetFn: func(_ context.Context, id string) (*model.ActionItem, error) {
+			return &model.ActionItem{ID: id}, nil
+		},
+	})
+	req := reqWithParam("DELETE", "/action-items/"+cardID+"/comments/"+commentID, "",
+		map[string]string{"id": cardID, "cid": commentID})
 	ctx := context.WithValue(req.Context(), ctxUserID, userID)
 	ctx = context.WithValue(ctx, ctxRole, role)
 	rr := httptest.NewRecorder()
@@ -59,7 +68,7 @@ func ownComment() *mockCardCommentsRepo {
 			if deleted {
 				return nil, pgx.ErrNoRows
 			}
-			return &model.CardComment{ID: id, AuthorID: &author, Body: "hi"}, nil
+			return &model.CardComment{ID: id, ActionItemID: cardID, AuthorID: &author, Body: "hi"}, nil
 		},
 		DeleteFn: func(_ context.Context, _ string) error { deleted = true; return nil },
 	}

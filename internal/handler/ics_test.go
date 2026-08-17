@@ -173,3 +173,31 @@ func TestMeetings_EndTimeValidationAndClear(t *testing.T) {
 		t.Fatalf("clear via null should 200, got %d: %s", rr2.Code, rr2.Body)
 	}
 }
+
+// A lone CR in a title must never reach the feed as a raw control byte, and
+// DTSTAMP must be the event's own revision instant (re-stamping every poll
+// with "now" made clients re-process unchanged events).
+func TestICS_LoneCRAndDTSTAMP(t *testing.T) {
+	up := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	m := model.Meeting{
+		ID: "m1", Title: "Line one\rline two",
+		ScheduledAt: time.Date(2026, 9, 1, 18, 0, 0, 0, time.UTC),
+		Status:      "scheduled",
+		CreatedAt:   up.Add(-time.Hour), UpdatedAt: up,
+	}
+	rr := httptest.NewRecorder()
+	writeICS(rr, []model.Meeting{m}, "cal.ics")
+	body := rr.Body.String()
+	if strings.Contains(body, "one\rline") {
+		t.Fatal("raw CR leaked into the feed")
+	}
+	if !strings.Contains(body, `Line one\nline two`) {
+		t.Fatalf("CR not folded into \\n: %q", body)
+	}
+	if !strings.Contains(body, "DTSTAMP:20260304T050607Z") {
+		t.Fatalf("DTSTAMP should be updated_at, got: %s", body)
+	}
+	if !strings.Contains(body, "SEQUENCE:") {
+		t.Fatal("SEQUENCE missing")
+	}
+}

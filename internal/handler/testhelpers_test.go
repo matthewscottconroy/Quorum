@@ -228,7 +228,8 @@ type mockDuesRepo struct {
 	CreateInvoiceBatchFn          func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
 	UpdateInvoiceStatusFn         func(ctx context.Context, id, status string, notes *string) error
 	RecomputeInvoiceStatusFn      func(ctx context.Context, id string) error
-	PaidSumFn                     func(ctx context.Context, invoiceID, currency string) (int64, error)
+	CreateGuardedTransactionFn    func(ctx context.Context, t *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error)
+	RecordWebhookRefundFn         func(ctx context.Context, eventID string, t *model.Transaction, cumulative int64) (bool, error)
 	CountByStatusFn               func(ctx context.Context, status string) (int, error)
 	ListTransactionsFn            func(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
 	CreateTransactionFn           func(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
@@ -278,11 +279,18 @@ func (m *mockDuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) er
 	return m.RecomputeInvoiceStatusFn(ctx, id)
 }
 
-func (m *mockDuesRepo) PaidSum(ctx context.Context, invoiceID, currency string) (int64, error) {
-	if m.PaidSumFn != nil {
-		return m.PaidSumFn(ctx, invoiceID, currency)
+func (m *mockDuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error) {
+	if m.CreateGuardedTransactionFn != nil {
+		return m.CreateGuardedTransactionFn(ctx, t, allowOverpay)
 	}
-	return 0, nil
+	return t, 0, nil
+}
+
+func (m *mockDuesRepo) RecordWebhookRefund(ctx context.Context, eventID string, t *model.Transaction, cumulative int64) (bool, error) {
+	if m.RecordWebhookRefundFn != nil {
+		return m.RecordWebhookRefundFn(ctx, eventID, t, cumulative)
+	}
+	return false, nil
 }
 func (m *mockDuesRepo) BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error) {
 	return int64(len(ids)), nil
@@ -315,6 +323,8 @@ func (m *mockDuesRepo) RecordWebhookPayment(ctx context.Context, eventID string,
 // ---- mockMeetingsRepo ----
 
 type mockMeetingsRepo struct {
+	AddCorrectionFn        func(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error)
+	ListCorrectionsFn      func(ctx context.Context, meetingID string) ([]model.MeetingCorrection, error)
 	ListFn                 func(ctx context.Context, f repo.MeetingFilter) ([]model.Meeting, int, error)
 	GetFn                  func(ctx context.Context, id string) (*model.Meeting, error)
 	CreateFn               func(ctx context.Context, mt *model.Meeting, createdBy string) (*model.Meeting, error)
@@ -374,6 +384,20 @@ func (m *mockMeetingsRepo) CreateDecision(ctx context.Context, d *model.MeetingD
 func (m *mockMeetingsRepo) UpdateDecision(ctx context.Context, meetingID, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error) {
 	return m.UpdateDecisionFn(ctx, id, summary, detail, outcome, voteFor, voteAgainst, voteAbstain)
 }
+func (m *mockMeetingsRepo) AddCorrection(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error) {
+	if m.AddCorrectionFn != nil {
+		return m.AddCorrectionFn(ctx, meetingID, body, createdBy)
+	}
+	return &model.MeetingCorrection{ID: "c1", MeetingID: meetingID, Body: body}, nil
+}
+
+func (m *mockMeetingsRepo) ListCorrections(ctx context.Context, meetingID string) ([]model.MeetingCorrection, error) {
+	if m.ListCorrectionsFn != nil {
+		return m.ListCorrectionsFn(ctx, meetingID)
+	}
+	return nil, nil
+}
+
 func (m *mockMeetingsRepo) SetMinutesSnapshot(ctx context.Context, meetingID, doc string) error {
 	return nil
 }
@@ -591,6 +615,7 @@ func (m *mockPlansRepo) DeleteDecision(ctx context.Context, id string) error {
 // ---- mockGovernanceRepo ----
 
 type mockGovernanceRepo struct {
+	CloseAndDecideFn        func(ctx context.Context, id, requested string) (*model.Motion, string, error)
 	VotesByMeetingFn        func(ctx context.Context, meetingID string) (map[string][]model.MotionVote, error)
 	GetSettingsFn           func(ctx context.Context) (*model.GovernanceSettings, error)
 	UpdateSettingsFn        func(ctx context.Context, s *model.GovernanceSettings) (*model.GovernanceSettings, error)
@@ -687,6 +712,17 @@ func (m *mockGovernanceRepo) MemberIsActive(ctx context.Context, memberID string
 func (m *mockGovernanceRepo) GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error) {
 	return m.GetVotesFn(ctx, motionID)
 }
+func (m *mockGovernanceRepo) CloseAndDecide(ctx context.Context, id, requested string) (*model.Motion, string, error) {
+	if m.CloseAndDecideFn != nil {
+		return m.CloseAndDecideFn(ctx, id, requested)
+	}
+	final := requested
+	if final == "" {
+		final = "carried"
+	}
+	return &model.Motion{ID: id, Status: final}, final, nil
+}
+
 func (m *mockGovernanceRepo) VotesByMeeting(ctx context.Context, meetingID string) (map[string][]model.MotionVote, error) {
 	if m.VotesByMeetingFn != nil {
 		return m.VotesByMeetingFn(ctx, meetingID)

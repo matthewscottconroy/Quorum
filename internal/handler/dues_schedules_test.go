@@ -56,7 +56,7 @@ func TestGenerateSchedule_ReturnsCount(t *testing.T) {
 	var usedLabel string
 	repo := &mockDuesRepo{
 		GetScheduleFn: func(_ context.Context, _ string) (*model.DuesSchedule, error) {
-			return &model.DuesSchedule{ID: testScheduleID, Tier: "standard", AmountMinor: 5000, Currency: "USD", Cadence: "annual", DueDays: 30}, nil
+			return &model.DuesSchedule{ID: testScheduleID, Tier: "standard", AmountMinor: 5000, Currency: "USD", Cadence: "annual", DueDays: 30, Active: true}, nil
 		},
 		GenerateInvoicesForScheduleFn: func(_ context.Context, _ model.DuesSchedule, label string, _ time.Time) (int, error) {
 			usedLabel = label
@@ -80,5 +80,28 @@ func TestGenerateSchedule_ReturnsCount(t *testing.T) {
 	// Annual label is the current year — confirm the handler computed a period.
 	if usedLabel == "" {
 		t.Error("expected a period label to be computed")
+	}
+}
+
+// Generate-now on an INACTIVE schedule is refused: 0053 deactivated the
+// duplicate tier schedules precisely to stop double billing, and this button
+// was the one-click way to reopen the hole.
+func TestGenerateSchedule_InactiveRefused(t *testing.T) {
+	repo := &mockDuesRepo{
+		GetScheduleFn: func(_ context.Context, _ string) (*model.DuesSchedule, error) {
+			return &model.DuesSchedule{ID: testScheduleID, Tier: "standard", AmountMinor: 5000,
+				Currency: "USD", Cadence: "annual", DueDays: 30, Active: false}, nil
+		},
+		GenerateInvoicesForScheduleFn: func(_ context.Context, _ model.DuesSchedule, _ string, _ time.Time) (int, error) {
+			t.Fatal("generation ran on an inactive schedule")
+			return 0, nil
+		},
+	}
+	req := reqWithParam("POST", "/dues/schedules/"+testScheduleID+"/generate", "", map[string]string{"id": testScheduleID})
+	req = withCtxUser(req, "u", "officer")
+	rr := httptest.NewRecorder()
+	duesHandler(repo).GenerateSchedule(rr, req)
+	if rr.Code != 409 {
+		t.Fatalf("inactive generate: got %d, want 409 (%s)", rr.Code, rr.Body)
 	}
 }

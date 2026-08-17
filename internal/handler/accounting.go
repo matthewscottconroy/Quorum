@@ -312,13 +312,15 @@ func (h *AccountingHandler) ManualEntry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	net := map[string]int64{} // per-currency debits - credits
-	for _, ln := range body.Lines {
-		if !acctCodeRe.MatchString(ln.AccountCode) || len(ln.Currency) != 3 ||
+	for i, ln := range body.Lines {
+		cur, curOK := validCurrencyCode(ln.Currency)
+		if !acctCodeRe.MatchString(ln.AccountCode) || !curOK ||
 			ln.Debit < 0 || ln.Credit < 0 || (ln.Debit == 0) == (ln.Credit == 0) {
-			writeError(w, http.StatusBadRequest, "each line needs account_code, currency, and exactly one of debit/credit > 0", "bad_request")
+			writeError(w, http.StatusBadRequest, "each line needs account_code, a 3-8 letter currency, and exactly one of debit/credit > 0", "bad_request")
 			return
 		}
-		net[strings.ToUpper(ln.Currency)] += ln.Debit - ln.Credit
+		body.Lines[i].Currency = cur
+		net[cur] += ln.Debit - ln.Credit
 	}
 	// The DB's deferred trigger enforces balance too, but failing here gives
 	// the caller a precise error instead of a generic entry failure.

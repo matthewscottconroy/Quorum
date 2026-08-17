@@ -153,15 +153,18 @@ func (h *WebhooksHandler) handleStripeRefund(r *http.Request, eventID string, da
 	}
 	status := "refunded"
 	pid := obj.Object.ID
-	_, err := h.dues.RecordWebhookPayment(r.Context(), eventID, &model.Transaction{
+	// amount_refunded is Stripe's CUMULATIVE total for the charge, and every
+	// partial refund fires a fresh event id — recording it verbatim would
+	// post $30 then $70 for refunds of $30 and $40. The repo records only
+	// the delta beyond what this charge has already refunded, atomically.
+	_, err := h.dues.RecordWebhookRefund(r.Context(), eventID, &model.Transaction{
 		InvoiceID:           &invoiceID,
-		AmountMinor:         -obj.Object.AmountRefunded, // negative → reversing entry
 		Currency:            strings.ToUpper(obj.Object.Currency),
 		Provider:            "stripe",
 		ProviderReferenceID: &pid,
 		ProviderStatus:      &status,
 		OccurredAt:          time.Now(),
-	})
+	}, obj.Object.AmountRefunded)
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		return h.dues.MarkEventProcessed(r.Context(), eventID)
 	}
@@ -299,19 +302,88 @@ func (h *WebhooksHandler) PayPal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if event.EventType == "PAYMENT.CAPTURE.COMPLETED" {
+	switch event.EventType {
+	case "PAYMENT.CAPTURE.COMPLETED":
 		if err := h.handlePayPalCapture(r, event.ID, event.Resource); err != nil {
 			log.Printf("paypal: event %s: %v", event.ID, err)
 			writeError(w, http.StatusInternalServerError, "processing error", "internal_error")
 			return
 		}
-	} else {
+	case "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED":
+		// These used to be silently marked processed while Stripe refunds
+		// flowed to the ledger — money left the bank with no journal entry.
+		if err := h.handlePayPalRefund(r, event.ID, event.Resource); err != nil {
+			log.Printf("paypal: refund event %s: %v", event.ID, err)
+			writeError(w, http.StatusInternalServerError, "processing error", "internal_error")
+			return
+		}
+	default:
 		if err := h.dues.MarkEventProcessed(r.Context(), event.ID); err != nil {
 			writeError(w, http.StatusInternalServerError, "db error", "internal_error")
 			return
 		}
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handlePayPalRefund records a refund as a negative transaction. Unlike
+// Stripe, PayPal's refund resource carries THIS refund's amount (a delta),
+// so it can post directly; the event-id claim dedupes retries. The original
+// invoice resolves via custom_id or the captured payment's provider ref
+// (resource.links carry the capture id in "up", but custom_id and the
+// capture reference cover the flows Quorum initiates).
+func (h *WebhooksHandler) handlePayPalRefund(r *http.Request, eventID string, raw json.RawMessage) error {
+	var resource struct {
+		ID     string `json:"id"`
+		Amount struct {
+			Value        string `json:"value"`
+			CurrencyCode string `json:"currency_code"`
+		} `json:"amount"`
+		CustomID string `json:"custom_id"`
+	}
+	if err := json.Unmarshal(raw, &resource); err != nil {
+		log.Printf("paypal: parse refund resource error: %v", err)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	currency := strings.ToUpper(resource.Amount.CurrencyCode)
+	amountMinor, err := model.ParseMoney(resource.Amount.Value, currency)
+	if err != nil || amountMinor <= 0 {
+		log.Printf("paypal: unparseable refund amount %q: %v", resource.Amount.Value, err)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	var invoiceID string
+	if strings.HasPrefix(resource.CustomID, "invoice:") {
+		if id := strings.TrimPrefix(resource.CustomID, "invoice:"); isValidUUID(id) {
+			invoiceID = id
+		}
+	}
+	if invoiceID == "" && resource.ID != "" {
+		id, err := h.dues.FindInvoiceByProviderRef(r.Context(), resource.ID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		invoiceID = id
+	}
+	if invoiceID == "" {
+		log.Printf("paypal: refund %s not linked to an invoice — record manually", eventID)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
+	status := "refunded"
+	pid := resource.ID
+	_, err = h.dues.RecordWebhookPayment(r.Context(), eventID, &model.Transaction{
+		InvoiceID:           &invoiceID,
+		AmountMinor:         -amountMinor, // negative → reversing entry
+		Currency:            currency,
+		Provider:            "paypal",
+		ProviderReferenceID: &pid,
+		ProviderStatus:      &status,
+		OccurredAt:          time.Now(),
+	})
+	if errors.Is(err, repo.ErrInvoiceNotPayable) {
+		log.Printf("paypal: refund for waived invoice %s needs manual reconciliation (ref %s)", invoiceID, pid)
+		return nil
+	}
+	return err
 }
 
 // handlePayPalCapture records a PayPal capture transaction. Like the Stripe

@@ -16,6 +16,10 @@ import (
 // voting is not open. The token is left unconsumed so the member can retry.
 var ErrMotionNotOpen = errors.New("motion is not open for voting")
 
+// ErrMotionDecided marks an attempt to close a motion that already reached a
+// terminal state.
+var ErrMotionDecided = errors.New("motion is already decided")
+
 // GovernanceRepo provides PostgreSQL data access for quorum settings, motions,
 // ballots, and meeting proxies.
 type GovernanceRepo struct {
@@ -437,14 +441,87 @@ func (r *GovernanceRepo) MotionStatus(ctx context.Context, id string) (status, m
 
 // CastVote records or replaces a member's ballot on a motion (one per member).
 func (r *GovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choice string, isProxy bool, castBy string) error {
-	_, err := r.db.Exec(ctx, `
+	// Status check and insert share a transaction, with a SHARE lock on the
+	// motion: many ballots may land concurrently, but none can commit while
+	// CloseAndDecide holds its exclusive lock — so a ballot is either fully
+	// counted in the closing tally or cleanly refused, never half-in.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var status string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM motions WHERE id = $1::uuid FOR SHARE`, motionID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "open" {
+		return ErrMotionNotOpen
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy, cast_by)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid)
 		ON CONFLICT (motion_id, member_id)
 		DO UPDATE SET choice = excluded.choice, is_proxy = excluded.is_proxy,
 		              cast_by = excluded.cast_by, cast_at = now()`,
-		motionID, memberID, choice, isProxy, castBy)
-	return err
+		motionID, memberID, choice, isProxy, castBy); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// CloseAndDecide atomically closes a motion. For "tabled"/"withdrawn" it just
+// flips the status (any non-terminal state). For carried/failed it takes the
+// motion's EXCLUSIVE lock — waiting out in-flight ballots and blocking new
+// ones — then tallies the now-frozen ballots and decides from THAT count, so
+// the recorded outcome can never disagree with the ballots table. Returns the
+// fresh motion and the final status.
+func (r *GovernanceRepo) CloseAndDecide(ctx context.Context, id, requested string) (*model.Motion, string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var status, threshold string
+	if err := tx.QueryRow(ctx,
+		`SELECT status, threshold FROM motions WHERE id = $1::uuid FOR UPDATE`, id).Scan(&status, &threshold); err != nil {
+		return nil, "", err
+	}
+	if status == "carried" || status == "failed" || status == "tabled" || status == "withdrawn" {
+		return nil, "", ErrMotionDecided
+	}
+	final := requested
+	if requested == "" || requested == "carried" || requested == "failed" {
+		if status != "open" {
+			return nil, "", ErrMotionNotOpen // a never-opened draft must not be recorded failed
+		}
+		var votesFor, against int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FILTER (WHERE choice = 'for'),
+			       count(*) FILTER (WHERE choice = 'against')
+			FROM motion_votes WHERE motion_id = $1::uuid`, id).Scan(&votesFor, &against); err != nil {
+			return nil, "", err
+		}
+		if ComputeMotionOutcome(threshold, votesFor, against) {
+			final = "carried"
+		} else {
+			final = "failed"
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE motions SET
+			status     = $1,
+			closed_at  = now(),
+			updated_at = now()
+		WHERE id = $2::uuid`, final, id); err != nil {
+		return nil, "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+	m, err := r.GetMotion(ctx, id)
+	return m, final, err
 }
 
 // MemberIsActive reports whether the member exists and has status 'active'.
@@ -624,18 +701,25 @@ func (r *GovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice 
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// Lock the motion (SHARE) via the token join FIRST, so this async ballot
+	// serializes against CloseAndDecide exactly like a live CastVote.
 	var memberID, status string
 	err = tx.QueryRow(ctx, `
-		UPDATE ballot_tokens t SET used = TRUE
-		FROM motions mo
-		WHERE t.token_hash = $1 AND t.used = FALSE AND t.expires_at > now() AND mo.id = t.motion_id
-		RETURNING t.motion_id::text, t.member_id::text, mo.status`, hash).
+		SELECT t.motion_id::text, t.member_id::text, mo.status
+		FROM ballot_tokens t
+		JOIN motions mo ON mo.id = t.motion_id
+		WHERE t.token_hash = $1 AND t.used = FALSE AND t.expires_at > now()
+		FOR UPDATE OF t FOR SHARE OF mo`, hash).
 		Scan(&motionID, &memberID, &status)
 	if err != nil {
 		return "", err // pgx.ErrNoRows when the token is invalid
 	}
 	if status != "open" {
 		return "", ErrMotionNotOpen // Rollback leaves the token unconsumed
+	}
+	if _, err = tx.Exec(ctx,
+		`UPDATE ballot_tokens SET used = TRUE WHERE token_hash = $1`, hash); err != nil {
+		return "", err
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy)
