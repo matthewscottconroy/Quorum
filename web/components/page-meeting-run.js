@@ -1,6 +1,6 @@
-import { api } from '../app.js';
+import { api, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, fmtDateTime } from '../utils.js';
+import { esc, fmtDateTime, guardButton } from '../utils.js';
 import './page-meetings.js';
 
 /**
@@ -67,21 +67,29 @@ class PageMeetingRun extends HTMLElement {
     // Call to order / Adjourn journal the moment with the wall-clock time,
     // and Adjourn flips the meeting to completed.
     const stamp = () => new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-    this.querySelector('#order-btn')?.addEventListener('click', async () => {
+    const orderBtn = this.querySelector('#order-btn');
+    orderBtn?.addEventListener('click', guardButton(orderBtn, async () => {
       try {
         await api('POST', `/meetings/${mt.id}/minutes`, { kind: 'call_to_order', body: `Meeting called to order at ${stamp()}.` });
         toast('Called to order', 'success');
         this.load();
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
-    });
-    this.querySelector('#adjourn-btn')?.addEventListener('click', async () => {
+    }));
+    const adjournBtn = this.querySelector('#adjourn-btn');
+    adjournBtn?.addEventListener('click', guardButton(adjournBtn, async () => {
+      // Two calls, deliberately ordered: if the journal line is refused
+      // (finalized minutes), still mark the meeting completed — the status
+      // is the part the run page can't otherwise reach.
+      let journaled = true;
       try {
         await api('POST', `/meetings/${mt.id}/minutes`, { kind: 'adjournment', body: `Meeting adjourned at ${stamp()}.` });
+      } catch { journaled = false; }
+      try {
         await api('PATCH', `/meetings/${mt.id}`, { status: 'completed' });
-        toast('Adjourned — meeting marked completed', 'success');
+        toast(journaled ? 'Adjourned — meeting marked completed' : 'Meeting marked completed (journal is finalized)', 'success');
         this.load();
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
-    });
+    }));
     // Editing details still happens in the familiar modal, layered on top.
     // The dialog's own close event replaces the old 800ms poll (which also
     // mistook ANY open dialog — like a finalize confirm — for the editor).

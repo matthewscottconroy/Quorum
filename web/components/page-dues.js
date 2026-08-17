@@ -197,6 +197,8 @@ class PageDues extends HTMLElement {
     } catch {
       if (seq !== this._seq) return;
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load dues.</p></div></td></tr>`;
+      const strip = this.querySelector('#summary-strip');
+      if (strip) strip.innerHTML = ''; // never answer "how much?" from the PREVIOUS filter over an error
       toast('Failed to load dues', 'error');
     }
   }
@@ -224,11 +226,19 @@ class PageDues extends HTMLElement {
       this._renderBulkBar();
     }));
     const selAll = this.querySelector('#sel-all');
-    if (selAll) selAll.addEventListener('change', () => {
-      this._invoices.forEach(i => selAll.checked ? this._selected.add(i.id) : this._selected.delete(i.id));
-      tbody.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = selAll.checked; });
-      this._renderBulkBar();
-    });
+    if (selAll && !selAll._wired) {
+      // The shell renders once but _wireRows runs every load: guard the
+      // listener or they stack (harmlessly, but N handlers per click).
+      selAll._wired = true;
+      selAll.addEventListener('change', () => {
+        this._invoices.forEach(i => selAll.checked ? this._selected.add(i.id) : this._selected.delete(i.id));
+        tbody.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = selAll.checked; });
+        this._renderBulkBar();
+      });
+    }
+    // Filter/page changes clear the selection; the header box must follow,
+    // or it sits checked over nothing and eats a dead first click.
+    if (selAll) selAll.checked = this._invoices.length > 0 && this._invoices.every(i => this._selected.has(i.id));
     this._renderBulkBar();
     tbody.querySelectorAll('.inv-row').forEach(row => {
       const open = e => {
@@ -631,7 +641,7 @@ class PageDues extends HTMLElement {
     const exp = moneyExponent(currency);
     const remainingStr = (remaining / 10 ** exp).toFixed(exp);
     const { dialog, close } = openModal({
-      title: `Record payment — ${esc(inv.member_name)}, ${esc(inv.period_label)}`,
+      title: `Record payment — ${inv.member_name}, ${inv.period_label}`, // openModal escapes titles itself
       maxWidth: '420px',
       body: `
         <div class="modal-body">

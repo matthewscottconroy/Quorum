@@ -28,7 +28,7 @@ export function confirm(message, title = 'Confirm') {
       maxWidth: '400px',
       body: `
         <div class="modal-body">
-          <p>${esc(message)}</p>
+          <p style="white-space:pre-line">${esc(message)}</p>
         </div>
         <div class="modal-footer">
           <button id="cancel-btn" class="btn-secondary">Cancel</button>

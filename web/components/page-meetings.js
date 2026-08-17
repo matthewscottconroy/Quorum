@@ -213,10 +213,16 @@ class PageMeetings extends HTMLElement {
             ${mt.location ? `<p style="margin:0 0 .6rem;color:var(--color-text-muted)">${esc(mt.location)}</p>` : ''}
             <div id="rsvp-section" style="margin:.6rem 0 .9rem"><span class="spinner"></span></div>
             ${mt.agenda ? `<h3 style="font-size:.9rem;margin:.6rem 0 .3rem">Agenda</h3><p style="white-space:pre-wrap;font-size:.88rem">${esc(mt.agenda)}</p>` : ''}
+            <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Motions &amp; voting</h3>
+            <div id="gov-section"><span class="spinner"></span></div>
             <div style="margin-top:.8rem"><button class="btn-secondary" id="ro-minutes" style="font-size:.8rem">Minutes (.md)</button></div>
           </div>`,
       });
       this.renderRSVP(dialog, id);
+      // Members vote HERE: the ballot-notification deep link lands on this
+      // view, and govMarkup's member mode renders exactly the self-vote
+      // buttons the old editor path used to provide.
+      this.renderGovernance(dialog, id);
       dialog.querySelector('#ro-minutes').addEventListener('click', () => {
         apiDownload(`/meetings/${id}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
       });
@@ -620,7 +626,10 @@ class PageMeetings extends HTMLElement {
         picker.recount();
         // The quorum meter is computed from attendance: refresh it NOW, not
         // when someone next touches a motion. During a live meeting this is
-        // the one number the chair has to trust.
+        // the one number the chair has to trust. (The gov-changed event only
+        // refreshes decisions/minutes panels; the meter needs the governance
+        // section's own reload, exposed on its host element.)
+        dialog.querySelector('#gov-section')?._reload?.();
         host.dispatchEvent(new CustomEvent('gov-changed', { bubbles: true }));
       } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
     }));
@@ -667,11 +676,16 @@ class PageMeetings extends HTMLElement {
         if (sel && resume.next && [...sel.options].some(o => o.value === resume.next)) {
           sel.value = resume.next;
         }
-        window.scrollTo(0, resume.scrollY);
+        // The editor scrolls inside the dialog, the run page scrolls the
+        // window — scrollIntoView is correct in both containers.
+        card?.scrollIntoView({ block: 'center' });
       }
     };
     // Attach the delegated click handler ONCE — reload() only swaps innerHTML,
-    // so re-wiring on every reload would stack duplicate listeners.
+    // so re-wiring on every reload would stack duplicate listeners. The
+    // reload also hangs off the host element so OTHER panels (attendance
+    // save → quorum meter) can refresh governance without re-wiring it.
+    host._reload = reload;
     this.wireGovernance(host, meetingId, () => reload());
     await reload();
   }
@@ -1197,7 +1211,7 @@ class PageMeetings extends HTMLElement {
           // Remember where we were and pre-select the NEXT member.
           const opts = [...sel.options].map(o => o.value);
           const next = opts[opts.indexOf(mem) + 1] ?? '';
-          this._recResume = { motionId, next, scrollY: window.scrollY };
+          this._recResume = { motionId, next };
         } else if (act === 'proxy') {
           const g = host.querySelector('#px-grantor').value, h = host.querySelector('#px-holder').value;
           if (!g || !h) { toast('Choose both members','error'); return; }

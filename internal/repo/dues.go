@@ -433,7 +433,10 @@ func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([
 	}
 
 	limit := f.Limit
-	if limit <= 0 || limit > 200 {
+	// 500 is the ceiling, not 200: GetInvoice asks for 500 so the detail
+	// modal's remaining-balance math sees EVERY transaction — a silent clamp
+	// to 100 overstated the prefill on transaction-heavy invoices.
+	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 
