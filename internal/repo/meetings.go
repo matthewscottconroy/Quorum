@@ -25,6 +25,8 @@ func NewMeetingsRepo(db *pgxpool.Pool) *MeetingsRepo {
 
 // MeetingFilter holds the optional query parameters for listing meetings.
 type MeetingFilter struct {
+	// Query filters by title substring, case-insensitive.
+	Query    string
 	Upcoming bool
 	// From/To bound scheduled_at (inclusive start, exclusive end) — the
 	// calendar fetches one visible month at a time with these.
@@ -40,6 +42,10 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	var args []any
 	if f.Upcoming {
 		conds = append(conds, "m.scheduled_at >= now() - interval '1 hour'")
+	}
+	if f.Query != "" {
+		args = append(args, "%"+f.Query+"%")
+		conds = append(conds, fmt.Sprintf("m.title ILIKE $%d", len(args)))
 	}
 	if f.From != nil {
 		args = append(args, *f.From)
@@ -551,6 +557,30 @@ func (r *MeetingsRepo) ListCorrections(ctx context.Context, meetingID string) ([
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RSVPNames returns who answered what — the secretary planning quorum and
+// food needs names, not just counts.
+func (r *MeetingsRepo) RSVPNames(ctx context.Context, meetingID string) (map[string][]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT rv.response, m.display_name
+		FROM meeting_rsvps rv
+		JOIN members m ON m.id = rv.member_id
+		WHERE rv.meeting_id = $1::uuid
+		ORDER BY m.display_name`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var resp, name string
+		if err := rows.Scan(&resp, &name); err != nil {
+			return nil, err
+		}
+		out[resp] = append(out[resp], name)
 	}
 	return out, rows.Err()
 }

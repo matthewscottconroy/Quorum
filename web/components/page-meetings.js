@@ -1,6 +1,6 @@
 import { api, apiDownload, canWrite, isAuthenticated, isSuperadmin, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete, renderPager } from '../utils.js';
+import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete, renderPager, loadFilters, saveFilters } from '../utils.js';
 
 /** Meetings per page: the list used to stop silently at the newest 100. */
 const MEETING_PAGE = 50;
@@ -22,7 +22,14 @@ function intOrNull(v) {
 }
 
 class PageMeetings extends HTMLElement {
-  constructor() { super(); this._meetings = []; this._upcoming = false; this._seq = 0; }
+  constructor() {
+    super();
+    this._meetings = [];
+    const saved = loadFilters('meetings') ?? {};
+    this._upcoming = !!saved.upcoming;
+    this._q = saved.q ?? '';
+    this._seq = 0;
+  }
 
   connectedCallback() {
     this.render();
@@ -42,6 +49,7 @@ class PageMeetings extends HTMLElement {
         ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Schedule meeting</button>' : ''}
       </div>
       <div class="search-bar">
+        <input id="mt-search" placeholder="Search by title…" value="${esc(this._q)}" style="max-width:260px" aria-label="Search meetings by title">
         <label style="flex-direction:row;align-items:center;gap:.4rem;text-transform:none;letter-spacing:0;font-weight:400" for="upcoming-chk">
           <input type="checkbox" id="upcoming-chk" ${this._upcoming?'checked':''}> Upcoming only
         </label>
@@ -50,7 +58,8 @@ class PageMeetings extends HTMLElement {
       <div id="meeting-pager"></div>
     `;
 
-    this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this._offset = 0; this.load(); });
+    this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this._offset = 0; saveFilters('meetings', { upcoming: this._upcoming, q: this._q }); this.load(); });
+    this.querySelector('#mt-search')?.addEventListener('change', e => { this._q = e.target.value.trim(); this._offset = 0; saveFilters('meetings', { upcoming: this._upcoming, q: this._q }); this.load(); });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
   }
 
@@ -58,7 +67,7 @@ class PageMeetings extends HTMLElement {
     const seq = ++this._seq;
     const list = this.querySelector('#meeting-list');
     list.innerHTML = '<div style="text-align:center;padding:1rem"><span class="spinner"></span></div>';
-    const params = `?limit=${MEETING_PAGE}&offset=${this._offset ?? 0}` + (this._upcoming ? '&upcoming=true' : '');
+    const params = `?limit=${MEETING_PAGE}&offset=${this._offset ?? 0}` + (this._upcoming ? '&upcoming=true' : '') + (this._q ? `&q=${encodeURIComponent(this._q)}` : '');
     try {
       const _mtPage = await api('GET', '/meetings' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
@@ -86,7 +95,7 @@ class PageMeetings extends HTMLElement {
             </div>
             <span class="badge badge-${esc(m.status)}">${esc(m.status)}</span>
             <button class="btn-secondary run-btn" data-id="${esc(m.id)}" style="font-size:.78rem" title="Full-screen view for running the meeting live: motions, minutes, attendance">▶ Run</button>
-            ${isSuperadmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" style="color:var(--color-danger)">Del</button>` : ''}
+            ${isSuperadmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" style="color:var(--color-danger)">Delete</button>` : ''}
           </div>`).join('')
       : '<div class="empty-state"><p>No meetings found.</p></div>';
 
@@ -190,6 +199,30 @@ class PageMeetings extends HTMLElement {
     try { mt = await api('GET', `/meetings/${id}`); }
     catch { toast('Load failed','error'); return; }
 
+    // Members don't edit meetings: give them a reading view with THEIR
+    // action (RSVP) first, instead of the officer's two-pane form with
+    // editable-looking inputs that silently go nowhere.
+    if (!canWrite()) {
+      const { dialog } = openModal({
+        title: mt.title,
+        maxWidth: '560px',
+        body: `
+          <div class="modal-body">
+            <p style="margin:0 0 .3rem"><strong>${esc(fmtDateTime(mt.scheduled_at))}</strong>${mt.ends_at ? ' – ' + esc(new Date(mt.ends_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })) : ''}
+              <span class="badge badge-${esc(mt.status)}" style="margin-left:.4rem">${esc(mt.status)}</span></p>
+            ${mt.location ? `<p style="margin:0 0 .6rem;color:var(--color-text-muted)">${esc(mt.location)}</p>` : ''}
+            <div id="rsvp-section" style="margin:.6rem 0 .9rem"><span class="spinner"></span></div>
+            ${mt.agenda ? `<h3 style="font-size:.9rem;margin:.6rem 0 .3rem">Agenda</h3><p style="white-space:pre-wrap;font-size:.88rem">${esc(mt.agenda)}</p>` : ''}
+            <div style="margin-top:.8rem"><button class="btn-secondary" id="ro-minutes" style="font-size:.8rem">Minutes (.md)</button></div>
+          </div>`,
+      });
+      this.renderRSVP(dialog, id);
+      dialog.querySelector('#ro-minutes').addEventListener('click', () => {
+        apiDownload(`/meetings/${id}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
+      });
+      return { dialog };
+    }
+
     const dirty = () => {
       const v = id2 => dialog?.querySelector('#' + id2)?.value ?? '';
       return v('f-title') !== mt.title
@@ -211,7 +244,7 @@ class PageMeetings extends HTMLElement {
       maxWidth: '880px',
       confirmDiscard: () => dirty(),
       body: `
-        <div class="modal-body" style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem">
+        <div class="modal-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:1.25rem">
           <div>
             ${frozen ? '<p style="font-size:.78rem;color:var(--color-text-muted);margin:0 0 .5rem">🔒 Minutes are finalized — the header fields are frozen into the official record. Use a correction for errata.</p>' : ''}
             <div class="form-group"><label for="f-title">Title</label><input id="f-title" value="${esc(mt.title)}" ${dis}></div>
@@ -312,6 +345,7 @@ class PageMeetings extends HTMLElement {
       this.renderMinutes(dialog, id, mt);
     });
 
+
     // Reload the list whenever the editor closes (close button, Cancel, or Escape),
     // but only while still mounted and authenticated so a logout-triggered close
     // (openModal force-closes on auth-changed) doesn't fire a stray authed fetch.
@@ -327,7 +361,11 @@ class PageMeetings extends HTMLElement {
     dialog.querySelector('#run-page-btn').addEventListener('click', () => {
       if (guardedClose()) location.hash = `#/meeting-run?id=${id}`;
     });
+    this._lastEditorDialog = dialog;
 
+    dialog.querySelector('#new-decision')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); dialog.querySelector('#add-decision-btn')?.click(); }
+    });
     dialog.querySelector('#add-decision-btn')?.addEventListener('click', async () => {
       const summary = dialog.querySelector('#new-decision').value.trim();
       if (!summary) { toast('Summary required','error'); return; }
@@ -384,6 +422,7 @@ class PageMeetings extends HTMLElement {
         toast('Saved','success');
       } catch { toast('Save failed','error'); }
     }));
+    return { dialog };
   }
 
   // ─── Attendance roster ─────────────────────────────────────────────────────
@@ -519,9 +558,21 @@ class PageMeetings extends HTMLElement {
         style="font-size:.8rem;${s.mine === val ? 'background:var(--color-primary);color:#fff' : ''}" ${canRespond ? '' : 'disabled'}>${label}</button>`;
     host.innerHTML = `
       <div style="font-size:.82rem;color:var(--color-text-muted);margin-bottom:.4rem">
-        Going: <strong>${s.yes}</strong> · Maybe: <strong>${s.maybe}</strong> · No: <strong>${s.no}</strong></div>
+        Going: <strong>${s.yes}</strong> · Maybe: <strong>${s.maybe}</strong> · No: <strong>${s.no}</strong>
+        ${canWrite() && (s.yes + s.maybe + s.no) > 0 ? '<button class="btn-ghost" id="rsvp-who" style="font-size:.72rem;margin-left:.4rem">who?</button>' : ''}</div>
+      <div id="rsvp-names" style="display:none;font-size:.78rem;color:var(--color-text-muted);margin-bottom:.4rem"></div>
       <div style="display:flex;gap:.35rem">${btn('yes', 'Going')}${btn('maybe', 'Maybe')}${btn('no', "Can't")}</div>
       ${canRespond ? '' : '<div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.3rem">Link your login to a member record to RSVP.</div>'}`;
+    host.querySelector('#rsvp-who')?.addEventListener('click', async () => {
+      const box = host.querySelector('#rsvp-names');
+      if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+      try {
+        const names = await api('GET', `/meetings/${meetingId}/rsvp/names`);
+        const line = (label, arr) => arr?.length ? `<div><strong>${label}:</strong> ${arr.map(esc).join(', ')}</div>` : '';
+        box.innerHTML = line('Going', names.yes) + line('Maybe', names.maybe) + line("Can't", names.no) || 'No responses yet.';
+        box.style.display = '';
+      } catch { toast('Could not load names', 'error'); }
+    });
     host.querySelectorAll('.rsvp-btn').forEach(b => b.addEventListener('click', async () => {
       try {
         await api('PUT', `/meetings/${meetingId}/rsvp`, { response: b.dataset.r });
@@ -567,6 +618,10 @@ class PageMeetings extends HTMLElement {
         saved.forEach(a => attending.set(a.member_id, a.present));
         toast('Attendance saved', 'success');
         picker.recount();
+        // The quorum meter is computed from attendance: refresh it NOW, not
+        // when someone next touches a motion. During a live meeting this is
+        // the one number the chair has to trust.
+        host.dispatchEvent(new CustomEvent('gov-changed', { bubbles: true }));
       } catch (err) { toast(err.error ?? 'Save failed', 'error'); }
     }));
   }
@@ -602,6 +657,18 @@ class PageMeetings extends HTMLElement {
       }
       if (!dialog.isConnected) return;
       host.innerHTML = this.govMarkup(quorum, motions, proxies, members, plans, officer, myMember);
+      // Resuming a roll call: restore scroll and advance the ballot select
+      // to the next member so the officer can keep calling the room.
+      const resume = this._recResume;
+      this._recResume = null;
+      if (resume) {
+        const card = host.querySelector(`.motion-card[data-id="${resume.motionId}"]`);
+        const sel = card?.querySelector('.rec-sel');
+        if (sel && resume.next && [...sel.options].some(o => o.value === resume.next)) {
+          sel.value = resume.next;
+        }
+        window.scrollTo(0, resume.scrollY);
+      }
     };
     // Attach the delegated click handler ONCE — reload() only swaps innerHTML,
     // so re-wiring on every reload would stack duplicate listeners.
@@ -930,7 +997,7 @@ class PageMeetings extends HTMLElement {
             </select>
             <select id="min-motion" style="flex:1;min-width:160px;padding:.3rem .4rem;font-size:.85rem">${motionOpts}</select>
           </div>
-          <div class="form-group"><textarea id="min-body" rows="2" placeholder="What happened? e.g. “Meeting called to order at 6:03 PM by Chair Alvarez.”"></textarea></div>
+          <div class="form-group"><textarea id="min-body" rows="2" placeholder="What happened? e.g. “Meeting called to order at 6:03 PM by Chair Alvarez.”  (Ctrl+Enter records)"></textarea></div>
           <button class="btn-secondary" id="min-add" style="width:100%">+ Record entry</button>
         </div>` : ''}
       ${finalized ? '<div id="min-errata" style="margin-top:.6rem"></div>' : ''}
@@ -971,6 +1038,14 @@ class PageMeetings extends HTMLElement {
     });
     host.querySelector('#min-export').addEventListener('click', () => {
       apiDownload(`/meetings/${meetingId}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
+    });
+    // A secretary typing at meeting speed lives on the keyboard: Ctrl/Cmd+
+    // Enter records without a trip to the mouse.
+    host.querySelector('#min-body')?.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        host.querySelector('#min-add')?.click();
+      }
     });
     host.querySelector('#min-add')?.addEventListener('click', async () => {
       const body = host.querySelector('#min-body').value.trim();
@@ -1036,8 +1111,11 @@ class PageMeetings extends HTMLElement {
     });
     host.querySelector('#min-finalize')?.addEventListener('click', () => {
       confirmDelete({
-        noun: 'minutes (finalize — this is permanent)',
+        noun: 'minutes',
         name: mt.title,
+        title: 'Finalize minutes',
+        message: 'Finalizing <strong>preserves</strong> this meeting\'s minutes as the permanent official record: the journal, attendance, and decisions lock, and later changes are only possible as append-only corrections. This cannot be undone.',
+        verb: 'Finalize',
         onConfirm: async (confirmVal) => {
           try {
             await api('POST', `/meetings/${meetingId}/minutes/finalize?confirm=${encodeURIComponent(confirmVal)}`);
@@ -1107,11 +1185,19 @@ class PageMeetings extends HTMLElement {
           await api('POST', `/motions/${motionId}/vote`, { choice: btn.dataset.choice });
           toast('Your vote is recorded','success');
         } else if (act === 'record') {
-          const mem = card.querySelector('.rec-sel').value;
+          const sel = card.querySelector('.rec-sel');
+          const mem = sel.value;
           if (!mem) { toast('Choose a member','error'); return; }
           const isProxy = card.querySelector('.rec-proxy').checked;
           await api('POST', `/motions/${motionId}/votes`, { member_id: mem, choice: btn.dataset.choice, is_proxy: isProxy });
           toast('Ballot recorded','success');
+          // Roll-call ergonomics: the reload re-renders this whole section,
+          // which used to blank the member select and drop scroll — twenty
+          // voice votes meant twenty fights with a 500-entry dropdown.
+          // Remember where we were and pre-select the NEXT member.
+          const opts = [...sel.options].map(o => o.value);
+          const next = opts[opts.indexOf(mem) + 1] ?? '';
+          this._recResume = { motionId, next, scrollY: window.scrollY };
         } else if (act === 'proxy') {
           const g = host.querySelector('#px-grantor').value, h = host.querySelector('#px-holder').value;
           if (!g || !h) { toast('Choose both members','error'); return; }

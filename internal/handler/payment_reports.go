@@ -84,6 +84,17 @@ func (h *PaymentReportsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, rep)
 }
 
+// PendingCountHandler returns just the queue depth — the dashboard's
+// "members say they paid, nobody has looked" number.
+func (h *PaymentReportsHandler) PendingCountHandler(w http.ResponseWriter, r *http.Request) {
+	n, err := h.repo.PendingCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"count": n})
+}
+
 // ListPending returns the officer confirmation queue.
 func (h *PaymentReportsHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 	list, err := h.repo.ListPending(r.Context(), clampLimit(r.URL.Query().Get("limit"), 100))

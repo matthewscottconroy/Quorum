@@ -35,14 +35,18 @@ class PageMeetingRun extends HTMLElement {
             <span class="badge badge-${esc(mt.status)}" style="margin-left:.4rem">${esc(mt.status)}</span>
           </div>
         </div>
-        <button class="btn-secondary" id="edit-btn" style="margin-left:auto">Edit details</button>
+        <div style="margin-left:auto;display:flex;gap:.5rem;flex-wrap:wrap">
+          ${canWrite() && mt.status === 'scheduled' ? '<button class="btn-primary" id="order-btn" title="Journals “called to order” with the current time">▶ Call to order</button>' : ''}
+          ${canWrite() && mt.status !== 'completed' && mt.status !== 'cancelled' ? '<button class="btn-secondary" id="adjourn-btn" title="Journals the adjournment and marks the meeting completed">■ Adjourn</button>' : ''}
+          <button class="btn-secondary" id="edit-btn">Edit details</button>
+        </div>
       </div>
       ${mt.agenda ? `
       <details style="margin-bottom:1rem">
         <summary style="cursor:pointer;font-size:.85rem;font-weight:600">Agenda</summary>
         <p style="white-space:pre-wrap;font-size:.85rem;color:var(--color-text-muted);margin-top:.4rem">${esc(mt.agenda)}</p>
       </details>` : ''}
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:1.25rem;align-items:start">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:1.25rem;align-items:start">
         <div style="display:flex;flex-direction:column;gap:1.25rem">
           <div class="card" style="padding:1rem 1.25rem"><div id="gov-section"><span class="spinner"></span></div></div>
           <div class="card" style="padding:1rem 1.25rem">
@@ -59,14 +63,35 @@ class PageMeetingRun extends HTMLElement {
         </div>
       </div>`;
 
-    // Editing details still happens in the familiar modal, layered on top;
-    // when it closes, re-render so title/time/status edits show here too.
-    this.querySelector('#edit-btn').addEventListener('click', () => {
-      this._pm.openEditor(mt.id);
-      const watch = setInterval(() => {
-        if (!this.isConnected) { clearInterval(watch); return; }
-        if (!document.querySelector('dialog[open]')) { clearInterval(watch); this.load(); }
-      }, 800);
+    // The last act of every meeting shouldn't cost a modal round-trip:
+    // Call to order / Adjourn journal the moment with the wall-clock time,
+    // and Adjourn flips the meeting to completed.
+    const stamp = () => new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    this.querySelector('#order-btn')?.addEventListener('click', async () => {
+      try {
+        await api('POST', `/meetings/${mt.id}/minutes`, { kind: 'call_to_order', body: `Meeting called to order at ${stamp()}.` });
+        toast('Called to order', 'success');
+        this.load();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    });
+    this.querySelector('#adjourn-btn')?.addEventListener('click', async () => {
+      try {
+        await api('POST', `/meetings/${mt.id}/minutes`, { kind: 'adjournment', body: `Meeting adjourned at ${stamp()}.` });
+        await api('PATCH', `/meetings/${mt.id}`, { status: 'completed' });
+        toast('Adjourned — meeting marked completed', 'success');
+        this.load();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    });
+    // Editing details still happens in the familiar modal, layered on top.
+    // The dialog's own close event replaces the old 800ms poll (which also
+    // mistook ANY open dialog — like a finalize confirm — for the editor).
+    this.querySelector('#edit-btn').addEventListener('click', async () => {
+      const ed = await this._pm.openEditor(mt.id);
+      if (ed?.dialog) {
+        ed.dialog.addEventListener('close', () => { if (this.isConnected) this.load(); }, { once: true });
+      } else if (this.isConnected) {
+        this.load();
+      }
     });
 
     const renderDecisions = async () => {

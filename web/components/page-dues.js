@@ -21,6 +21,14 @@ class PageDues extends HTMLElement {
   _persist() { saveFilters('dues', { status: this._status, period: this._period }); }
 
   connectedCallback() {
+    // Deep links (the dashboard's stat cards) override the saved filter:
+    // #/dues?status=overdue must land showing overdue, not last visit's view.
+    const qs = new URLSearchParams((location.hash.split('?')[1] ?? ''));
+    const st = qs.get('status');
+    if (st !== null && STATUSES.includes(st)) {
+      this._status = st;
+      this._persist();
+    }
     this.render();
     this.load();
   }
@@ -41,24 +49,27 @@ class PageDues extends HTMLElement {
       </div>
       <money-nav current="dues"></money-nav>
       <div class="search-bar">
-        <select id="status-sel" style="max-width:160px">
+        <select id="status-sel" style="max-width:160px" aria-label="Filter by status">
           ${STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s||'All statuses'}</option>`).join('')}
         </select>
         <input id="period-inp" placeholder="Period label (e.g. Annual 2026)" value="${esc(this._period)}" style="max-width:260px">
         <button class="btn-secondary" id="refresh-btn">Refresh</button>
       </div>
+      <div id="summary-strip" style="font-size:.85rem;color:var(--color-text-muted);padding:.15rem .2rem .5rem"></div>
       <div id="bulk-bar"></div>
-      <div class="card" style="overflow-x:auto">
+      <div class="card table-scroll">
         <table>
-          <thead><tr>${canWrite()?'<th style="width:1.5rem"><input type="checkbox" id="sel-all" aria-label="Select all" style="width:auto"></th>':''}<th>Member</th><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th>${canWrite()?'<th></th>':''}</tr></thead>
+          <thead><tr>${canWrite()?'<th style="width:1.5rem"><input type="checkbox" id="sel-all" aria-label="Select all" style="width:auto"></th>':''}<th>Member</th><th>Period</th><th class="num">Amount</th><th>Due date</th><th>Status</th>${canWrite()?'<th></th>':''}</tr></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
       <div id="pager"></div>
     `;
 
-    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this._persist(); this.load(); });
-    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this._persist(); this.load(); });
+    // A new filter or page is a NEW working set: carrying hidden checkmarks
+    // across it turns "Waive selected" into a shotgun.
+    this.querySelector('#status-sel')?.addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this._selected.clear(); this._persist(); this.load(); });
+    this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this._selected.clear(); this._persist(); this.load(); });
     this.querySelector('#refresh-btn')?.addEventListener('click', () => this.load());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
     this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
@@ -176,7 +187,13 @@ class PageDues extends HTMLElement {
       tbody.innerHTML = this._rows()
         || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No invoices found.</p></div></td></tr>`;
       this._wireRows(tbody);
-      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this.load(); } });
+      renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this._selected.clear(); this.load(); } });
+      const strip = this.querySelector('#summary-strip');
+      if (strip) {
+        const parts = (_dPage?.summary ?? [])
+          .map(s => `${s.count} invoice${s.count === 1 ? '' : 's'} · <strong style="color:var(--color-text)">${formatMoney(s.outstanding_minor, s.currency)} ${esc(s.currency)}</strong> outstanding`);
+        strip.innerHTML = parts.length ? parts.join(' &nbsp;·&nbsp; ') : '';
+      }
     } catch {
       if (seq !== this._seq) return;
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load dues.</p></div></td></tr>`;
@@ -187,11 +204,11 @@ class PageDues extends HTMLElement {
   _rows() {
     if (!this._invoices?.length) return '';
     return this._invoices.map(inv => `
-      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0">
+      <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0" role="button" aria-label="Open invoice ${esc(inv.member_name)} ${esc(inv.period_label)}">
         ${canWrite() ? `<td><input type="checkbox" class="sel-cb" value="${esc(inv.id)}" ${this._selected.has(inv.id) ? 'checked' : ''} style="width:auto" aria-label="Select invoice"></td>` : ''}
         <td>${esc(inv.member_name)}</td>
         <td>${esc(inv.period_label)}</td>
-        <td>${formatMoney(inv.amount_minor, inv.currency)}</td>
+        <td class="num">${formatMoney(inv.amount_minor, inv.currency)}</td>
         <td>${fmtDate(inv.due_date)}</td>
         <td><span class="badge badge-${esc(inv.status)}">${esc(inv.status)}</span></td>
         ${canWrite() ? `<td>
@@ -256,13 +273,13 @@ class PageDues extends HTMLElement {
           <h3 style="margin-top:1.25rem;margin-bottom:.5rem">Transactions</h3>
           ${!inv.transactions?.length ? '<p style="color:var(--color-text-muted)">No transactions recorded.</p>'
             : `<table>
-                <thead><tr><th>Date</th><th>Provider</th><th>Method</th><th>Amount</th><th>Status</th></tr></thead>
+                <thead><tr><th>Date</th><th>Provider</th><th>Method</th><th class="num">Amount</th><th>Status</th></tr></thead>
                 <tbody>
                   ${inv.transactions.map(t => `<tr>
                     <td>${fmtDate(t.occurred_at)}</td>
                     <td>${esc(t.provider)}</td>
                     <td>${esc(t.payment_method_type ?? '—')}</td>
-                    <td>${formatMoney(t.amount_minor, inv.currency)}</td>
+                    <td class="num">${formatMoney(t.amount_minor, inv.currency)}</td>
                     <td>${esc(t.provider_status ?? '—')}</td>
                   </tr>`).join('')}
                 </tbody>
@@ -273,7 +290,9 @@ class PageDues extends HTMLElement {
         </div>
         <div class="modal-footer">
           ${canWrite() && inv.status !== 'waived' ? `<button class="btn-secondary" id="refund-btn">Record refund</button>` : ''}
+          ${canWrite() && inv.status !== 'waived' && inv.status !== 'paid' ? `<button class="btn-secondary" id="waive-btn2">Waive</button>` : ''}
           <button class="btn-secondary" id="close-btn2">Close</button>
+          ${canWrite() && inv.status !== 'waived' ? `<button class="btn-primary" id="pay-btn2">Record payment</button>` : ''}
         </div>
       `,
     });
@@ -281,6 +300,21 @@ class PageDues extends HTMLElement {
     dialog.querySelector('#refund-btn')?.addEventListener('click', () => {
       close();
       this.openRefundModal(inv);
+    });
+    // The treasurer's daily loop is review-then-record: the primary action
+    // belongs where the review happens, not back in the list's row buttons.
+    dialog.querySelector('#pay-btn2')?.addEventListener('click', () => {
+      close();
+      this.openTransactionModal(inv.id);
+    });
+    dialog.querySelector('#waive-btn2')?.addEventListener('click', async () => {
+      if (!await confirm('Waive this invoice? The remaining balance is written off in the ledger.', 'Waive invoice')) return;
+      try {
+        await api('PATCH', `/dues/${inv.id}`, { status: 'waived' });
+        toast('Invoice waived', 'success');
+        close();
+        this.load();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
     });
     if (canWrite()) this._loadInstallments(dialog, inv);
   }
@@ -380,11 +414,16 @@ class PageDues extends HTMLElement {
       }
       try {
         const res = await api('PUT', `/dues/${inv.id}/installments`, { installments });
+        // ONE message, not a success and an error stacked on top of each
+        // other: either the plan sums to the invoice, or the single toast
+        // says exactly how far off it is.
         if (res?.delta_minor) {
           const d = res.delta_minor;
           toast(`Plan saved, but it ${d > 0 ? 'EXCEEDS' : 'falls short of'} the invoice by ${formatMoney(Math.abs(d), inv.currency)}`, 'error');
+        } else {
+          toast('Payment plan saved', 'success');
         }
-        toast('Payment plan saved', 'success'); close();
+        close();
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
     }));
   }
@@ -403,6 +442,8 @@ class PageDues extends HTMLElement {
         <button class="btn-ghost" id="bulk-clear" style="margin-left:auto">Clear</button>
       </div>`;
     const apply = async status => {
+      const verb = status === 'waived' ? 'Waive' : 'Re-open';
+      if (!await confirm(`${verb} ${n} invoice${n === 1 ? '' : 's'}? ${status === 'waived' ? 'Waiving writes off the remaining balance in the ledger.' : 'Recorded payments still decide paid/partial.'}`, `${verb} ${n} invoice${n === 1 ? '' : 's'}`)) return;
       try {
         const res = await api('POST', '/dues/batch', { ids: [...this._selected], status });
         toast(`Updated ${res.updated} invoice${res.updated === 1 ? '' : 's'}`, 'success');
@@ -575,20 +616,32 @@ class PageDues extends HTMLElement {
     }));
   }
 
-  openTransactionModal(invoiceID) {
-    // The transaction inherits the invoice's currency; look it up from the
-    // loaded list so we can convert the typed decimal to minor units.
-    const currency = (this._invoices.find(i => String(i.id) === String(invoiceID))?.currency || 'USD')
-      .trim().toUpperCase();
+  async openTransactionModal(invoiceID) {
+    // Fetch the invoice so the modal can say WHO and HOW MUCH IS LEFT —
+    // the treasurer was typing amounts from memory into a context-free box
+    // while the server (which rejects overpayments) knew the number all along.
+    let inv;
+    try { inv = await api('GET', `/dues/${invoiceID}`); }
+    catch { toast('Could not load the invoice', 'error'); return; }
+    const currency = (inv.currency || 'USD').trim().toUpperCase();
+    const paid = (inv.transactions ?? [])
+      .filter(t => t.provider_status !== 'failed' && (t.currency ?? currency) === currency)
+      .reduce((s, t) => s + t.amount_minor, 0);
+    const remaining = Math.max(inv.amount_minor - paid, 0);
+    const exp = moneyExponent(currency);
+    const remainingStr = (remaining / 10 ** exp).toFixed(exp);
     const { dialog, close } = openModal({
-      title: 'Record payment',
+      title: `Record payment — ${esc(inv.member_name)}, ${esc(inv.period_label)}`,
       maxWidth: '420px',
       body: `
         <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-bottom:.6rem">
+            Invoice ${formatMoney(inv.amount_minor, currency)} ${esc(currency)} ·
+            <strong style="color:var(--color-text)">Remaining ${formatMoney(remaining, currency)}</strong></p>
           <div class="form-row">
             <div class="form-group">
-              <label for="f-amount">Amount (e.g. 100.00) *</label>
-              <input id="f-amount" type="text" inputmode="decimal" pattern="[0-9]*[.]?[0-9]*" placeholder="100.00">
+              <label for="f-amount">Amount *</label>
+              <input id="f-amount" type="text" inputmode="decimal" pattern="[0-9]*[.]?[0-9]*" value="${remaining > 0 ? esc(remainingStr) : ''}" placeholder="${esc(remainingStr)}">
             </div>
             <div class="form-group">
               <label for="f-provider">Provider</label>

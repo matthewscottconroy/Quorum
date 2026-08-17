@@ -8,6 +8,7 @@ class PageDashboard extends HTMLElement {
     try {
       const data = await api('GET', '/dashboard');
       this.render(data);
+      this.loadPendingReports();
       this.wire();
       this.renderSetupChecklist();
       this.renderActivity();
@@ -82,6 +83,20 @@ class PageDashboard extends HTMLElement {
       </section>`;
   }
 
+  /** The "members say they paid, nobody has looked" number: hidden at zero,
+      loud when a report is waiting. */
+  async loadPendingReports() {
+    const card = this.querySelector('#pr-pending-card');
+    if (!card) return;
+    try {
+      const res = await api('GET', '/payment-reports/pending-count');
+      if ((res?.count ?? 0) > 0) {
+        card.style.display = '';
+        card.querySelector('#pr-pending-n').textContent = res.count;
+      }
+    } catch { /* the card just stays hidden */ }
+  }
+
   // Wire the superadmin-only action-item delete controls (type-to-confirm).
   wire() {
     this.querySelectorAll('.del-ai').forEach(btn => {
@@ -113,11 +128,11 @@ class PageDashboard extends HTMLElement {
       <div class="stat-row">
         <div class="stat-card card">
           <div class="stat-value ${d.overdue_dues_count > 0 ? 'danger' : ''}">${d.overdue_dues_count}</div>
-          <div class="stat-label">Overdue invoices</div>
+          <div class="stat-label"><a href="#/dues?status=overdue" style="color:inherit">Overdue invoices</a></div>
         </div>
         <div class="stat-card card">
           <div class="stat-value">${d.pending_dues_count}</div>
-          <div class="stat-label">Pending invoices</div>
+          <div class="stat-label"><a href="#/dues?status=pending" style="color:inherit">Pending invoices</a></div>
         </div>
         <div class="stat-card card">
           <div class="stat-value">${d.active_member_count}</div>
@@ -135,6 +150,10 @@ class PageDashboard extends HTMLElement {
           <div class="stat-value ${d.open_bills_count > 0 ? 'danger' : ''}">${d.open_bills_count ?? 0}</div>
           <div class="stat-label"><a href="#/payables" style="color:inherit">Open bills</a></div>
         </div>` : ''}
+        ${canWrite() ? `<div class="stat-card card" id="pr-pending-card" style="display:none">
+          <div class="stat-value danger" id="pr-pending-n">0</div>
+          <div class="stat-label"><a href="#/payment-reports" style="color:inherit">Payments to confirm</a></div>
+        </div>` : ''}
       </div>
 
       <div class="dash-grid">
@@ -147,7 +166,7 @@ class PageDashboard extends HTMLElement {
                 <tbody>
                   ${d.upcoming_meetings.map(m => `
                     <tr>
-                      <td><a href="#/meetings">${esc(m.title)}</a></td>
+                      <td><a href="#/meetings?open=${esc(m.id)}">${esc(m.title)}</a></td>
                       <td>${fmtDate(m.scheduled_at, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
                       <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
                     </tr>`).join('')}

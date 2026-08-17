@@ -54,6 +54,7 @@ type membersRepo interface {
 // duesRepo is satisfied by *repo.DuesRepo.
 type duesRepo interface {
 	ListInvoices(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
+	SummarizeInvoices(ctx context.Context, f repo.InvoiceFilter) ([]repo.InvoiceSummary, error)
 	GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error)
 	CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
 	UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error
@@ -93,6 +94,7 @@ type meetingsRepo interface {
 	DeleteDecision(ctx context.Context, meetingID, id string) error
 	SetMinutesSnapshot(ctx context.Context, meetingID, doc string) error
 	GetMinutesSnapshot(ctx context.Context, meetingID string) (string, error)
+	RSVPNames(ctx context.Context, meetingID string) (map[string][]string, error)
 	AddCorrection(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error)
 	ListCorrections(ctx context.Context, meetingID string) ([]model.MeetingCorrection, error)
 	Upcoming(ctx context.Context, n int) ([]model.Meeting, error)

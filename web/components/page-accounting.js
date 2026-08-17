@@ -1,6 +1,7 @@
 import { api, apiDownload, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, formatMoney, openModal, guardButton } from '../utils.js';
+import { confirm } from './confirm-dialog.js';
+import { esc, formatMoney, openModal, guardButton , parseMoney } from '../utils.js';
 
 /** Fiscal-year default range from the org setting (labels/defaults only). */
 function fiscalRange(startMonth) {
@@ -56,6 +57,8 @@ class PageAccounting extends HTMLElement {
         api('GET', '/accounting/accounts'),
         api('GET', '/accounting/posting-rules').catch(() => []),
       ]);
+      // The close-month pre-flight reads this verdict later, from wire().
+      this._reconciled = tb?.reconciled ?? null;
       this._accounts = accounts ?? [];
       const money = (b) => `${formatMoney(Math.abs(b.balance), b.currency)} ${esc(b.currency)}`;
       const rows = (list, flip) => (list ?? []).map(b => `
@@ -155,6 +158,19 @@ class PageAccounting extends HTMLElement {
     this.querySelector('#pd-close')?.addEventListener('click', async () => {
       const m = this.querySelector('#pd-month').value;
       if (!m) { toast('Pick a month', 'error'); return; }
+      // Pre-flight: the reconciliation verdict lived two cards away and the
+      // payment-report queue on another page entirely — surface both IN the
+      // decision, not near it.
+      const warnings = [];
+      if (this._reconciled === false) warnings.push('GL and the dues subledger DO NOT reconcile.');
+      try {
+        const pr = await api('GET', '/payment-reports/pending-count');
+        if ((pr?.count ?? 0) > 0) warnings.push(`${pr.count} member payment report${pr.count === 1 ? '' : 's'} awaiting confirmation.`);
+      } catch { /* pre-flight is advisory */ }
+      const msg = warnings.length
+        ? `Before closing ${m}:\n\n• ${warnings.join('\n• ')}\n\nClose the month anyway? (Reopening later is audited.)`
+        : `Close ${m}? Postings dated inside a closed month are refused. (Reopening later is audited.)`;
+      if (!await confirm(msg, 'Close month')) return;
       try { await api('POST', '/accounting/periods/close', { month: m + '-01' }); toast('Period closed', 'success'); this.load(); }
       catch (err) { toast(err.error ?? 'Close failed', 'error'); }
     });
@@ -193,9 +209,9 @@ class PageAccounting extends HTMLElement {
     const lineRow = () => `
       <div class="en-line" style="display:flex;gap:.3rem;margin-bottom:.3rem">
         <select class="en-code" style="flex:1">${codes.map(a => `<option value="${esc(a.code)}">${esc(a.code)} ${esc(a.name)}</option>`).join('')}</select>
-        <input class="en-cur" value="USD" maxlength="3" style="width:60px">
-        <input class="en-debit" placeholder="debit" inputmode="numeric" style="width:90px">
-        <input class="en-credit" placeholder="credit" inputmode="numeric" style="width:90px">
+        <input class="en-cur" value="USD" maxlength="8" style="width:60px" aria-label="Currency">
+        <input class="en-debit" placeholder="debit e.g. 10.50" inputmode="decimal" style="width:110px" aria-label="Debit amount">
+        <input class="en-credit" placeholder="credit e.g. 10.50" inputmode="decimal" style="width:110px" aria-label="Credit amount">
       </div>`;
     const { dialog, close } = openModal({
       title: 'Adjusting journal entry',
@@ -203,8 +219,9 @@ class PageAccounting extends HTMLElement {
       body: `
         <div class="modal-body">
           <p style="font-size:.78rem;color:var(--color-text-muted);margin-top:0">
-            Amounts are integer minor units (cents). Debits must equal credits per currency —
-            the database refuses anything else, and closed periods refuse postings.</p>
+            Amounts are decimals in the line's currency ("10.50"), like every other form.
+            Debits must equal credits per currency — the database refuses anything else,
+            and closed periods refuse postings.</p>
           <div class="form-row">
             <div class="form-group"><label for="en-date">Entry date</label><input id="en-date" type="date" value="${new Date().toISOString().slice(0, 10)}"></div>
             <div class="form-group"><label for="en-memo">Memo *</label><input id="en-memo" placeholder="Why this adjustment?"></div>
@@ -224,16 +241,28 @@ class PageAccounting extends HTMLElement {
     postBtn.addEventListener('click', guardButton(postBtn, async () => {
       const memo = dialog.querySelector('#en-memo').value.trim();
       if (!memo) { toast('Memo required', 'error'); return; }
-      const lines = [...dialog.querySelectorAll('.en-line')].map(row => ({
-        account_code: row.querySelector('.en-code').value,
-        currency: row.querySelector('.en-cur').value.trim().toUpperCase(),
-        debit: Number(row.querySelector('.en-debit').value || 0),
-        credit: Number(row.querySelector('.en-credit').value || 0),
-      })).filter(l => l.debit > 0 || l.credit > 0);
-      // Amounts are MINOR units (cents): "10.50" would otherwise reach the
-      // server's int decode and bounce with an unrelated error message.
-      if (lines.some(l => !Number.isInteger(l.debit) || !Number.isInteger(l.credit))) {
-        toast('Amounts are in minor units (cents) — whole numbers only, e.g. 1050 for $10.50', 'error');
+      // This was the ONE form in the app that demanded raw cents; a
+      // treasurer who typed "10.50" fifty times elsewhere typed it here too.
+      // Now it parses per-currency decimals like every sibling money field.
+      let badLine = false;
+      const lines = [...dialog.querySelectorAll('.en-line')].map(row => {
+        const currency = row.querySelector('.en-cur').value.trim().toUpperCase();
+        const parseCell = sel => {
+          const raw = row.querySelector(sel).value.trim();
+          if (!raw) return 0;
+          const minor = parseMoney(raw, currency);
+          if (minor === null || minor < 0) { badLine = true; return 0; }
+          return minor;
+        };
+        return {
+          account_code: row.querySelector('.en-code').value,
+          currency,
+          debit: parseCell('.en-debit'),
+          credit: parseCell('.en-credit'),
+        };
+      }).filter(l => l.debit > 0 || l.credit > 0);
+      if (badLine) {
+        toast('Amounts must be decimals like 10.50 (in each line\'s currency)', 'error');
         return;
       }
       try {

@@ -259,14 +259,18 @@ export function guardButton(btn, fn) {
  * @param {function(string): Promise<*>} opts.onConfirm - Called with the typed (trimmed) value.
  * @returns {{dialog: HTMLDialogElement, close: function}} The dialog and its close function.
  */
-export function confirmDelete({ noun = 'record', name = '', onConfirm } = {}) {
+export function confirmDelete({ noun = 'record', name = '', onConfirm, title, message, verb } = {}) {
+  // The type-to-confirm gate serves EVERY irreversible action, but the copy
+  // must tell the truth about which one: finalizing minutes went through
+  // here wearing "This will permanently delete…" — the app's scariest
+  // dialog asserting the opposite of what the button did.
   const safeName = esc(name);
   const { dialog, close } = openModal({
-    title: `Delete ${noun}`,
+    title: title ?? `Delete ${noun}`,
     maxWidth: '440px',
     body: `
       <div class="modal-body">
-        <p style="margin-bottom:.75rem">This will <strong>permanently delete</strong> this ${esc(noun)}. This action <strong>cannot be undone</strong>, and affected people will be notified.</p>
+        <p style="margin-bottom:.75rem">${message ?? `This will <strong>permanently delete</strong> this ${esc(noun)}. This action <strong>cannot be undone</strong>, and affected people will be notified.`}</p>
         <p style="margin-bottom:.75rem">To confirm, type <strong>${safeName}</strong> below.</p>
         <div class="form-group">
           <label for="confirm-del-inp">Type to confirm</label>
@@ -275,7 +279,7 @@ export function confirmDelete({ noun = 'record', name = '', onConfirm } = {}) {
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" id="confirm-del-cancel">Cancel</button>
-        <button class="btn-danger" id="confirm-del-go" disabled>Delete permanently</button>
+        <button class="btn-danger" id="confirm-del-go" disabled>${esc(verb ?? 'Delete permanently')}</button>
       </div>
     `,
   });

@@ -168,7 +168,7 @@ class PageCalendar extends HTMLElement {
                 ${m.ends_at ? `<div style="font-weight:400;font-size:.75rem;color:var(--color-text-muted)">– ${esc(new Date(m.ends_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</div>` : ''}
               </div>
               <div style="flex:1">
-                <div style="font-weight:600">${esc(m.title)}</div>
+                <div style="font-weight:600"><a href="#/meetings?open=${esc(m.id)}" style="color:inherit">${esc(m.title)}</a></div>
                 ${m.location ? `<div style="font-size:.82rem;color:var(--color-text-muted)">${esc(m.location)}</div>` : ''}
                 <span class="badge badge-${esc(m.status)}">${esc(m.status)}</span>
               </div>

@@ -223,6 +223,7 @@ func (m *mockMembersRepo) IDsByMinRole(ctx context.Context, minRank int) ([]stri
 // ---- mockDuesRepo ----
 
 type mockDuesRepo struct {
+	SummarizeInvoicesFn           func(ctx context.Context, f repo.InvoiceFilter) ([]repo.InvoiceSummary, error)
 	ListInvoicesFn                func(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, int, error)
 	GetInvoiceFn                  func(ctx context.Context, id string) (*model.DuesInvoice, error)
 	CreateInvoiceBatchFn          func(ctx context.Context, invs []*model.DuesInvoice) ([]model.DuesInvoice, error)
@@ -277,6 +278,13 @@ func (m *mockDuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status strin
 }
 func (m *mockDuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {
 	return m.RecomputeInvoiceStatusFn(ctx, id)
+}
+
+func (m *mockDuesRepo) SummarizeInvoices(ctx context.Context, f repo.InvoiceFilter) ([]repo.InvoiceSummary, error) {
+	if m.SummarizeInvoicesFn != nil {
+		return m.SummarizeInvoicesFn(ctx, f)
+	}
+	return nil, nil
 }
 
 func (m *mockDuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transaction, allowOverpay bool) (*model.Transaction, int64, error) {
@@ -384,6 +392,10 @@ func (m *mockMeetingsRepo) CreateDecision(ctx context.Context, d *model.MeetingD
 func (m *mockMeetingsRepo) UpdateDecision(ctx context.Context, meetingID, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error) {
 	return m.UpdateDecisionFn(ctx, id, summary, detail, outcome, voteFor, voteAgainst, voteAbstain)
 }
+func (m *mockMeetingsRepo) RSVPNames(ctx context.Context, meetingID string) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
+
 func (m *mockMeetingsRepo) AddCorrection(ctx context.Context, meetingID, body, createdBy string) (*model.MeetingCorrection, error) {
 	if m.AddCorrectionFn != nil {
 		return m.AddCorrectionFn(ctx, meetingID, body, createdBy)

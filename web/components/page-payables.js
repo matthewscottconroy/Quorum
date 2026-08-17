@@ -1,12 +1,13 @@
 import { api, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney, providerOptions, knownCurrencies, currencyDatalist, renderPager } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, providerOptions, knownCurrencies, currencyDatalist, renderPager, loadFilters, saveFilters } from '../utils.js';
+import { confirm } from './confirm-dialog.js';
 
 const PAGE = 50;
 
-const BILL_BADGE = {
-  open: ['⏳ open', '#b45309'], paid: ['✓ paid', '#137333'], void: ['— void', '#6b7280'],
-};
+// Bill statuses ride the shared badge system (dark-safe, same as invoices)
+// instead of a private hex palette.
+const BILL_BADGE = { open: 'open', paid: 'paid', void: 'void' };
 
 /**
  * Accounts payable: vendor bills accrued on the books at entry (DR expense /
@@ -14,7 +15,13 @@ const BILL_BADGE = {
  * until it is actually paid.
  */
 class PagePayables extends HTMLElement {
-  constructor() { super(); this._bills = []; this._status = 'open'; this._offset = 0; this._total = 0; }
+  constructor() {
+    super();
+    this._bills = [];
+    this._status = loadFilters('payables')?.status ?? 'open';
+    this._offset = 0;
+    this._total = 0;
+  }
 
   connectedCallback() { this.render(); this.load(); }
 
@@ -22,10 +29,6 @@ class PagePayables extends HTMLElement {
     this.innerHTML = `
       <div class="page-header"><h1>Payables</h1>
         <div style="display:flex;gap:.5rem">
-          <select id="bl-status">
-            <option value="open">Open</option><option value="paid">Paid</option>
-            <option value="void">Void</option><option value="">All</option>
-          </select>
           ${canWrite() ? '<button class="btn-primary" id="bl-new">+ New bill</button>' : ''}
         </div></div>
       <money-nav current="payables"></money-nav>
@@ -33,9 +36,17 @@ class PagePayables extends HTMLElement {
         What the organization owes vendors. Entering a bill puts the liability on the books
         immediately; paying it moves cash. Both are journal entries — nothing here bypasses
         the ledger.</p>
+      <div class="search-bar">
+        <select id="bl-status" aria-label="Filter by bill status" style="max-width:160px">
+          <option value="open" ${this._status==='open'?'selected':''}>Open</option>
+          <option value="paid" ${this._status==='paid'?'selected':''}>Paid</option>
+          <option value="void" ${this._status==='void'?'selected':''}>Void</option>
+          <option value="" ${this._status===''?'selected':''}>All</option>
+        </select>
+      </div>
       <div id="bl-list" style="display:flex;flex-direction:column;gap:.6rem"><span class="spinner"></span></div>
       <div id="bl-pager"></div>`;
-    this.querySelector('#bl-status').addEventListener('change', e => { this._status = e.target.value; this._offset = 0; this.load(); });
+    this.querySelector('#bl-status').addEventListener('change', e => { this._status = e.target.value; this._offset = 0; saveFilters('payables', { status: this._status }); this.load(); });
     this.querySelector('#bl-new')?.addEventListener('click', () => this.openBillModal());
   }
 
@@ -48,7 +59,7 @@ class PagePayables extends HTMLElement {
     } catch { toast('Failed to load bills', 'error'); return; }
     const box = this.querySelector('#bl-list');
     box.innerHTML = this._bills.map(b => {
-      const [label, color] = BILL_BADGE[b.status] ?? [b.status, '#6b7280'];
+      const badge = BILL_BADGE[b.status] ?? 'draft';
       const due = b.due_date ? new Date(b.due_date) : null;
       // Compare as dates, not instants: "2026-08-17" parses to UTC midnight,
       // which would flag a bill overdue the morning it is due.
@@ -59,7 +70,7 @@ class PagePayables extends HTMLElement {
         <div style="display:flex;justify-content:space-between;gap:.8rem;flex-wrap:wrap;align-items:baseline">
           <div><b>${formatMoney(b.amount_minor, b.currency)} ${esc(b.currency)}</b> → ${esc(b.contact_name)}
             <span style="font-size:.78rem;color:var(--color-text-muted)">· ${esc(b.expense_account_code)} ${esc(b.expense_account_name)}</span></div>
-          <span class="badge" style="background:color-mix(in srgb, ${color} 14%, transparent);color:${color}">${label}</span>
+          <span class="badge badge-${esc(badge)}">${esc(b.status)}</span>
         </div>
         ${b.memo ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.2rem">${esc(b.memo)}</div>` : ''}
         <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.3rem">
@@ -82,7 +93,7 @@ class PagePayables extends HTMLElement {
     box.querySelectorAll('.bl-pay').forEach(btn => btn.addEventListener('click', () =>
       this.openPayModal(this._bills.find(b => b.id === btn.dataset.id))));
     box.querySelectorAll('.bl-void').forEach(btn => btn.addEventListener('click', async () => {
-      if (!confirm('Void this bill? A reversing entry is posted.')) return;
+      if (!await confirm('Void this bill? A reversing entry is posted in the ledger.', 'Void bill')) return;
       try { await api('POST', `/bills/${btn.dataset.id}/void`); toast('Voided', 'success'); this.load(); }
       catch (err) { toast(err.error ?? 'Void failed', 'error'); }
     }));

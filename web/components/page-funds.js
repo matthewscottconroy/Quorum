@@ -2,10 +2,11 @@ import { api, getUser, currentMemberId, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
 import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies } from '../utils.js';
 
+// Purchase statuses ride the shared badge system (dark-safe) instead of a
+// private hex-and-emoji palette.
 const STATUS_BADGE = {
-  pending: ['⏳ pending', '#b45309'], approved: ['✅ approved', '#137333'],
-  completed: ['📘 completed', '#2563eb'], rejected: ['✕ rejected', '#dc2626'],
-  cancelled: ['— cancelled', '#6b7280'],
+  pending: 'pending', approved: 'approved', completed: 'done',
+  rejected: 'denied', cancelled: 'cancelled',
 };
 
 /**
@@ -99,7 +100,7 @@ class PageFunds extends HTMLElement {
     const myMember = currentMemberId();
     const box = this.querySelector('#pr-list');
     box.innerHTML = this._purchases.map(p => {
-      const [label, color] = STATUS_BADGE[p.status] ?? [p.status, '#6b7280'];
+      const badge = STATUS_BADGE[p.status] ?? 'draft';
       const iApproved = (p.approvals ?? []).some(a => a.approver_id === me);
       const canApprove = p.status === 'pending' && p.requester_id !== me && !iApproved;
       return `
@@ -109,7 +110,7 @@ class PageFunds extends HTMLElement {
             <b>${formatMoney(p.amount_minor, p.currency)} ${esc(p.currency)}</b> → ${esc(p.payee)}
             <span style="font-size:.78rem;color:var(--color-text-muted)">from ${esc(p.fund_name)}</span>
           </div>
-          <span class="badge" style="background:color-mix(in srgb, ${color} 14%, transparent);color:${color}">${label}</span>
+          <span class="badge badge-${esc(badge)}">${esc(p.status)}</span>
         </div>
         ${p.memo ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.2rem">${esc(p.memo)}</div>` : ''}
         ${p.resource_id ? `<button class="btn-ghost pr-doc-open" data-rid="${esc(p.resource_id)}" style="font-size:.75rem;padding:.05rem .4rem">📄 supporting document</button>` : ''}
@@ -149,10 +150,35 @@ class PageFunds extends HTMLElement {
       try { await api('POST', `/purchases/${b.dataset.id}/reject`); this.load(); }
       catch (err) { toast(err.error ?? 'Reject failed', 'error'); }
     }));
-    box.querySelectorAll('.pr-recuse').forEach(b => b.addEventListener('click', async () => {
-      const reason = (prompt('Reason for recusing (optional, recorded for the audit trail):') ?? '').trim();
-      try { await api('POST', `/recusals/${b.dataset.id}`, { type: 'purchase', reason }); toast('Recusal recorded', 'success'); this.load(); }
-      catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    box.querySelectorAll('.pr-recuse').forEach(b => b.addEventListener('click', () => {
+      // The last raw prompt() in the money area — governance already swept
+      // its own (page-meetings openRecuseModal); same shared-dialog treatment.
+      const { dialog, close } = openModal({
+        title: 'Recuse from this purchase',
+        maxWidth: '420px',
+        body: `
+          <div class="modal-body">
+            <div class="form-group">
+              <label for="rec-reason">Reason (optional, recorded for the audit trail)</label>
+              <input id="rec-reason" placeholder="e.g. vendor is my employer">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="rec-cancel">Cancel</button>
+            <button class="btn-primary" id="rec-go">Record recusal</button>
+          </div>`,
+      });
+      dialog.querySelector('#rec-cancel').addEventListener('click', close);
+      const go = dialog.querySelector('#rec-go');
+      go.addEventListener('click', guardButton(go, async () => {
+        const reason = dialog.querySelector('#rec-reason').value.trim();
+        try {
+          await api('POST', `/recusals/${b.dataset.id}`, { type: 'purchase', reason });
+          toast('Recusal recorded', 'success');
+          close();
+          this.load();
+        } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+      }));
     }));
     box.querySelectorAll('.pr-cancel').forEach(b => b.addEventListener('click', async () => {
       try { await api('POST', `/purchases/${b.dataset.id}/cancel`); this.load(); }

@@ -1,5 +1,6 @@
 import { api, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
+import { confirm } from './confirm-dialog.js';
 import { esc, fmtDateTime, formatMoney, guardButton } from '../utils.js';
 
 /**
@@ -57,7 +58,7 @@ class PagePaymentReports extends HTMLElement {
       } catch (err) { toast(err.error ?? 'Confirm failed', 'error'); }
     })));
     box.querySelectorAll('.pr-dismiss').forEach(btn => btn.addEventListener('click', async () => {
-      if (!confirm('Dismiss this payment report without recording a payment?')) return;
+      if (!await confirm('Dismiss this payment report without recording a payment? The member is NOT notified automatically.', 'Dismiss report')) return;
       try { await api('POST', `/payment-reports/${btn.dataset.id}/dismiss`); toast('Dismissed', 'success'); this.load(); }
       catch (err) { toast(err.error ?? 'Dismiss failed', 'error'); }
     }));

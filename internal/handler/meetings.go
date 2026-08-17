@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"quorum/internal/model"
@@ -59,7 +60,11 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := repo.MeetingFilter{
 		Upcoming: q.Get("upcoming") == "true",
+		Query:    strings.TrimSpace(q.Get("q")),
 		Limit:    100,
+	}
+	if len(f.Query) > 200 {
+		f.Query = f.Query[:200]
 	}
 	// from/to (YYYY-MM-DD) bound scheduled_at for the calendar view: from is
 	// inclusive, to is exclusive-end-of-day (i.e. includes the whole `to` day).
@@ -318,6 +323,20 @@ func (h *MeetingsHandler) SetRSVP(w http.ResponseWriter, r *http.Request) {
 	}
 	s, _ := h.repo.RSVPSummary(r.Context(), id, memberID)
 	writeJSON(w, http.StatusOK, s)
+}
+
+// RSVPNamesHandler returns per-response name lists (officer+).
+func (h *MeetingsHandler) RSVPNamesHandler(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	names, err := h.repo.RSVPNames(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, names)
 }
 
 // RSVPYes returns the member IDs who said yes, to seed the roster (officer+).

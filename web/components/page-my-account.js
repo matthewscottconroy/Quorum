@@ -1,6 +1,6 @@
 import { api, apiDownload, getUser, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, fmtDate, formatMoney, openModal, guardButton } from '../utils.js';
+import { esc, fmtDate, formatMoney, openModal, guardButton , moneyExponent } from '../utils.js';
 
 /**
  * `<page-my-account>` — self-service, read-only view of the signed-in user's own
@@ -100,21 +100,21 @@ class PageMyAccount extends HTMLElement {
         <p style="font-size:.9rem"><strong>Member since:</strong> ${fmtDate(member.joined_at)}</p>
       </section>
 
-      <section class="card" style="overflow:hidden;margin-bottom:1.25rem">
+      <section class="card table-scroll" style="margin-bottom:1.25rem">
         <div class="panel-header" style="padding:.75rem 1rem;border-bottom:1px solid var(--color-border)"><h2 style="font-size:1rem">My dues</h2></div>
         ${duesFailed
           ? '<p class="empty-state" style="padding:1rem;color:var(--color-danger)">Couldn\'t load your dues — try again.</p>'
           : invoices.length === 0
           ? '<p class="empty-state" style="padding:1rem">No invoices.</p>'
           : `<table>
-              <thead><tr><th>Period</th><th>Amount</th><th>Due date</th><th>Status</th><th></th></tr></thead>
+              <thead><tr><th>Period</th><th class="num">Amount</th><th>Due date</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 ${invoices.map(inv => {
                   const open = inv.status !== 'paid' && inv.status !== 'waived';
                   return `
                   <tr>
                     <td>${esc(inv.period_label)}</td>
-                    <td>${formatMoney(inv.amount_minor, inv.currency)}</td>
+                    <td class="num">${formatMoney(inv.amount_minor, inv.currency)}</td>
                     <td>${fmtDate(inv.due_date)}</td>
                     <td><span class="badge badge-${esc(inv.status)}">${esc(inv.status)}</span></td>
                     <td style="text-align:right;white-space:nowrap">
@@ -154,11 +154,14 @@ class PageMyAccount extends HTMLElement {
     this._renderHowToPay(this._howToPay);
   }
 
-  /** Builds the configured pay-link for an invoice, filling placeholders. */
+  /** Builds the configured pay-link for an invoice, filling placeholders.
+      Exponent-aware: a hardcoded /100 told JPY members to pay 1/100th of
+      their dues — this number gets typed into Venmo on trust. */
   _payLink(inv) {
-    const major = (Number(inv.amount_minor) || 0) / 100;
+    const exp = moneyExponent(inv.currency);
+    const major = (Number(inv.amount_minor) || 0) / 10 ** exp;
     return (this._payTemplate || '')
-      .replace('{amount_major}', encodeURIComponent(major.toFixed(2)))
+      .replace('{amount_major}', encodeURIComponent(major.toFixed(exp)))
       .replace('{reference}', encodeURIComponent(inv.id));
   }
 

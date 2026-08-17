@@ -44,8 +44,9 @@ type InvoiceFilter struct {
 	Offset      int
 }
 
-// ListInvoices returns a page of invoices matching the filter, plus the total count.
-func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.DuesInvoice, int, error) {
+// invoiceFilterWhere renders the filter's WHERE clause and args — shared by
+// the page query and the summary so they can never disagree about the set.
+func invoiceFilterWhere(f InvoiceFilter) (string, []any) {
 	args := []any{}
 	conds := []string{}
 	idx := 1
@@ -63,13 +64,18 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 	if f.PeriodLabel != "" {
 		conds = append(conds, fmt.Sprintf("di.period_label = $%d", idx))
 		args = append(args, f.PeriodLabel)
-		idx++
 	}
 
 	where := ""
 	if len(conds) > 0 {
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
+	return where, args
+}
+
+// ListInvoices returns a page of invoices matching the filter, plus the total count.
+func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.DuesInvoice, int, error) {
+	where, args := invoiceFilterWhere(f)
 
 	limit := f.Limit
 	if limit <= 0 || limit > 500 {
@@ -86,7 +92,7 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		LEFT JOIN contacts c ON c.id = di.contact_id
 		%s
 		ORDER BY di.due_date DESC, 12
-		LIMIT $%d OFFSET $%d`, where, idx, idx+1)
+		LIMIT $%d OFFSET $%d`, where, len(args)+1, len(args)+2)
 	args = append(args, limit, f.Offset)
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -120,6 +126,42 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		}
 	}
 	return invoices, total, nil
+}
+
+// InvoiceSummary is the money answer the Dues page leads with: how many
+// invoices the current filter matches and what is still owed on them,
+// per currency (never summed across currencies).
+type InvoiceSummary struct {
+	Currency         string `json:"currency"`
+	Count            int    `json:"count"`
+	OutstandingMinor int64  `json:"outstanding_minor"`
+}
+
+// SummarizeInvoices computes the filtered set's outstanding balances with
+// the same WHERE semantics as ListInvoices (minus paging).
+func (r *DuesRepo) SummarizeInvoices(ctx context.Context, f InvoiceFilter) ([]InvoiceSummary, error) {
+	where, args := invoiceFilterWhere(f)
+	rows, err := r.db.Query(ctx, `
+		SELECT di.currency, count(*),
+		       coalesce(sum(CASE WHEN di.status IN ('paid','waived') THEN 0
+		            ELSE greatest(di.amount - coalesce((SELECT sum(t.amount) FROM transactions t
+		                  WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
+		                    AND t.currency = di.currency), 0), 0) END), 0)
+		FROM dues_invoices di `+where+`
+		GROUP BY di.currency ORDER BY di.currency`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InvoiceSummary
+	for rows.Next() {
+		var s InvoiceSummary
+		if err := rows.Scan(&s.Currency, &s.Count, &s.OutstandingMinor); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // GetInvoice returns the invoice with the given id and its transactions, or pgx.ErrNoRows.

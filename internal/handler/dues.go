@@ -47,7 +47,23 @@ func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "query error", "internal_error")
 		return
 	}
-	writePage(w, invoices, total, f.Limit, f.Offset)
+	// The page's first question is "how much are we owed?" — answer it in
+	// the same response, per currency, for the SAME filtered set.
+	summary, err := h.repo.SummarizeInvoices(r.Context(), f)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	if invoices == nil {
+		invoices = []model.DuesInvoice{}
+	}
+	if summary == nil {
+		summary = []repo.InvoiceSummary{}
+	}
+	writeJSON(w, 200, map[string]any{
+		"data": invoices, "total": total, "limit": f.Limit, "offset": f.Offset,
+		"summary": summary,
+	})
 }
 
 // Create handles creating a invoice.
