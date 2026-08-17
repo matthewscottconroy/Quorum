@@ -113,6 +113,9 @@ class PageSettings extends HTMLElement {
           <div class="form-row">
             <div class="form-group" style="max-width:220px"><label for="og-fy">Fiscal year starts (month 1–12)</label>
               <input id="og-fy" type="number" min="1" max="12" value="1"></div>
+            <div class="form-group" style="max-width:260px"><label for="og-tz">Timezone (IANA name)</label>
+              <input id="og-tz" placeholder="America/New_York">
+              <div style="font-size:.72rem;color:var(--color-text-muted)">Used wherever the server renders times: minutes documents and meeting emails. Blank = the server's own zone.</div></div>
             <div class="form-group" style="max-width:300px"><label for="og-2fa">Require two-factor auth</label>
               <select id="og-2fa">
                 <option value="off">Off (optional for everyone)</option>
@@ -795,6 +798,7 @@ customElements.define('page-settings', PageSettings);
         const st = await api('GET', '/settings/org');
         const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
         set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
+        set('#og-tz', st.timezone);
         set('#og-2fa', st.require_2fa ?? 'off');
         set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
         set('#og-paylink', st.payment_link_template); set('#og-vocab', st.vocab_overrides);
@@ -807,6 +811,7 @@ customElements.define('page-settings', PageSettings);
         try {
           const saved = await api('PUT', '/settings/org', {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
+            timezone: this.querySelector('#og-tz').value.trim(),
             require_2fa: this.querySelector('#og-2fa').value,
             how_to_pay: this.querySelector('#og-pay').value,
             payment_link_template: this.querySelector('#og-paylink').value,
