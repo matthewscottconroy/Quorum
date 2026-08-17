@@ -202,11 +202,13 @@ func (h *ReportsHandler) MinutesPDF(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 			return
 		}
+		votes, verr := h.gov.VotesByMeeting(r.Context(), id)
+		if verr != nil {
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
+		}
 		for i := range motions {
-			if motions[i].Votes, err = h.gov.GetVotes(r.Context(), motions[i].ID); err != nil {
-				writeError(w, http.StatusInternalServerError, "query error", "internal_error")
-				return
-			}
+			motions[i].Votes = votes[motions[i].ID]
 		}
 	}
 

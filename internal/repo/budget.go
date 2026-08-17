@@ -218,6 +218,17 @@ func (r *BudgetRepo) CloneScenario(ctx context.Context, id, newName, createdBy s
 	return r.GetScenario(ctx, newID)
 }
 
+// ReorderLines rewrites sort_order for a scenario's lines from the given id
+// order in ONE statement (the UI used to PATCH every row separately). Ids
+// outside the scenario are ignored by the scenario_id guard.
+func (r *BudgetRepo) ReorderLines(ctx context.Context, scenarioID string, ids []string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE budget_lines b SET sort_order = x.ord
+		FROM (SELECT unnest($2::uuid[]) AS id, generate_subscripts($2::uuid[], 1) - 1 AS ord) x
+		WHERE b.id = x.id AND b.scenario_id = $1::uuid`, scenarioID, ids)
+	return err
+}
+
 // SeedDuesIncome (re)projects annualized dues income into the scenario: one line
 // per member tier, quantity = active-member count, unit = the tier's annualized
 // per-member dues in the scenario currency. It is idempotent — prior "Dues"

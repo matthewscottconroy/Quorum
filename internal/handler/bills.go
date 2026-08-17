@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"quorum/internal/model"
@@ -14,7 +15,7 @@ import (
 type billsRepo interface {
 	Create(ctx context.Context, b *model.Bill, createdBy string) (*model.Bill, error)
 	Get(ctx context.Context, id string) (*model.Bill, error)
-	List(ctx context.Context, status string, limit int) ([]model.Bill, error)
+	List(ctx context.Context, status string, limit, offset int) ([]model.Bill, int, error)
 	Pay(ctx context.Context, id, fundID, provider string) (*model.Bill, error)
 	Void(ctx context.Context, id string) (*model.Bill, error)
 	APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error)
@@ -37,7 +38,12 @@ func (h *BillsHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "status must be open, paid, or void", "bad_request")
 		return
 	}
-	bills, err := h.repo.List(r.Context(), status, clampLimit(r.URL.Query().Get("limit"), 100))
+	limit := clampLimit(r.URL.Query().Get("limit"), 100)
+	offset := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+	bills, total, err := h.repo.List(r.Context(), status, limit, offset)
 	if err != nil {
 		writeError(w, 500, "query error", "internal_error")
 		return
@@ -45,7 +51,7 @@ func (h *BillsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if bills == nil {
 		bills = []model.Bill{}
 	}
-	writeJSON(w, 200, bills)
+	writePage(w, bills, total, limit, offset)
 }
 
 // Create records a vendor bill and accrues it on the books.

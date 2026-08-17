@@ -128,3 +128,18 @@ func TestFXCreateRate_Rejects(t *testing.T) {
 		}
 	}
 }
+
+// Rates are plain decimals: fractions parse in big.Rat but die in ::numeric,
+// which used to surface as a 500 wearing a bogus "already exists" message.
+func TestValidRate_PlainDecimalsOnly(t *testing.T) {
+	for _, ok := range []string{"1", "0.5", "142.3319", "1.0785"} {
+		if !validRate(ok) {
+			t.Errorf("validRate(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"1/3", "-2", "0", "1e5", ".5", "2.", "", "abc"} {
+		if validRate(bad) {
+			t.Errorf("validRate(%q) = true, want false", bad)
+		}
+	}
+}

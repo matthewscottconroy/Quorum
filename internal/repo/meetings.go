@@ -86,10 +86,12 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
-	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain count.
+	// COUNT(*) OVER() yields no rows on an empty page; fall back to a plain
+	// count — with the SAME filter args bound (minus limit/offset), or the
+	// from/to placeholders would make Postgres reject the query outright.
 	if len(meetings) == 0 && f.Offset > 0 {
 		countQuery := "SELECT count(*) FROM meetings m " + where
-		if err := r.db.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+		if err := r.db.QueryRow(ctx, countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -156,15 +158,19 @@ func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, sch
 	return r.Get(ctx, id)
 }
 
-// HasGovernanceHistory reports whether a meeting has recorded decisions or any
-// motion that reached a decision (carried/failed/tabled/withdrawn) — history a
-// hard delete would silently erase (both cascade away with the meeting).
+// HasGovernanceHistory reports whether a meeting holds governance history a
+// hard delete would silently erase: recorded decisions, motions that reached
+// a decision, OPEN motions with ballots already cast, any minutes journal
+// entries, or finalized minutes. (All of it cascades away with the meeting.)
 func (r *MeetingsRepo) HasGovernanceHistory(ctx context.Context, meetingID string) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM meeting_decisions WHERE meeting_id = $1::uuid)
 		    OR EXISTS(SELECT 1 FROM motions WHERE meeting_id = $1::uuid
 		              AND status IN ('carried', 'failed', 'tabled', 'withdrawn'))
+		    OR EXISTS(SELECT 1 FROM motions mo JOIN motion_votes v ON v.motion_id = mo.id
+		              WHERE mo.meeting_id = $1::uuid)
+		    OR EXISTS(SELECT 1 FROM meeting_minutes_entries WHERE meeting_id = $1::uuid)
 		    OR EXISTS(SELECT 1 FROM meetings WHERE id = $1::uuid
 		              AND minutes_finalized_at IS NOT NULL)`, meetingID).Scan(&exists)
 	return exists, err
@@ -289,7 +295,7 @@ func (r *MeetingsRepo) CreateDecision(ctx context.Context, d *model.MeetingDecis
 }
 
 // UpdateDecision edits an existing decision, returning pgx.ErrNoRows if absent.
-func (r *MeetingsRepo) UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error) {
+func (r *MeetingsRepo) UpdateDecision(ctx context.Context, meetingID, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error) {
 	var d model.MeetingDecision
 	err := r.db.QueryRow(ctx, `
 		UPDATE meeting_decisions SET
@@ -299,17 +305,18 @@ func (r *MeetingsRepo) UpdateDecision(ctx context.Context, id string, summary, d
 			vote_against = coalesce($4, vote_against),
 			vote_abstain = coalesce($5, vote_abstain),
 			outcome      = coalesce($6, outcome)
-		WHERE id = $7::uuid
+		WHERE id = $7::uuid AND meeting_id = $8::uuid
 		RETURNING id::text, meeting_id::text, summary, detail, vote_for, vote_against, vote_abstain, outcome, recorded_at`,
-		summary, detail, voteFor, voteAgainst, voteAbstain, outcome, id).
+		summary, detail, voteFor, voteAgainst, voteAbstain, outcome, id, meetingID).
 		Scan(&d.ID, &d.MeetingID, &d.Summary, &d.Detail,
 			&d.VoteFor, &d.VoteAgainst, &d.VoteAbstain, &d.Outcome, &d.RecordedAt)
 	return &d, err
 }
 
 // DeleteDecision removes a decision, returning pgx.ErrNoRows if absent.
-func (r *MeetingsRepo) DeleteDecision(ctx context.Context, id string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM meeting_decisions WHERE id = $1::uuid`, id)
+func (r *MeetingsRepo) DeleteDecision(ctx context.Context, meetingID, id string) error {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM meeting_decisions WHERE id = $1::uuid AND meeting_id = $2::uuid`, id, meetingID)
 	if err != nil {
 		return err
 	}
@@ -469,6 +476,29 @@ func (r *MeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userID st
 		return ErrMinutesFinalized
 	}
 	return nil
+}
+
+// SetMinutesSnapshot stores the rendered minutes document captured at
+// finalization; it is the copy served forever after.
+func (r *MeetingsRepo) SetMinutesSnapshot(ctx context.Context, meetingID, doc string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE meetings SET minutes_snapshot = $2 WHERE id = $1::uuid`, meetingID, doc)
+	return err
+}
+
+// GetMinutesSnapshot returns the finalized document, or "" when none exists
+// (never finalized, or finalized before snapshots existed).
+func (r *MeetingsRepo) GetMinutesSnapshot(ctx context.Context, meetingID string) (string, error) {
+	var doc *string
+	err := r.db.QueryRow(ctx,
+		`SELECT minutes_snapshot FROM meetings WHERE id = $1::uuid`, meetingID).Scan(&doc)
+	if err != nil {
+		return "", err
+	}
+	if doc == nil {
+		return "", nil
+	}
+	return *doc, nil
 }
 
 // SetRSVP records or updates a member's RSVP for a meeting ('yes'/'no'/'maybe').

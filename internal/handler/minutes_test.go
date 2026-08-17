@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"quorum/internal/model"
 )
@@ -33,7 +34,13 @@ func TestMinutes_FinalizeRequiresConfirm(t *testing.T) {
 	finalized := false
 	h := NewMeetingsHandler(&mockMeetingsRepo{
 		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
-			return &model.Meeting{ID: "m1", Title: "October General Meeting"}, nil
+			// In the past with a journal: the preconditions are satisfied,
+			// so only the confirm gate decides these assertions.
+			return &model.Meeting{ID: "m1", Title: "October General Meeting",
+				ScheduledAt: time.Now().Add(-2 * time.Hour)}, nil
+		},
+		ListMinutesFn: func(_ context.Context, _ string) ([]model.MinutesEntry, error) {
+			return []model.MinutesEntry{{ID: "e1", Kind: "note", Body: "x"}}, nil
 		},
 		FinalizeMinutesFn: func(_ context.Context, _, _ string) error { finalized = true; return nil },
 	})
@@ -78,8 +85,11 @@ func TestMinutesDocument_Assembly(t *testing.T) {
 				MoverName: &mover, SeconderName: &seconder,
 				Tally: model.MotionTally{For: 2, Total: 2}}}, nil
 		},
-		GetVotesFn: func(_ context.Context, _ string) ([]model.MotionVote, error) {
-			return []model.MotionVote{{MemberName: "Ada", Choice: "for"}, {MemberName: "Alan", Choice: "for", IsProxy: true}}, nil
+		VotesByMeetingFn: func(_ context.Context, _ string) (map[string][]model.MotionVote, error) {
+			return map[string][]model.MotionVote{"mo1": {
+				{MemberName: "Ada", Choice: "for"},
+				{MemberName: "Alan", Choice: "for", IsProxy: true},
+			}}, nil
 		},
 	})
 	req := chiRequest("GET", "/meetings/m1/minutes.md", "", map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
@@ -100,5 +110,49 @@ func TestMinutesDocument_Assembly(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("document missing %q", want)
 		}
+	}
+}
+
+// Finalization is irreversible, so it must be refused while it would lock
+// in nothing: before the meeting happens, and while the journal is empty.
+func TestMinutes_FinalizePreconditions(t *testing.T) {
+	// Future meeting, journal present → 409.
+	h := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
+			return &model.Meeting{ID: "m1", Title: "T", Status: "scheduled",
+				ScheduledAt: time.Now().Add(24 * time.Hour)}, nil
+		},
+		ListMinutesFn: func(_ context.Context, _ string) ([]model.MinutesEntry, error) {
+			return []model.MinutesEntry{{ID: "e1"}}, nil
+		},
+		FinalizeMinutesFn: func(_ context.Context, _, _ string) error {
+			t.Fatal("finalize ran on a future meeting")
+			return nil
+		},
+	})
+	req := chiRequest("POST", "/meetings/m1/minutes/finalize?confirm=T", "",
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.FinalizeMinutes(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("future meeting finalize: got %d, want 409 (%s)", rr.Code, rr.Body)
+	}
+
+	// Past meeting, EMPTY journal → 409.
+	h2 := NewMeetingsHandler(&mockMeetingsRepo{
+		GetFn: func(_ context.Context, _ string) (*model.Meeting, error) {
+			return &model.Meeting{ID: "m1", Title: "T", ScheduledAt: time.Now().Add(-time.Hour)}, nil
+		},
+		FinalizeMinutesFn: func(_ context.Context, _, _ string) error {
+			t.Fatal("finalize ran with an empty journal")
+			return nil
+		},
+	})
+	req2 := chiRequest("POST", "/meetings/m1/minutes/finalize?confirm=T", "",
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr2 := httptest.NewRecorder()
+	h2.FinalizeMinutes(rr2, withCtxUser(req2, "u", "officer"))
+	if rr2.Code != http.StatusConflict {
+		t.Fatalf("empty-journal finalize: got %d, want 409 (%s)", rr2.Code, rr2.Body)
 	}
 }

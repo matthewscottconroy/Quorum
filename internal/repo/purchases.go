@@ -172,12 +172,95 @@ func (r *PurchasesRepo) List(ctx context.Context, fundID, status string, limit i
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for i := range out {
-		if err := r.loadEvidence(ctx, &out[i]); err != nil {
-			return nil, err
-		}
+	if err := r.loadEvidenceBatch(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// loadEvidenceBatch fills approvals, missing signers, and recusals for a
+// whole page in three set-based queries — the per-row loadEvidence gave the
+// funds page ~3N queries for N purchases.
+func (r *PurchasesRepo) loadEvidenceBatch(ctx context.Context, out []model.PurchaseRequest) error {
+	if len(out) == 0 {
+		return nil
+	}
+	ids := make([]string, len(out))
+	byID := make(map[string]*model.PurchaseRequest, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+		byID[out[i].ID] = &out[i]
+	}
+	arows, err := r.db.Query(ctx, `
+		SELECT pa.request_id::text, pa.approver_id::text,
+		       coalesce(m.display_name, u.email, 'former user'), pa.ip, pa.approved_at
+		FROM purchase_approvals pa
+		LEFT JOIN users u ON u.id = pa.approver_id
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE pa.request_id = ANY($1::uuid[]) ORDER BY pa.approved_at`, ids)
+	if err != nil {
+		return err
+	}
+	for arows.Next() {
+		var rid string
+		var a model.PurchaseApproval
+		if err := arows.Scan(&rid, &a.ApproverID, &a.ApproverName, &a.IP, &a.ApprovedAt); err != nil {
+			arows.Close()
+			return err
+		}
+		if p := byID[rid]; p != nil {
+			p.Approvals = append(p.Approvals, a)
+		}
+	}
+	if err := arows.Err(); err != nil {
+		return err
+	}
+	mrows, err := r.db.Query(ctx, `
+		SELECT pr.id::text, coalesce(m.display_name, u.email)
+		FROM purchase_requests pr
+		JOIN fund_signers fs ON fs.fund_id = pr.fund_id
+		JOIN users u ON u.id = fs.user_id
+		LEFT JOIN members m ON m.id = u.member_id
+		WHERE pr.id = ANY($1::uuid[])
+		  AND NOT EXISTS (SELECT 1 FROM purchase_approvals pa
+		                  WHERE pa.request_id = pr.id AND pa.approver_id = fs.user_id)
+		ORDER BY 2`, ids)
+	if err != nil {
+		return err
+	}
+	for mrows.Next() {
+		var rid, name string
+		if err := mrows.Scan(&rid, &name); err != nil {
+			mrows.Close()
+			return err
+		}
+		if p := byID[rid]; p != nil {
+			p.MissingSigners = append(p.MissingSigners, name)
+		}
+	}
+	if err := mrows.Err(); err != nil {
+		return err
+	}
+	rrows, err := r.db.Query(ctx, `
+		SELECT rc.subject_id::text, rc.member_id::text, m.display_name, coalesce(rc.reason,''), rc.created_at
+		FROM recusals rc JOIN members m ON m.id = rc.member_id
+		WHERE rc.subject_type = 'purchase' AND rc.subject_id = ANY($1::uuid[])
+		ORDER BY rc.created_at`, ids)
+	if err != nil {
+		return err
+	}
+	for rrows.Next() {
+		var rid string
+		var rc model.Recusal
+		if err := rrows.Scan(&rid, &rc.MemberID, &rc.MemberName, &rc.Reason, &rc.CreatedAt); err != nil {
+			rrows.Close()
+			return err
+		}
+		if p := byID[rid]; p != nil {
+			p.Recusals = append(p.Recusals, rc)
+		}
+	}
+	return rrows.Err()
 }
 
 // IsSigner reports whether the user is a named signer for the fund.

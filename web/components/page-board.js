@@ -213,7 +213,7 @@ class PageBoard extends HTMLElement {
         </div>
         ${i.parent_title ? `<div class="board-card-sprint">◳ ${esc(i.parent_title)}</div>` : ''}
         <div class="board-card-meta">
-          ${i.assignee_name ? `<span>👤 ${esc(i.assignee_name)}</span>` : '<span style="opacity:.6">unassigned</span>'}
+          ${i.assignee_name ? `<span>👤 ${esc(i.assignee_name)}${i.assignee_inactive ? ' <span style="color:var(--color-danger)" title="This member is no longer active — reassign the card">(inactive)</span>' : ''}</span>` : '<span style="opacity:.6">unassigned</span>'}
           ${(i.contributors ?? []).length ? `<span title="${esc(i.contributors.map(c => c.member_name).join(', '))}">👥 +${i.contributors.length}</span>` : ''}
           ${due ? `<span style="${overdue ? 'color:var(--color-danger,#dc2626);font-weight:700' : ''}">📅 ${esc(due.toLocaleDateString())}</span>` : ''}
         </div>
@@ -521,7 +521,7 @@ class PageBoard extends HTMLElement {
           ${item.description ? `<p style="white-space:pre-wrap;margin-top:0">${esc(item.description)}</p>` : ''}
           <div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:.85rem;color:var(--color-text-muted)">
             <span>${esc(item.card_type.replace('_', '-'))}${item.story_points != null ? ` · ${item.story_points} pts` : ''}</span>
-            <span>👤 ${esc(item.assignee_name ?? 'unassigned')}</span>
+            <span>👤 ${esc(item.assignee_name ?? 'unassigned')}${item.assignee_inactive ? ' <span style="color:var(--color-danger)" title="This member is no longer active — reassign the card">(inactive)</span>' : ''}</span>
             ${item.reporter_name ? `<span title="Who created this card">✍ ${esc(item.reporter_name)}</span>` : ''}
             ${(item.contributors ?? []).length ? `<span>👥 ${esc(item.contributors.map(c => c.member_name).join(', '))}</span>` : ''}
             <span>Status: ${esc(item.status.replace('_', ' '))}</span>

@@ -1,6 +1,9 @@
 import { api, apiDownload, canWrite, isAuthenticated, isSuperadmin, currentMemberId } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete } from '../utils.js';
+import { esc, fmtDateTime, openModal, guardButton, toLocalInputValue, confirmDelete, renderPager } from '../utils.js';
+
+/** Meetings per page: the list used to stop silently at the newest 100. */
+const MEETING_PAGE = 50;
 import { assembleMinutesText, openHeatmapModal } from './word-heatmap.js';
 import './vote-tally.js';
 
@@ -44,9 +47,10 @@ class PageMeetings extends HTMLElement {
         </label>
       </div>
       <div style="display:flex;flex-direction:column;gap:.75rem" id="meeting-list"></div>
+      <div id="meeting-pager"></div>
     `;
 
-    this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this.load(); });
+    this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this._offset = 0; this.load(); });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
   }
 
@@ -54,11 +58,12 @@ class PageMeetings extends HTMLElement {
     const seq = ++this._seq;
     const list = this.querySelector('#meeting-list');
     list.innerHTML = '<div style="text-align:center;padding:1rem"><span class="spinner"></span></div>';
-    const params = this._upcoming ? '?upcoming=true' : '';
+    const params = `?limit=${MEETING_PAGE}&offset=${this._offset ?? 0}` + (this._upcoming ? '&upcoming=true' : '');
     try {
       const _mtPage = await api('GET', '/meetings' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._meetings = _mtPage?.data ?? _mtPage ?? [];
+      this._total = _mtPage?.total ?? this._meetings.length;
       this.renderList(list);
     } catch {
       if (seq !== this._seq) return;
@@ -68,6 +73,10 @@ class PageMeetings extends HTMLElement {
   }
 
   renderList(list) {
+    renderPager(this.querySelector('#meeting-pager'), {
+      offset: this._offset ?? 0, limit: MEETING_PAGE, total: this._total ?? 0,
+      onNavigate: off => { this._offset = off; this.load(); },
+    });
     list.innerHTML = this._meetings?.length
       ? this._meetings.map(m => `
           <div class="card meeting-card" data-id="${esc(m.id)}" style="padding:1rem 1.25rem;cursor:pointer;display:flex;align-items:center;gap:1rem" tabindex="0" role="button">
@@ -181,9 +190,21 @@ class PageMeetings extends HTMLElement {
     try { mt = await api('GET', `/meetings/${id}`); }
     catch { toast('Load failed','error'); return; }
 
+    const dirty = () => {
+      const v = id2 => dialog?.querySelector('#' + id2)?.value ?? '';
+      return v('f-title') !== mt.title
+        || v('f-dt') !== toLocalInputValue(mt.scheduled_at)
+        || v('f-end') !== (mt.ends_at ? toLocalInputValue(mt.ends_at) : '')
+        || v('f-status') !== mt.status
+        || v('f-loc') !== (mt.location ?? '')
+        || v('f-agenda') !== (mt.agenda ?? '')
+        || v('f-notes') !== (mt.notes ?? '')
+        || (dialog?.querySelector('#min-body')?.value ?? '') !== '';
+    };
     const { dialog, close } = openModal({
       title: mt.title,
       maxWidth: '880px',
+      confirmDiscard: () => dirty(),
       body: `
         <div class="modal-body" style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem">
           <div>
@@ -742,6 +763,40 @@ class PageMeetings extends HTMLElement {
    * after that the journal is immutable (database-enforced) and only the
    * document export remains.
    */
+  /** Open action items from EARLIER meetings — the "old business" a
+      secretary would otherwise have to remember to chase — with a one-click
+      way to note each into this meeting's journal. */
+  async renderCarryover(host, meetingId) {
+    const pg = await api('GET', '/action-items?status=open&limit=100');
+    const items = (pg?.data ?? pg ?? []).filter(ai => ai.meeting_id && ai.meeting_id !== meetingId);
+    if (!items.length) return;
+    const box = document.createElement('div');
+    box.id = 'min-carryover';
+    box.style.cssText = 'border:1px dashed var(--color-border);border-radius:var(--radius);padding:.6rem .75rem;margin-top:.6rem';
+    box.innerHTML = `
+      <div style="font-size:.8rem;font-weight:700;color:var(--color-text-muted);margin-bottom:.35rem">
+        OPEN ITEMS FROM EARLIER MEETINGS (${items.length})</div>
+      ${items.slice(0, 12).map(ai => `
+        <div style="display:flex;gap:.5rem;align-items:baseline;font-size:.83rem;padding:.15rem 0">
+          <span style="flex:1">${esc(ai.title)}${ai.assignee_name ? ` <span style="color:var(--color-text-muted)">· ${esc(ai.assignee_name)}</span>` : ''}${ai.due_date ? ` <span style="color:var(--color-text-muted)">· due ${esc(ai.due_date.slice(0, 10))}</span>` : ''}</span>
+          <button class="btn-ghost co-note" data-title="${esc(ai.title)}" data-who="${esc(ai.assignee_name ?? '')}" style="font-size:.72rem">→ journal</button>
+        </div>`).join('')}
+      ${items.length > 12 ? `<div style="font-size:.75rem;color:var(--color-text-muted)">…and ${items.length - 12} more on the Board.</div>` : ''}`;
+    // Sits between the journal list and the entry editor.
+    const editor = host.querySelector('#min-body')?.closest('div[style*="border"]');
+    if (editor) host.insertBefore(box, editor); else host.appendChild(box);
+    box.querySelectorAll('.co-note').forEach(btn => btn.addEventListener('click', () => {
+      const kindEl = host.querySelector('#min-kind');
+      const bodyEl = host.querySelector('#min-body');
+      if (kindEl) kindEl.value = 'old_business';
+      if (bodyEl) {
+        bodyEl.value = `Follow-up on open action item: “${btn.dataset.title}”${btn.dataset.who ? ' (' + btn.dataset.who + ')' : ''} — `;
+        bodyEl.focus();
+        bodyEl.setSelectionRange(bodyEl.value.length, bodyEl.value.length);
+      }
+    }));
+  }
+
   async renderMinutes(dialog, meetingId, mt) {
     const host = dialog.querySelector('#minutes-section');
     if (!host) return;
@@ -754,6 +809,14 @@ class PageMeetings extends HTMLElement {
     ];
     const kindLabel = k => (KINDS.find(x => x[0] === k) ?? [k, k])[1];
 
+    // A motion action mid-typing re-renders this whole section; the
+    // secretary's half-written entry must survive the rebuild.
+    const draft = {
+      body: host.querySelector('#min-body')?.value ?? '',
+      kind: host.querySelector('#min-kind')?.value ?? '',
+      motion: host.querySelector('#min-motion')?.value ?? '',
+      focused: document.activeElement === host.querySelector('#min-body'),
+    };
     let entries = [], motions = [];
     try {
       [entries, motions] = await Promise.all([
@@ -808,6 +871,28 @@ class PageMeetings extends HTMLElement {
           <button class="btn-secondary" id="min-add" style="width:100%">+ Record entry</button>
         </div>` : ''}
     `;
+
+    // Restore the in-flight draft the rebuild just wiped.
+    if (draft.body || draft.kind || draft.motion) {
+      const bodyEl = host.querySelector('#min-body');
+      if (bodyEl && draft.body) bodyEl.value = draft.body;
+      const kindEl = host.querySelector('#min-kind');
+      if (kindEl && draft.kind) kindEl.value = draft.kind;
+      const motionEl = host.querySelector('#min-motion');
+      if (motionEl && draft.motion &&
+          [...motionEl.options].some(o => o.value === draft.motion)) {
+        motionEl.value = draft.motion;
+      }
+      if (draft.focused && bodyEl) {
+        bodyEl.focus();
+        bodyEl.setSelectionRange(bodyEl.value.length, bodyEl.value.length);
+      }
+    }
+    // Carry-over: the open action items from EARLIER meetings, surfaced where
+    // old business gets recorded, with one click to note each in the journal.
+    if (canEdit) {
+      this.renderCarryover(host, meetingId).catch(() => {});
+    }
 
     const reload = async () => {
       const fresh = await api('GET', `/meetings/${meetingId}`);

@@ -457,8 +457,10 @@ func (h *GovernanceHandler) CloseMotion(w http.ResponseWriter, r *http.Request) 
 		// carried motion's plan decision. Best-effort by design — the decided
 		// motion stands even if a side record is refused (e.g. finalized
 		// minutes), so surface trouble in the audit detail instead of a 500.
-		m.Status = final
-		if err := h.repo.RecordMotionOutcome(r.Context(), m, final, userIDFromCtx(r)); err != nil {
+		// Record from OUT — the post-close re-read — not the pre-close m: a
+		// ballot cast between the tally read and the close would otherwise be
+		// stored in motion_votes yet missing from the recorded counts.
+		if err := h.repo.RecordMotionOutcome(r.Context(), out, final, userIDFromCtx(r)); err != nil {
 			setAuditDetail(r, map[string]any{"outcome_records": "partial: " + err.Error()})
 		}
 		link := "#/meetings?open=" + out.MeetingID

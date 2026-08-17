@@ -59,6 +59,7 @@ type duesRepo interface {
 	UpdateInvoiceStatus(ctx context.Context, id, status string, notes *string) error
 	BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error)
 	RecomputeInvoiceStatus(ctx context.Context, id string) error
+	PaidSum(ctx context.Context, invoiceID, currency string) (int64, error)
 	CountByStatus(ctx context.Context, status string) (int, error)
 	ListTransactions(ctx context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error)
 	CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
@@ -87,8 +88,10 @@ type meetingsRepo interface {
 	HasGovernanceHistory(ctx context.Context, meetingID string) (bool, error)
 	SetAttendees(ctx context.Context, meetingID string, attendees []model.MeetingAttendee) error
 	CreateDecision(ctx context.Context, d *model.MeetingDecision) (*model.MeetingDecision, error)
-	UpdateDecision(ctx context.Context, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
-	DeleteDecision(ctx context.Context, id string) error
+	UpdateDecision(ctx context.Context, meetingID, id string, summary, detail, outcome *string, voteFor, voteAgainst, voteAbstain *int) (*model.MeetingDecision, error)
+	DeleteDecision(ctx context.Context, meetingID, id string) error
+	SetMinutesSnapshot(ctx context.Context, meetingID, doc string) error
+	GetMinutesSnapshot(ctx context.Context, meetingID string) (string, error)
 	Upcoming(ctx context.Context, n int) ([]model.Meeting, error)
 	ListMinutes(ctx context.Context, meetingID string) ([]model.MinutesEntry, error)
 	AddMinutesEntry(ctx context.Context, meetingID, kind, body string, motionID *string, recordedBy string) (*model.MinutesEntry, error)
@@ -181,6 +184,7 @@ type budgetRepo interface {
 	AddLine(ctx context.Context, l *model.BudgetLine) (*model.BudgetLine, error)
 	UpdateLine(ctx context.Context, id string, kind, category, label *string, quantity, unitAmountMinor *int64, note *string, sortOrder *int, accountID *string, clearAccount bool) (*model.BudgetLine, error)
 	DeleteLine(ctx context.Context, id string) error
+	ReorderLines(ctx context.Context, scenarioID string, ids []string) error
 	LineScenario(ctx context.Context, lineID string) (string, error)
 	ScenarioGuard(ctx context.Context, id string) (status, currency string, hasLines bool, err error)
 	AccountKind(ctx context.Context, accountID string) (string, error)

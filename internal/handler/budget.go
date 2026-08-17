@@ -182,15 +182,19 @@ func (h *BudgetHandler) VsActual(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"scenario":         sc.Name,
-		"currency":         sc.Currency,
-		"basis":            basis,
-		"budget_income":    sc.Totals.IncomeMinor,
-		"budget_expense":   sc.Totals.ExpenseMinor,
-		"actual_income":    actualIncome,
-		"actual_expense":   actualExpense,
+		"scenario":       sc.Name,
+		"currency":       sc.Currency,
+		"basis":          basis,
+		"budget_income":  sc.Totals.IncomeMinor,
+		"budget_expense": sc.Totals.ExpenseMinor,
+		"actual_income":  actualIncome,
+		"actual_expense": actualExpense,
+		// Variance is favorable-positive at EVERY level, matching the
+		// per-category rows: income above budget is +, expense under
+		// budget is + — a treasurer never sees the same overspend with
+		// two different signs in one modal.
 		"income_variance":  actualIncome - sc.Totals.IncomeMinor,
-		"expense_variance": actualExpense - sc.Totals.ExpenseMinor,
+		"expense_variance": sc.Totals.ExpenseMinor - actualExpense,
 		"categories":       categories,
 		"from":             from, "to": to,
 	}
@@ -300,6 +304,12 @@ func (h *BudgetHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if body.Currency == "" {
 		body.Currency = "USD"
 	}
+	cur, curOK := validCurrencyCode(body.Currency)
+	if !curOK {
+		writeError(w, http.StatusBadRequest, "currency must be a 3-8 letter code", "bad_request")
+		return
+	}
+	body.Currency = cur
 	sc := &model.BudgetScenario{
 		Name: body.Name, Description: body.Description, PeriodLabel: body.PeriodLabel,
 		Status: body.Status, Currency: body.Currency,
@@ -510,6 +520,33 @@ func (h *BudgetHandler) AddLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, l)
+}
+
+// ReorderLines applies a whole section's order in one call:
+// PUT /budgets/{id}/lines/order  {"ids": ["...", ...]} (officer+).
+func (h *BudgetHandler) ReorderLines(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := decodeJSON(r, &body); err != nil || len(body.IDs) == 0 || len(body.IDs) > 500 {
+		writeError(w, http.StatusBadRequest, "ids (1-500) required", "bad_request")
+		return
+	}
+	for _, lid := range body.IDs {
+		if !isValidUUID(lid) {
+			writeError(w, http.StatusBadRequest, "ids must be UUIDs", "bad_request")
+			return
+		}
+	}
+	if err := h.repo.ReorderLines(r.Context(), id, body.IDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "reorder error", "internal_error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // UpdateLine edits a budget line (officer+).

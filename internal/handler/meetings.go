@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -17,6 +19,24 @@ type MeetingsHandler struct {
 	events   eventNotifier
 	gov      minutesGovSource
 	audit    auditRepo
+	// tzSource returns the org's display timezone (falls back to server-local).
+	tzSource func(ctx context.Context) *time.Location
+}
+
+// SetTimezoneSource attaches the org-timezone lookup used wherever times are
+// rendered server-side (minutes documents, notification emails).
+func (h *MeetingsHandler) SetTimezoneSource(fn func(ctx context.Context) *time.Location) {
+	h.tzSource = fn
+}
+
+// location resolves the org's display timezone, defaulting to server-local.
+func (h *MeetingsHandler) location(ctx context.Context) *time.Location {
+	if h.tzSource != nil {
+		if loc := h.tzSource(ctx); loc != nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 // SetAuditLogger attaches the audit log for export recording (.ics, minutes).
@@ -60,7 +80,11 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		end := t.Add(24 * time.Hour)
 		f.To = &end
 	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// The calendar grid fetches a whole 6-week window at once, so this list
+	// accepts up to 500 (the repo's own cap) rather than the standard page
+	// cap — a silent fall-back to 100 made the OLDEST meetings in a busy
+	// window vanish from the grid with no error.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
@@ -126,7 +150,7 @@ func (h *MeetingsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.events != nil {
 		link := "#/meetings"
-		body := "A new meeting has been scheduled for " + mt.ScheduledAt.Format("Mon 2 Jan 2006, 15:04 MST") + "."
+		body := "A new meeting has been scheduled for " + mt.ScheduledAt.In(h.location(r.Context())).Format("Mon 2 Jan 2006, 15:04 MST") + "."
 		h.events.NotifyMembers("meeting.scheduled", "Meeting scheduled: "+mt.Title, &body, &link)
 	}
 	writeJSON(w, 201, mt)
@@ -241,7 +265,10 @@ func (h *MeetingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	// Gather affected members' emails before deleting — the attendee rows
 	// cascade away with the meeting.
-	affected, _ := h.repo.AttendeeEmails(r.Context(), id)
+	affected, err := h.repo.AttendeeEmails(r.Context(), id)
+	if err != nil {
+		log.Printf("attendee emails for meeting %s: %v (deletion notices skipped)", id, err)
+	}
 	if err := h.repo.Delete(r.Context(), id); err != nil {
 		writeRepoError(w, err, "meeting not found", "delete error")
 		return
@@ -286,7 +313,7 @@ func (h *MeetingsHandler) SetRSVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.SetRSVP(r.Context(), id, memberID, body.Response); err != nil {
-		writeError(w, http.StatusInternalServerError, "save error", "internal_error")
+		writeRepoError(w, err, "meeting not found", "save error")
 		return
 	}
 	s, _ := h.repo.RSVPSummary(r.Context(), id, memberID)
@@ -321,7 +348,9 @@ func (h *MeetingsHandler) SetAttendees(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.repo.SetAttendees(r.Context(), id, body.Attendees); err != nil {
-		writeError(w, 500, "update error", "internal_error")
+		// A missing meeting/member (FK) or a duplicated member in the payload
+		// (PK) is the caller's mistake, not a server fault.
+		writeRepoError(w, err, "meeting not found", "update error")
 		return
 	}
 	attendees, err := h.repo.GetAttendees(r.Context(), id)
@@ -377,8 +406,14 @@ func (h *MeetingsHandler) CreateDecision(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 201, d)
 }
 
-// UpdateDecision edits an existing decision.
+// UpdateDecision edits an existing decision. The decision must belong to the
+// meeting in the path: /meetings/A/decisions/{did-of-B} is a 404, not a
+// cross-meeting edit with a lying audit trail.
 func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
 	did, ok := requireUUID(w, r, "did")
 	if !ok {
 		return
@@ -395,7 +430,7 @@ func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request)
 		writeError(w, 400, "invalid body", "bad_request")
 		return
 	}
-	d, err := h.repo.UpdateDecision(r.Context(), did,
+	d, err := h.repo.UpdateDecision(r.Context(), id, did,
 		body.Summary, body.Detail, body.Outcome,
 		body.VoteFor, body.VoteAgainst, body.VoteAbstain)
 	if err != nil {
@@ -421,13 +456,17 @@ func (h *MeetingsHandler) UpdateDecision(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, d)
 }
 
-// DeleteDecision removes a decision.
+// DeleteDecision removes a decision (scoped to the meeting in the path).
 func (h *MeetingsHandler) DeleteDecision(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireUUID(w, r, "id")
+	if !ok {
+		return
+	}
 	did, ok := requireUUID(w, r, "did")
 	if !ok {
 		return
 	}
-	if err := h.repo.DeleteDecision(r.Context(), did); err != nil {
+	if err := h.repo.DeleteDecision(r.Context(), id, did); err != nil {
 		writeRepoError(w, err, "decision not found", "delete error")
 		return
 	}

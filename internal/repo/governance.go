@@ -387,6 +387,33 @@ func (r *GovernanceRepo) SetMotionStatus(ctx context.Context, id, status string,
 	return r.GetMotion(ctx, id)
 }
 
+// VotesByMeeting returns every ballot for every motion of one meeting in a
+// single query, keyed by motion id — the minutes document used to run one
+// query per motion.
+func (r *GovernanceRepo) VotesByMeeting(ctx context.Context, meetingID string) (map[string][]model.MotionVote, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT v.motion_id::text, v.member_id::text, m.display_name, v.choice, v.is_proxy, v.cast_at
+		FROM motion_votes v
+		JOIN motions mo ON mo.id = v.motion_id
+		JOIN members m ON m.id = v.member_id
+		WHERE mo.meeting_id = $1::uuid
+		ORDER BY m.display_name`, meetingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]model.MotionVote{}
+	for rows.Next() {
+		var mid string
+		var v model.MotionVote
+		if err := rows.Scan(&mid, &v.MemberID, &v.MemberName, &v.Choice, &v.IsProxy, &v.CastAt); err != nil {
+			return nil, err
+		}
+		out[mid] = append(out[mid], v)
+	}
+	return out, rows.Err()
+}
+
 // DeleteMotion removes a motion (and its ballots via cascade).
 func (r *GovernanceRepo) DeleteMotion(ctx context.Context, id string) error {
 	tag, err := r.db.Exec(ctx, `DELETE FROM motions WHERE id = $1::uuid`, id)

@@ -23,7 +23,7 @@ type packFundsSource interface {
 // packBillsSource is the slice of *repo.BillsRepo the pack needs for accounts
 // payable (optional — set via SetBills).
 type packBillsSource interface {
-	List(ctx context.Context, status string, limit int) ([]model.Bill, error)
+	ListForPeriod(ctx context.Context, from, to string) ([]model.Bill, error)
 	APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error)
 }
 
@@ -212,10 +212,12 @@ func (h *AccountingPackHandler) Zip(w http.ResponseWriter, r *http.Request) {
 		agingRows = append(agingRows, []string{a.Currency, a.Bucket, fmt.Sprint(a.Invoices), fmt.Sprint(a.Amount)})
 	}
 
-	// Accounts payable (optional): all bills, and open-bill aging as of `to`.
+	// Accounts payable (optional): every bill dated in the pack's period —
+	// complete or nothing, since EVIDENCE.txt vouches for it — plus open-bill
+	// aging as of `to`.
 	var billsRows, apAgingRows [][]string
 	if h.bills != nil {
-		bills, err := h.bills.List(ctx, "", 5000)
+		bills, err := h.bills.ListForPeriod(ctx, from, to)
 		if err != nil {
 			writeError(w, 500, "query error", "internal_error")
 			return

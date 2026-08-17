@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // orgSettingsRepo is satisfied by *repo.OrgSettingsRepo.
@@ -35,6 +36,19 @@ var orgSettingKeys = map[string]orgSetting{
 	// Free text shown to members on My Account ("how to pay": Zelle address,
 	// Venmo handle, checks payable to...).
 	"how_to_pay": {validate: func(v string) bool { return len(v) <= 4000 }},
+	// IANA zone name (e.g. "America/New_York"). Everything rendered
+	// server-side — minutes documents, notification emails — uses it; an
+	// empty value falls back to the server's own zone.
+	"timezone": {validate: func(v string) bool {
+		if v == "" {
+			return true
+		}
+		if len(v) > 64 {
+			return false
+		}
+		_, err := time.LoadLocation(v)
+		return err == nil
+	}},
 	// Org-wide two-factor mandate: accounts at/above this role must enroll.
 	// Member-visible so the enrollment screen can explain the policy.
 	"require_2fa": {validate: func(v string) bool {

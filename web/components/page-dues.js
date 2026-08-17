@@ -1,7 +1,7 @@
 import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, renderPager, providerOptions, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
+import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, moneyExponent, renderPager, providerOptions, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
 
 const STATUSES = ['','pending','overdue','paid','partial','waived'];
 
@@ -342,7 +342,7 @@ class PageDues extends HTMLElement {
     const rowHTML = (p = {}) => `
       <div class="inst-row" style="display:flex;gap:.5rem;margin-bottom:.4rem">
         <input type="date" class="inst-due" value="${p.due_date ? esc(String(p.due_date).slice(0, 10)) : ''}" style="flex:1">
-        <input class="inst-amt" inputmode="decimal" placeholder="Amount" value="${p.amount_minor ? (p.amount_minor / 100).toFixed(2) : ''}" style="flex:1">
+        <input class="inst-amt" inputmode="decimal" placeholder="Amount" value="${p.amount_minor ? (p.amount_minor / 10 ** moneyExponent(inv.currency)).toFixed(moneyExponent(inv.currency)) : ''}" style="flex:1">
         <button class="btn-ghost inst-del" style="font-size:.8rem;color:var(--color-danger)">✕</button>
       </div>`;
     const { dialog, close } = openModal({
@@ -625,7 +625,22 @@ class PageDues extends HTMLElement {
         toast('Payment recorded', 'success');
         close();
         this.load();
-      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+      } catch (err) {
+        // The server guards against a typo'd extra zero: a payment past the
+        // remaining balance needs an explicit acknowledgement.
+        if (err?.code === 'conflict' && (err.error ?? '').includes('allow_overpayment')) {
+          if (confirm('This payment is MORE than the remaining balance.\n\nRecord it as an intentional overpayment?')) {
+            try {
+              await api('POST', `/dues/${invoiceID}/transactions`, { ...body, allow_overpayment: true });
+              toast('Overpayment recorded', 'success');
+              close();
+              this.load();
+            } catch (e2) { toast(e2.error ?? 'Failed', 'error'); }
+          }
+          return;
+        }
+        toast(err.error ?? 'Failed', 'error');
+      }
     }));
   }
 }

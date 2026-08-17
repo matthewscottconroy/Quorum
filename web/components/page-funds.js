@@ -212,7 +212,8 @@ class PageFunds extends HTMLElement {
             <div class="form-group"><label for="pr-doc">Supporting document (quote/invoice)</label>
               <select id="pr-doc"><option value="">— none —</option></select></div>
             <div class="form-group"><label for="pr-exp">Expense account</label>
-              <select id="pr-exp"><option value="">Default</option></select></div>
+              <select id="pr-exp"><option value="">Default</option></select>
+              <div id="pr-budget-hint" style="font-size:.75rem;color:var(--color-text-muted);margin-top:.2rem"></div></div>
           </div>
         </div>
         <div class="modal-footer">

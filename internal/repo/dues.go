@@ -171,17 +171,57 @@ func (r *DuesRepo) CreateInvoiceBatch(ctx context.Context, invs []*model.DuesInv
 
 // BatchUpdateStatus sets the status on many invoices in one statement,
 // returning the number changed. Used for bulk waive/re-open from the UI.
+// Waiving skips invoices that are already paid (there is nothing left to
+// write off), and any target other than 'waived' is immediately re-derived
+// from the ledger so recorded payments always win over a bulk re-open.
 func (r *DuesRepo) BatchUpdateStatus(ctx context.Context, ids []string, status string) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	tag, err := r.db.Exec(ctx,
-		`UPDATE dues_invoices SET status = $1, updated_at = now() WHERE id = ANY($2::uuid[])`,
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `
+		UPDATE dues_invoices SET status = $1, updated_at = now()
+		WHERE id = ANY($2::uuid[]) AND NOT ($1 = 'waived' AND status = 'paid')`,
 		status, ids)
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	if status != "waived" {
+		if _, err := tx.Exec(ctx, batchRecomputeStatusSQL, ids); err != nil {
+			return 0, err
+		}
+	}
+	return tag.RowsAffected(), tx.Commit(ctx)
+}
+
+// batchRecomputeStatusSQL is recomputeInvoiceStatusSQL over a set of ids.
+const batchRecomputeStatusSQL = `
+	UPDATE dues_invoices SET
+		status = CASE
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = dues_invoices.id AND provider_status != 'failed' AND currency = dues_invoices.currency)
+			     >= amount THEN 'paid'
+			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = dues_invoices.id AND provider_status != 'failed' AND currency = dues_invoices.currency)
+			     > 0 THEN 'partial'
+			WHEN due_date < CURRENT_DATE THEN 'overdue'
+			ELSE 'pending'
+		END,
+		updated_at = now()
+	WHERE id = ANY($1::uuid[]) AND status != 'waived'`
+
+// PaidSum returns the invoice's net recorded total (payments minus refunds)
+// in the given currency — the number both the overpayment guard and the
+// refund cap reason about.
+func (r *DuesRepo) PaidSum(ctx context.Context, invoiceID, currency string) (int64, error) {
+	var sum int64
+	err := r.db.QueryRow(ctx, `
+		SELECT coalesce(sum(amount),0) FROM transactions
+		WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = $2`,
+		invoiceID, currency).Scan(&sum)
+	return sum, err
 }
 
 // UpdateInvoiceStatus sets an invoice's status, returning pgx.ErrNoRows if absent.
@@ -202,6 +242,11 @@ func (r *DuesRepo) UpdateInvoiceStatus(ctx context.Context, id, status string, n
 // Only transactions in the SAME currency as the invoice count toward the paid
 // total — summing raw minor units across currencies would be meaningless (¥1000
 // is not $1000), so a mismatched-currency payment must never flip the status.
+// The status is a pure function of the ledger: paid when covered, partial when
+// something has landed, overdue/pending otherwise — so a refund moves a paid
+// invoice back to partial/pending instead of leaving it 'paid' forever. Only
+// 'waived' is exempt: waiving is an explicit decision with its own GL posting,
+// and un-waiving goes through the status endpoint, never through recompute.
 const recomputeInvoiceStatusSQL = `
 	UPDATE dues_invoices SET
 		status = CASE
@@ -209,11 +254,11 @@ const recomputeInvoiceStatusSQL = `
 			     >= amount THEN 'paid'
 			WHEN (SELECT coalesce(sum(amount),0) FROM transactions WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = dues_invoices.currency)
 			     > 0 THEN 'partial'
-			WHEN due_date < CURRENT_DATE AND status NOT IN ('paid','waived') THEN 'overdue'
-			ELSE status
+			WHEN due_date < CURRENT_DATE THEN 'overdue'
+			ELSE 'pending'
 		END,
 		updated_at = now()
-	WHERE id = $1::uuid AND status NOT IN ('paid','waived')`
+	WHERE id = $1::uuid AND status != 'waived'`
 
 // RecomputeInvoiceStatus recomputes an invoice's status from its same-currency transactions.
 func (r *DuesRepo) RecomputeInvoiceStatus(ctx context.Context, id string) error {

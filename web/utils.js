@@ -65,7 +65,7 @@ export function fmtDateTime(iso) {
  *        - Called after the dialog is shown; convenient for wiring listeners.
  * @returns {{dialog: HTMLDialogElement, close: function}} The dialog element and a function that closes it.
  */
-export function openModal({ title, body, maxWidth, onMount } = {}) {
+export function openModal({ title, body, maxWidth, onMount, confirmDiscard } = {}) {
   const dialog = document.createElement('dialog');
   dialog.className = 'modal';
   if (maxWidth) dialog.style.maxWidth = maxWidth;
@@ -82,6 +82,16 @@ export function openModal({ title, body, maxWidth, onMount } = {}) {
   document.body.appendChild(dialog);
 
   const close = () => dialog.close();
+  // Opt-in dirty guard: when the caller provides confirmDiscard(), an Escape
+  // or ✕ with unsaved edits asks before throwing typed work away. (Forced
+  // closes on navigation/auth still win: an inert page is worse than a
+  // discarded draft.)
+  if (confirmDiscard) {
+    dialog.addEventListener('cancel', e => {
+      if (!confirmDiscard()) return; // clean: let Escape close it
+      if (!confirm('Discard unsaved changes?')) e.preventDefault();
+    });
+  }
   // A showModal() dialog makes the rest of the page inert, so a modal left open
   // across a navigation or auth change would freeze the freshly rendered view
   // (worst case: a login screen stuck behind a stale edit modal). Close it on
@@ -94,7 +104,10 @@ export function openModal({ title, body, maxWidth, onMount } = {}) {
     document.removeEventListener('auth-changed', forceClose);
     dialog.remove();
   });
-  dialog.querySelector('.modal-close').addEventListener('click', close);
+  dialog.querySelector('.modal-close').addEventListener('click', () => {
+    if (confirmDiscard && confirmDiscard() && !confirm('Discard unsaved changes?')) return;
+    close();
+  });
   dialog.showModal();
   onMount?.({ dialog, close });
   return { dialog, close };

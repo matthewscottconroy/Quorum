@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,7 +24,7 @@ import (
 // *repo.GovernanceRepo satisfies it.
 type minutesGovSource interface {
 	ListMotions(ctx context.Context, meetingID string) ([]model.Motion, error)
-	GetVotes(ctx context.Context, motionID string) ([]model.MotionVote, error)
+	VotesByMeeting(ctx context.Context, meetingID string) (map[string][]model.MotionVote, error)
 }
 
 // SetGovernanceSource attaches the motion/vote reader used by the minutes
@@ -136,7 +137,9 @@ func (h *MeetingsHandler) DeleteMinutesEntry(w http.ResponseWriter, r *http.Requ
 
 // FinalizeMinutes marks the minutes approved (officer+). It is irreversible —
 // the journal locks at the database level — so it is confirm-gated on the
-// meeting title like the other one-way actions.
+// meeting title like the other one-way actions, refuses to lock a meeting
+// that hasn't happened or has an empty journal, and captures the rendered
+// document as the permanent snapshot.
 func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -150,6 +153,22 @@ func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request
 	if !confirmMatches(w, r, mt.Title) {
 		return
 	}
+	// Finalization is forever, so it must be POSSIBLE to have minutes first:
+	// a future meeting has none, and an empty journal would permanently lock
+	// this meeting at zero entries with every later write refused.
+	if mt.ScheduledAt.After(time.Now()) && mt.Status != "completed" {
+		writeError(w, http.StatusConflict, "this meeting hasn't happened yet: finalize after it adjourns", "conflict")
+		return
+	}
+	entries, err := h.repo.ListMinutes(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+		return
+	}
+	if len(entries) == 0 {
+		writeError(w, http.StatusConflict, "the minutes journal is empty: record the meeting before finalizing", "conflict")
+		return
+	}
 	if err := h.repo.FinalizeMinutes(r.Context(), id, userIDFromCtx(r)); err != nil {
 		if errors.Is(err, repo.ErrMinutesFinalized) {
 			writeError(w, http.StatusConflict, "minutes are already finalized", "conflict")
@@ -157,6 +176,17 @@ func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request
 		}
 		writeRepoError(w, err, "meeting not found", "finalize error")
 		return
+	}
+	// Snapshot the document EXACTLY as approved: whatever later happens to
+	// the source rows, this copy is what the org sees. Best-effort — if the
+	// snapshot write fails, the document still renders live (and the source
+	// rows are now trigger-guarded anyway).
+	if final, err := h.repo.Get(r.Context(), id); err == nil {
+		if doc, derr := h.renderMinutes(r.Context(), final, entries); derr == nil {
+			if serr := h.repo.SetMinutesSnapshot(r.Context(), id, doc); serr != nil {
+				log.Printf("minutes snapshot for %s: %v", id, serr)
+			}
+		}
 	}
 	setAuditDetail(r, map[string]any{"minutes": "finalized"})
 	if h.events != nil {
@@ -167,9 +197,30 @@ func (h *MeetingsHandler) FinalizeMinutes(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// MinutesDocument renders the full minutes as a Markdown document (member+):
-// the deliverable a recording secretary would produce, generated from what was
-// recorded. Draft minutes are watermarked as such.
+// renderMinutes builds the Markdown document for a meeting: journal plus
+// motions with their ballots (one query for the whole meeting's votes).
+func (h *MeetingsHandler) renderMinutes(ctx context.Context, mt *model.Meeting, entries []model.MinutesEntry) (string, error) {
+	var motions []model.Motion
+	if h.gov != nil {
+		var err error
+		motions, err = h.gov.ListMotions(ctx, mt.ID)
+		if err != nil {
+			return "", err
+		}
+		votes, err := h.gov.VotesByMeeting(ctx, mt.ID)
+		if err != nil {
+			return "", err
+		}
+		for i := range motions {
+			motions[i].Votes = votes[motions[i].ID]
+		}
+	}
+	return buildMinutesDocument(mt, entries, motions, h.location(ctx)), nil
+}
+
+// MinutesDocument returns the minutes as a Markdown document (member+).
+// Finalized meetings serve the snapshot captured at approval — the official
+// record — and only drafts are rendered live (with a DRAFT watermark).
 func (h *MeetingsHandler) MinutesDocument(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
@@ -180,32 +231,28 @@ func (h *MeetingsHandler) MinutesDocument(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "meeting not found", "not_found")
 		return
 	}
-	entries, err := h.repo.ListMinutes(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
-		return
+	var doc string
+	if mt.MinutesFinalizedAt != nil {
+		if snap, err := h.repo.GetMinutesSnapshot(r.Context(), id); err == nil && snap != "" {
+			doc = snap
+		}
 	}
-	var motions []model.Motion
-	if h.gov != nil {
-		motions, err = h.gov.ListMotions(r.Context(), id)
+	if doc == "" {
+		entries, err := h.repo.ListMinutes(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
 			return
 		}
-		for i := range motions {
-			votes, err := h.gov.GetVotes(r.Context(), motions[i].ID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "query error", "internal_error")
-				return
-			}
-			motions[i].Votes = votes
+		doc, err = h.renderMinutes(r.Context(), mt, entries)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "query error", "internal_error")
+			return
 		}
 	}
-	doc := buildMinutesDocument(mt, entries, motions)
 	auditExport(r, h.audit, "meetings/"+id+"/minutes.md", map[string]any{"meeting": mt.Title})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("Content-Disposition",
-		fmt.Sprintf("attachment; filename=%q", "minutes-"+mt.ScheduledAt.Format("2006-01-02")+".md"))
+		fmt.Sprintf("attachment; filename=%q", "minutes-"+mt.ScheduledAt.In(h.location(r.Context())).Format("2006-01-02")+".md"))
 	_, _ = w.Write([]byte(doc))
 }
 
@@ -217,22 +264,25 @@ var minutesKindLabels = map[string]string{
 	"recess": "Recess", "adjournment": "Adjournment", "note": "Note",
 }
 
-func buildMinutesDocument(mt *model.Meeting, entries []model.MinutesEntry, motions []model.Motion) string {
+func buildMinutesDocument(mt *model.Meeting, entries []model.MinutesEntry, motions []model.Motion, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Minutes — %s\n\n", mt.Title)
 	if mt.MinutesFinalizedAt == nil {
 		b.WriteString("> **DRAFT — these minutes have not been finalized.**\n\n")
 	}
-	fmt.Fprintf(&b, "- **Date:** %s\n", mt.ScheduledAt.Format("Monday, 2 January 2006, 15:04 MST"))
+	fmt.Fprintf(&b, "- **Date:** %s\n", mt.ScheduledAt.In(loc).Format("Monday, 2 January 2006, 15:04 MST"))
 	if mt.EndsAt != nil {
-		fmt.Fprintf(&b, "- **Adjourned/ends:** %s\n", mt.EndsAt.Format("15:04 MST"))
+		fmt.Fprintf(&b, "- **Adjourned/ends:** %s\n", mt.EndsAt.In(loc).Format("15:04 MST"))
 	}
 	if mt.Location != nil && *mt.Location != "" {
 		fmt.Fprintf(&b, "- **Location:** %s\n", *mt.Location)
 	}
 	fmt.Fprintf(&b, "- **Status:** %s\n", mt.Status)
 	if mt.MinutesFinalizedAt != nil {
-		fmt.Fprintf(&b, "- **Minutes finalized:** %s\n", mt.MinutesFinalizedAt.Format("2006-01-02 15:04 MST"))
+		fmt.Fprintf(&b, "- **Minutes finalized:** %s\n", mt.MinutesFinalizedAt.In(loc).Format("2006-01-02 15:04 MST"))
 	}
 	b.WriteString("\n")
 
@@ -266,7 +316,7 @@ func buildMinutesDocument(mt *model.Meeting, entries []model.MinutesEntry, motio
 				fmt.Fprintf(&b, " _(re: motion “%s”)_", *e.MotionTitle)
 			}
 			fmt.Fprintf(&b, " — %s", e.Body)
-			fmt.Fprintf(&b, " _[%s]_\n", e.RecordedAt.Format("15:04"))
+			fmt.Fprintf(&b, " _[%s]_\n", e.RecordedAt.In(loc).Format("15:04"))
 		}
 		b.WriteString("\n")
 	}
@@ -333,6 +383,6 @@ func buildMinutesDocument(mt *model.Meeting, entries []model.MinutesEntry, motio
 		b.WriteString("\n")
 	}
 
-	fmt.Fprintf(&b, "---\n_Generated by Quorum on %s._\n", time.Now().Format("2006-01-02 15:04 MST"))
+	fmt.Fprintf(&b, "---\n_Generated by Quorum on %s._\n", time.Now().In(loc).Format("2006-01-02 15:04 MST"))
 	return b.String()
 }

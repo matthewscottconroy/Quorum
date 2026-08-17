@@ -70,13 +70,15 @@ func (r *GLRepo) RecentEntries(ctx context.Context, limit int) ([]model.GLEntry,
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// Pick the newest N entry ids first: a bigserial leaves gaps on rolled-
+	// back inserts, so a "seq > max-N" window silently returns fewer than N.
 	rows, err := r.db.Query(ctx, `
 		SELECT e.id::text, e.seq, e.entry_date, e.memo, e.source_type, e.created_at,
 		       a.code, a.name, l.currency, l.debit, l.credit
-		FROM journal_entries e
+		FROM (SELECT id FROM journal_entries ORDER BY seq DESC LIMIT $1) recent
+		JOIN journal_entries e ON e.id = recent.id
 		JOIN journal_lines l ON l.entry_id = e.id
 		JOIN accounts a ON a.id = l.account_id
-		WHERE e.seq > (SELECT coalesce(max(seq), 0) - $1 FROM journal_entries)
 		ORDER BY e.seq DESC, a.code`, limit)
 	if err != nil {
 		return nil, err
@@ -163,9 +165,12 @@ func (r *GLRepo) ManualEntry(ctx context.Context, entryDate, memo, createdBy str
 		return "", err
 	}
 	for _, ln := range lines {
+		// Store the same upper-cased code the handler balanced under: a raw
+		// "usd" line would balance at entry time yet never aggregate with
+		// "USD" in the trial balance or statements.
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO journal_lines (entry_id, account_id, currency, debit, credit)
-			VALUES ($1::uuid, (SELECT id FROM accounts WHERE code = $2), $3, $4, $5)`,
+			VALUES ($1::uuid, (SELECT id FROM accounts WHERE code = $2), upper($3), $4, $5)`,
 			eid, ln.AccountCode, ln.Currency, ln.Debit, ln.Credit); err != nil {
 			return "", err
 		}

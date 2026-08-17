@@ -219,13 +219,22 @@ func (r *FundsRepo) UpdatePolicy(ctx context.Context, id string, purpose *string
 
 	voided := 0
 	if policyChanged {
+		// Approvals gathered under the OLD policy don't carry: void them on
+		// every request that hasn't actually spent money yet — including
+		// 'approved' ones, which would otherwise stay completable at the old,
+		// weaker bar after the org raised it.
 		tag, err := tx.Exec(ctx, `
 			DELETE FROM purchase_approvals pa USING purchase_requests pr
-			WHERE pa.request_id = pr.id AND pr.fund_id = $1::uuid AND pr.status = 'pending'`, id)
+			WHERE pa.request_id = pr.id AND pr.fund_id = $1::uuid AND pr.status IN ('pending','approved')`, id)
 		if err != nil {
 			return 0, err
 		}
 		voided = int(tag.RowsAffected())
+		if _, err := tx.Exec(ctx, `
+			UPDATE purchase_requests SET status = 'pending', decided_at = NULL
+			WHERE fund_id = $1::uuid AND status = 'approved'`, id); err != nil {
+			return 0, err
+		}
 	}
 	return voided, tx.Commit(ctx)
 }

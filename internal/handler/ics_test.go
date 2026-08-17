@@ -25,7 +25,9 @@ func TestICSFold_LongLinesAndUTF8(t *testing.T) {
 	icsFold(&b, "SUMMARY:"+strings.Repeat("é", 100)) // 2-byte runes force boundary care
 	out := b.String()
 	for i, line := range strings.Split(strings.TrimSuffix(out, "\r\n"), "\r\n") {
-		if len(line) > 76 { // 75 + leading space on continuations
+		// RFC 5545 §3.1: 75 octets per line, INCLUDING a continuation's
+		// leading space (it is part of the folded line's 75).
+		if len(line) > 75 {
 			t.Errorf("line %d exceeds fold width: %d bytes", i, len(line))
 		}
 	}

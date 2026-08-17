@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 // ---- payment reports ----
@@ -17,6 +18,7 @@ import (
 type mockPayReports struct {
 	create  func(ctx context.Context, invoiceID, memberID, method, reference, note string) (*model.PaymentReport, error)
 	resolve func(ctx context.Context, id, status, by string) (string, error)
+	confirm func(ctx context.Context, id, by string) (*repo.ConfirmOutcome, error)
 }
 
 func (m *mockPayReports) Create(ctx context.Context, inv, mem, method, ref, note string) (*model.PaymentReport, error) {
@@ -35,6 +37,12 @@ func (m *mockPayReports) Resolve(ctx context.Context, id, status, by string) (st
 	}
 	return "inv1", nil
 }
+func (m *mockPayReports) ConfirmAndPost(ctx context.Context, id, by string) (*repo.ConfirmOutcome, error) {
+	if m.confirm != nil {
+		return m.confirm(ctx, id, by)
+	}
+	return &repo.ConfirmOutcome{InvoiceID: "inv1", Posted: true, AmountMinor: 5000}, nil
+}
 
 type mockPRDues struct {
 	inv *model.DuesInvoice
@@ -46,10 +54,6 @@ func (m *mockPRDues) GetInvoice(ctx context.Context, id string) (*model.DuesInvo
 	}
 	return &model.DuesInvoice{ID: id, MemberID: "member-1", AmountMinor: 5000, Currency: "USD", Status: "pending"}, nil
 }
-func (m *mockPRDues) CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error) {
-	return t, nil
-}
-func (m *mockPRDues) RecomputeInvoiceStatus(ctx context.Context, id string) error { return nil }
 
 const testInvID = "11111111-1111-1111-1111-111111111111"
 
@@ -98,7 +102,7 @@ func TestPaymentReport_OwnerSucceeds(t *testing.T) {
 // Confirming an already-resolved report is a 409.
 func TestPaymentReport_ConfirmGone409(t *testing.T) {
 	h := NewPaymentReportsHandler(&mockPayReports{
-		resolve: func(context.Context, string, string, string) (string, error) { return "", pgx.ErrNoRows },
+		confirm: func(context.Context, string, string) (*repo.ConfirmOutcome, error) { return nil, pgx.ErrNoRows },
 	}, &mockPRDues{})
 	req := reqWithParam("POST", "/payment-reports/"+testInvID+"/confirm", "", map[string]string{"id": testInvID})
 	req = withCtxUser(req, "u-officer", "officer")
@@ -112,7 +116,9 @@ func TestPaymentReport_ConfirmGone409(t *testing.T) {
 // Confirming a report on a waived invoice confirms but does not post.
 func TestPaymentReport_ConfirmWaivedNotPosted(t *testing.T) {
 	h := NewPaymentReportsHandler(&mockPayReports{
-		resolve: func(context.Context, string, string, string) (string, error) { return "inv-waived", nil },
+		confirm: func(context.Context, string, string) (*repo.ConfirmOutcome, error) {
+			return &repo.ConfirmOutcome{InvoiceID: "inv-waived", Reason: "invoice is waived"}, nil
+		},
 	}, &mockPRDues{inv: &model.DuesInvoice{ID: "inv-waived", MemberID: "m", Status: "waived"}})
 	req := reqWithParam("POST", "/payment-reports/"+testInvID+"/confirm", "", map[string]string{"id": testInvID})
 	req = withCtxUser(req, "u-officer", "officer")

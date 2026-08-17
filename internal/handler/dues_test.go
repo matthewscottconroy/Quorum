@@ -280,7 +280,7 @@ func TestDuesUpdate_NotFound(t *testing.T) {
 	h := NewDuesHandler(&mockDuesRepo{
 		UpdateInvoiceStatusFn: func(_ context.Context, _, _ string, _ *string) error { return pgx.ErrNoRows },
 	})
-	body := `{"status":"paid"}`
+	body := `{"status":"overdue"}`
 	req := chiRequest("PATCH", "/dues/i1", body, map[string]string{"id": testUUID2})
 	rr := httptest.NewRecorder()
 	h.Update(rr, req)
@@ -293,7 +293,7 @@ func TestDuesUpdate_RepoError(t *testing.T) {
 	h := NewDuesHandler(&mockDuesRepo{
 		UpdateInvoiceStatusFn: func(_ context.Context, _, _ string, _ *string) error { return errors.New("db error") },
 	})
-	body := `{"status":"paid"}`
+	body := `{"status":"overdue"}`
 	req := chiRequest("PATCH", "/dues/i1", body, map[string]string{"id": testUUID})
 	rr := httptest.NewRecorder()
 	h.Update(rr, req)
@@ -414,9 +414,14 @@ func TestDuesListTransactions_BadUUIDFilters(t *testing.T) {
 // ---- Valid statuses ----
 
 func TestDuesUpdate_AllValidStatuses(t *testing.T) {
-	for _, status := range []string{"pending", "paid", "partial", "overdue", "waived"} {
+	// pending/overdue/waived remain manual transitions; paid and partial are
+	// ledger-derived and refused (recorded payments decide them).
+	for status, want := range map[string]int{
+		"pending": 200, "overdue": 200, "waived": 200, "paid": 409, "partial": 409,
+	} {
 		h := NewDuesHandler(&mockDuesRepo{
-			UpdateInvoiceStatusFn: func(_ context.Context, _, _ string, _ *string) error { return nil },
+			UpdateInvoiceStatusFn:    func(_ context.Context, _, _ string, _ *string) error { return nil },
+			RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
 			GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
 				return testInvoice(id, "m1"), nil
 			},
@@ -425,11 +430,75 @@ func TestDuesUpdate_AllValidStatuses(t *testing.T) {
 		req := chiRequest("PATCH", "/dues/i1", body, map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
 		rr := httptest.NewRecorder()
 		h.Update(rr, req)
-		if rr.Code != 200 {
-			t.Errorf("status %q: got HTTP %d, want 200", status, rr.Code)
+		if rr.Code != want {
+			t.Errorf("status %q: got HTTP %d, want %d", status, rr.Code, want)
 		}
 	}
 }
 
 // Ensure http.Handler interface — compile-time check.
 var _ http.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+
+// 'paid' and 'partial' are ledger-derived: setting them by hand is refused.
+func TestDuesUpdate_ComputedStatusesRefused(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{})
+	for _, status := range []string{"paid", "partial"} {
+		req := chiRequest("PATCH", "/dues/x", `{"status":"`+status+`"}`,
+			map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+		rr := httptest.NewRecorder()
+		h.Update(rr, withCtxUser(req, "u", "officer"))
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("manual %s: got %d, want 409 (%s)", status, rr.Code, rr.Body)
+		}
+	}
+}
+
+// Waiving a fully paid invoice is refused: there is nothing left to waive.
+func TestDuesUpdate_WaivePaidRefused(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
+			return &model.DuesInvoice{ID: id, Status: "paid", AmountMinor: 100, Currency: "USD"}, nil
+		},
+	})
+	req := chiRequest("PATCH", "/dues/x", `{"status":"waived"}`,
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.Update(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("waive paid: got %d, want 409 (%s)", rr.Code, rr.Body)
+	}
+}
+
+// A manual payment beyond the remaining balance needs the explicit flag.
+func TestDuesTransaction_OverpaymentGuard(t *testing.T) {
+	recorded := false
+	mock := &mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
+			return &model.DuesInvoice{ID: id, MemberID: "22222222-2222-2222-2222-222222222222",
+				Status: "partial", AmountMinor: 1000, Currency: "USD"}, nil
+		},
+		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 600, nil },
+		CreateTransactionFn: func(_ context.Context, tr *model.Transaction) (*model.Transaction, error) {
+			recorded = true
+			return tr, nil
+		},
+		RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
+	}
+	h := NewDuesHandler(mock)
+	// 500 > the 400 remaining → 409, nothing recorded.
+	req := chiRequest("POST", "/dues/x/transactions", `{"amount_minor":500,"provider":"cash"}`,
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr := httptest.NewRecorder()
+	h.CreateTransaction(rr, withCtxUser(req, "u", "officer"))
+	if rr.Code != http.StatusConflict || recorded {
+		t.Fatalf("overpay: got %d recorded=%v, want 409 and no record (%s)", rr.Code, recorded, rr.Body)
+	}
+	// Same payment with the acknowledgement → recorded.
+	req2 := chiRequest("POST", "/dues/x/transactions", `{"amount_minor":500,"provider":"cash","allow_overpayment":true}`,
+		map[string]string{"id": "11111111-1111-1111-1111-111111111111"})
+	rr2 := httptest.NewRecorder()
+	h.CreateTransaction(rr2, withCtxUser(req2, "u", "officer"))
+	if rr2.Code != http.StatusCreated || !recorded {
+		t.Fatalf("acknowledged overpay: got %d recorded=%v, want 201 (%s)", rr2.Code, recorded, rr2.Body)
+	}
+}

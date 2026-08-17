@@ -322,7 +322,7 @@ class PageBudget extends HTMLElement {
           <tbody>
             ${row('Income', d.budget_income, d.actual_income, d.income_variance, true)}
             ${d.prorated_budget_income != null ? row('&nbsp;&nbsp;vs prorated', d.prorated_budget_income, d.actual_income, d.actual_income - d.prorated_budget_income, true, true) : ''}
-            ${row('Expense', d.budget_expense, d.actual_expense, d.expense_variance, false)}
+            ${row('Expense', d.budget_expense, d.actual_expense, d.expense_variance, true)}
             ${d.prorated_budget_expense != null ? row('&nbsp;&nbsp;vs prorated', d.prorated_budget_expense, d.actual_expense, d.actual_expense - d.prorated_budget_expense, false, true) : ''}
           </tbody></table>`;
       const cats = d.categories ?? [];
@@ -393,8 +393,7 @@ class PageBudget extends HTMLElement {
         if (j < 0 || j >= rows.length) return;
         [rows[i], rows[j]] = [rows[j], rows[i]];
         try {
-          await Promise.all(rows.map((r, idx) =>
-            api('PATCH', `/budget-lines/${r.dataset.id}`, { sort_order: idx })));
+          await api('PUT', `/budgets/${id}/lines/order`, { ids: rows.map(r => r.dataset.id) });
           this.select(id);
         } catch (err) { toast(err.error ?? 'Reorder failed','error'); }
       };

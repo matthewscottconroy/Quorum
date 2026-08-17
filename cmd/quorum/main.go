@@ -3,6 +3,9 @@
 package main
 
 import (
+	// Embed the IANA zone database: the container image has no /usr/share/zoneinfo.
+	_ "time/tzdata"
+
 	"context"
 	"flag"
 	"fmt"
@@ -349,6 +352,18 @@ func main() {
 	governanceH.SetEventNotifier(notifySvc)
 	meetingsH.SetEventNotifier(notifySvc)
 	meetingsH.SetGovernanceSource(governanceRepo) // motions/votes for the minutes document
+	// The org's display timezone (minutes documents, meeting emails): read
+	// per use — it changes rarely and the reads are cheap key lookups.
+	meetingsH.SetTimezoneSource(func(ctx context.Context) *time.Location {
+		if all, err := orgSettingsRepo.All(ctx); err == nil {
+			if tz := all["timezone"]; tz != "" {
+				if loc, err := time.LoadLocation(tz); err == nil {
+					return loc
+				}
+			}
+		}
+		return time.Local
+	})
 	// Every export is recorded in the audit chain: who, what, when.
 	exportH.SetAuditLogger(auditRepo)
 	meetingsH.SetAuditLogger(auditRepo)
@@ -599,6 +614,7 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/budgets/{id}/vs-actual", budgetH.VsActual)
 			r.With(mw.RequireRole("officer")).Patch("/budgets/{id}", budgetH.Update)
 			r.With(mw.RequireRole("admin")).Delete("/budgets/{id}", budgetH.Delete)
+			r.With(mw.RequireRole("officer")).Put("/budgets/{id}/lines/order", budgetH.ReorderLines)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/clone", budgetH.Clone)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/seed-dues", budgetH.SeedDues)
 			r.With(mw.RequireRole("officer")).Post("/budgets/{id}/lines", budgetH.AddLine)

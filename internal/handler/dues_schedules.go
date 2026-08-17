@@ -50,6 +50,12 @@ func (h *DuesHandler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	if body.Currency == "" {
 		body.Currency = "USD"
 	}
+	cur, ok := validCurrencyCode(body.Currency)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "currency must be a 3-8 letter code", "bad_request")
+		return
+	}
+	body.Currency = cur
 	dueDays := 30
 	if body.DueDays != nil {
 		if *body.DueDays < 0 {
@@ -67,6 +73,12 @@ func (h *DuesHandler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		Cadence: body.Cadence, DueDays: dueDays, Active: active,
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			// One ACTIVE schedule per tier: two would bill every member in
+			// the tier once per schedule.
+			writeError(w, http.StatusConflict, "this tier already has an active schedule: deactivate it first", "conflict")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "create error", "internal_error")
 		return
 	}
@@ -103,8 +115,20 @@ func (h *DuesHandler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "due_days must be 0 or more", "bad_request")
 		return
 	}
+	if body.Currency != nil {
+		cur, ok := validCurrencyCode(*body.Currency)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "currency must be a 3-8 letter code", "bad_request")
+			return
+		}
+		body.Currency = &cur
+	}
 	s, err := h.repo.UpdateSchedule(r.Context(), id, body.Tier, body.AmountMinor, body.Currency, body.Cadence, body.DueDays, body.Active)
 	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "this tier already has an active schedule: deactivate it first", "conflict")
+			return
+		}
 		writeRepoError(w, err, "schedule not found", "update error")
 		return
 	}

@@ -24,8 +24,8 @@ func (m *mockBillsRepo) Create(ctx context.Context, b *model.Bill, by string) (*
 func (m *mockBillsRepo) Get(ctx context.Context, id string) (*model.Bill, error) {
 	return &model.Bill{ID: id, Status: "open"}, nil
 }
-func (m *mockBillsRepo) List(ctx context.Context, status string, limit int) ([]model.Bill, error) {
-	return []model.Bill{}, nil
+func (m *mockBillsRepo) List(ctx context.Context, status string, limit, offset int) ([]model.Bill, int, error) {
+	return []model.Bill{}, 0, nil
 }
 func (m *mockBillsRepo) Pay(ctx context.Context, id, fundID, provider string) (*model.Bill, error) {
 	if m.pay != nil {

@@ -158,6 +158,9 @@ type ActionItem struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	AssigneeName *string    `json:"assignee_name,omitempty"`
+	// AssigneeInactive flags an owner who has since left/deactivated — the
+	// card needs a new home, and the UI should say so.
+	AssigneeInactive bool `json:"assignee_inactive,omitempty"`
 	// ReporterName is who created the card (their member name, or account
 	// email if the login isn't linked to a member). Derived from created_by,
 	// which is stamped at creation and has no update path — automatic and

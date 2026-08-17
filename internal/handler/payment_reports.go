@@ -5,11 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"quorum/internal/model"
+	"quorum/internal/repo"
 )
 
 // paymentReportsRepo is satisfied by *repo.PaymentReportsRepo.
@@ -18,13 +18,13 @@ type paymentReportsRepo interface {
 	ListPending(ctx context.Context, limit int) ([]model.PaymentReport, error)
 	PendingCount(ctx context.Context) (int, error)
 	Resolve(ctx context.Context, id, status, resolvedBy string) (invoiceID string, err error)
+	ConfirmAndPost(ctx context.Context, id, resolvedBy string) (*repo.ConfirmOutcome, error)
 }
 
-// prDuesRepo is the slice of the dues repo the confirm step needs.
+// prDuesRepo is the slice of the dues repo the report flow needs (the
+// confirm step itself is atomic inside PaymentReportsRepo now).
 type prDuesRepo interface {
 	GetInvoice(ctx context.Context, id string) (*model.DuesInvoice, error)
-	CreateTransaction(ctx context.Context, t *model.Transaction) (*model.Transaction, error)
-	RecomputeInvoiceStatus(ctx context.Context, id string) error
 }
 
 // PaymentReportsHandler runs the member-reported-payment flow: a member says
@@ -97,50 +97,33 @@ func (h *PaymentReportsHandler) ListPending(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, list)
 }
 
-// Confirm (officer) records the real payment and closes the report.
+// Confirm (officer) records the real payment and closes the report — one
+// atomic step in the repo. The amount posted is the invoice's REMAINING
+// balance, not its face value: a half-paid invoice confirmed here ends at
+// exactly paid, and an invoice settled while the report waited in the queue
+// is confirmed without posting a duplicate cent.
 func (h *PaymentReportsHandler) Confirm(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireUUID(w, r, "id")
 	if !ok {
 		return
 	}
-	invoiceID, err := h.repo.Resolve(r.Context(), id, "confirmed", userIDFromCtx(r))
+	out, err := h.repo.ConfirmAndPost(r.Context(), id, userIDFromCtx(r))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusConflict, "report is no longer pending", "conflict")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "confirm error", "internal_error")
+		// The claim rolled back with everything else: the report is still
+		// pending, so the officer can simply retry.
+		writeRepoError(w, err, "report not found", "confirm error")
 		return
 	}
-	inv, err := h.dues.GetInvoice(r.Context(), invoiceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "invoice lookup error", "internal_error")
+	if !out.Posted {
+		writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": false, "reason": out.Reason})
 		return
 	}
-	if inv.Status == "waived" {
-		// Confirmed but not posted (posting a waived invoice corrupts A/R).
-		writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": false, "reason": "invoice is waived"})
-		return
-	}
-	uid := userIDFromCtx(r)
-	var memberPtr *string
-	if inv.MemberID != "" {
-		memberPtr = &inv.MemberID
-	}
-	status := "succeeded"
-	if _, err := h.dues.CreateTransaction(r.Context(), &model.Transaction{
-		InvoiceID: &invoiceID, MemberID: memberPtr, AmountMinor: inv.AmountMinor, Currency: inv.Currency,
-		Provider: "reported", ProviderStatus: &status, RecordedBy: &uid, OccurredAt: time.Now(),
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not record payment", "internal_error")
-		return
-	}
-	if err := h.dues.RecomputeInvoiceStatus(r.Context(), invoiceID); err != nil {
-		// Non-fatal: the transaction is recorded.
-		_ = err
-	}
-	setAuditDetail(r, map[string]any{"invoice": invoiceID, "amount_minor": inv.AmountMinor, "currency": inv.Currency})
-	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": true})
+	setAuditDetail(r, map[string]any{"invoice": out.InvoiceID, "amount_minor": out.AmountMinor})
+	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": true, "amount_minor": out.AmountMinor})
 }
 
 // Dismiss (officer) rejects the report without recording a payment.

@@ -3,6 +3,7 @@ package handler
 import (
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -97,8 +98,10 @@ func (h *FXHandler) CreateRate(w http.ResponseWriter, r *http.Request) {
 	rate, err := h.repo.CreateRate(r.Context(), from, to, strings.TrimSpace(body.Rate),
 		strings.TrimSpace(body.EffectiveAt), userIDFromCtx(r))
 	if err != nil {
-		// A duplicate (from, to, effective_at) violates the unique constraint.
-		writeRepoError(w, err, "", "a rate for this pair and date already exists")
+		// writeRepoError maps the (from, to, effective_at) unique violation to
+		// a 409; anything else is a genuine server fault, so the fallback must
+		// not claim a conflict that never happened.
+		writeRepoError(w, err, "", "create error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, rate)
@@ -133,8 +136,16 @@ func validCurrencyCode(code string) (string, bool) {
 	return c, true
 }
 
-// validRate reports whether s is a positive decimal (parsed exactly, no float).
+// validRate reports whether s is a positive PLAIN decimal ("1.0785", "142").
+// big.Rat alone would also accept fractions ("1/3") and exponents that
+// ::numeric then rejects with a confusing 500, so shape-check first.
 func validRate(s string) bool {
-	rat, ok := new(big.Rat).SetString(strings.TrimSpace(s))
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || len(s) > 40 || !plainDecimalRe.MatchString(s) {
+		return false
+	}
+	rat, ok := new(big.Rat).SetString(s)
 	return ok && rat.Sign() > 0
 }
+
+var plainDecimalRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)

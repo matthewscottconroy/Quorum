@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"quorum/internal/model"
@@ -190,7 +191,14 @@ func (h *ActionItemsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "sprint_id", "parent_id"} {
+	if t, present := body["title"]; present {
+		s, ok := t.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			writeError(w, 400, "title must be a non-empty string", "bad_request")
+			return
+		}
+	}
+	for _, p := range []string{"assignee_id", "meeting_id", "plan_id", "sprint_id", "parent_id", "column_id"} {
 		if v, present := body[p]; present && v != nil {
 			s, ok := v.(string)
 			if !ok || !isValidUUID(s) {

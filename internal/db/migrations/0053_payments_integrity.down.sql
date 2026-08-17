@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_dues_schedules_one_active_per_tier;

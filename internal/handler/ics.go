@@ -33,9 +33,11 @@ func icsEscape(s string) string {
 }
 
 // icsFold writes one content line folded at 75 octets with CRLF line endings,
-// per RFC 5545 §3.1. Folding is byte-based but never splits a UTF-8 rune.
+// per RFC 5545 §3.1. The fold's leading space COUNTS toward a continuation
+// line's 75 octets, so later chunks carry one byte less content. Folding is
+// byte-based but never splits a UTF-8 rune.
 func icsFold(b *strings.Builder, line string) {
-	const width = 75
+	width := 75
 	for len(line) > width {
 		cut := width
 		// Back up to a rune boundary so multi-byte characters survive folding.
@@ -45,6 +47,7 @@ func icsFold(b *strings.Builder, line string) {
 		b.WriteString(line[:cut])
 		b.WriteString("\r\n ") // continuation lines start with a single space
 		line = line[cut:]
+		width = 74 // the space just spent one of the next line's 75
 	}
 	b.WriteString(line)
 	b.WriteString("\r\n")
@@ -69,6 +72,10 @@ func writeICS(w http.ResponseWriter, meetings []model.Meeting, filename string) 
 		icsFold(&b, "BEGIN:VEVENT")
 		icsFold(&b, "UID:"+m.ID+"@quorum")
 		icsFold(&b, "DTSTAMP:"+now)
+		// SEQUENCE bumps with every edit (derived from updated_at) so
+		// subscribed clients pick up changes to an event they already hold;
+		// without it many ignore the update entirely.
+		icsFold(&b, fmt.Sprintf("SEQUENCE:%d", m.UpdatedAt.Unix()-m.CreatedAt.Unix()))
 		icsFold(&b, "DTSTART:"+icsTime(m.ScheduledAt))
 		if m.EndsAt != nil {
 			icsFold(&b, "DTEND:"+icsTime(*m.EndsAt))

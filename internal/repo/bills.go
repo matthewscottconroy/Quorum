@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -95,19 +96,13 @@ func (r *BillsRepo) Get(ctx context.Context, id string) (*model.Bill, error) {
 	return &b, nil
 }
 
-// List returns bills, optionally by status, newest first.
-func (r *BillsRepo) List(ctx context.Context, status string, limit int) ([]model.Bill, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	q := billSelect
-	args := []any{}
-	if status != "" {
-		q += ` WHERE b.status = $1`
-		args = append(args, status)
-	}
-	args = append(args, limit)
-	rows, err := r.db.Query(ctx, q+fmt.Sprintf(` ORDER BY b.created_at DESC LIMIT $%d`, len(args)), args...)
+// ListForPeriod returns EVERY bill dated in [from, to] (inclusive), oldest
+// first, with no row cap — the CPA pack asserts completeness for the period,
+// so a silent limit here would make the evidence wrong.
+func (r *BillsRepo) ListForPeriod(ctx context.Context, from, to string) ([]model.Bill, error) {
+	rows, err := r.db.Query(ctx, billSelect+`
+		WHERE b.bill_date BETWEEN $1::date AND $2::date
+		ORDER BY b.bill_date, b.created_at`, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +116,55 @@ func (r *BillsRepo) List(ctx context.Context, status string, limit int) ([]model
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// List returns one page of bills, optionally by status, newest first,
+// plus the total row count for the pager.
+func (r *BillsRepo) List(ctx context.Context, status string, limit, offset int) ([]model.Bill, int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	// COUNT(*) OVER() rides along so the pager knows the total; like the
+	// dues list, an empty page past the end falls back to a plain count.
+	q := strings.Replace(billSelect, "SELECT ", "SELECT count(*) OVER() AS full_count, ", 1)
+	where := ""
+	args := []any{}
+	if status != "" {
+		where = ` WHERE b.status = $1`
+		args = append(args, status)
+	}
+	args = append(args, limit, offset)
+	rows, err := r.db.Query(ctx,
+		q+where+fmt.Sprintf(` ORDER BY b.created_at DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)),
+		args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []model.Bill
+	total := 0
+	for rows.Next() {
+		var b model.Bill
+		if err := rows.Scan(&total, &b.ID, &b.ContactID, &b.ContactName, &b.Amount, &b.Currency,
+			&b.Memo, &b.ExpenseAccountID, &b.ExpenseAccountCode, &b.ExpenseAccountName,
+			&b.BillDate, &b.DueDate, &b.Status, &b.PaidAt, &b.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(out) == 0 && offset > 0 {
+		countQ := "SELECT count(*) FROM bills b" + where
+		if err := r.db.QueryRow(ctx, countQ, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	return out, total, rows.Err()
 }
 
 // Pay settles an open bill: DR A/P / CR cash. The cash side comes from a

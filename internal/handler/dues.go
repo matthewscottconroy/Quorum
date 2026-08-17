@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -76,6 +77,11 @@ func (h *DuesHandler) Create(w http.ResponseWriter, r *http.Request) {
 	currency := body.Currency
 	if currency == "" {
 		currency = "USD"
+	}
+	currency, curOK := validCurrencyCode(currency)
+	if !curOK {
+		writeError(w, 400, "currency must be a 3-8 letter code", "bad_request")
+		return
 	}
 	dueDate, err := time.Parse("2006-01-02", body.DueDate)
 	if err != nil {
@@ -184,9 +190,38 @@ func (h *DuesHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid status", "bad_request")
 		return
 	}
+	// 'paid' and 'partial' are computed from recorded transactions, never set
+	// by hand — a manually-"paid" invoice would leave the receivable open in
+	// the GL while vanishing from AR aging, and nothing would ever flag the
+	// drift. Record a payment (or waive) instead.
+	if *body.Status == "paid" || *body.Status == "partial" {
+		writeError(w, 409, "paid and partial are computed from recorded payments: record a payment, or waive the invoice", "conflict")
+		return
+	}
+	// Waiving a paid invoice is a no-op write-off of nothing; refuse it
+	// loudly rather than freeze a settled invoice in 'waived'.
+	if *body.Status == "waived" {
+		cur, err := h.repo.GetInvoice(r.Context(), id)
+		if err != nil {
+			writeError(w, 404, "invoice not found", "not_found")
+			return
+		}
+		if cur.Status == "paid" {
+			writeError(w, 409, "invoice is fully paid: there is nothing to waive", "conflict")
+			return
+		}
+	}
 	if err := h.repo.UpdateInvoiceStatus(r.Context(), id, *body.Status, body.Notes); err != nil {
 		writeRepoError(w, err, "invoice not found", "update error")
 		return
+	}
+	// Whatever the officer asked for, the ledger has the last word: an
+	// un-waived or re-opened invoice with covering payments snaps back to
+	// paid, one with partial payments to partial.
+	if *body.Status != "waived" {
+		if err := h.repo.RecomputeInvoiceStatus(r.Context(), id); err != nil {
+			log.Printf("recompute invoice %s after status update: %v", id, err)
+		}
 	}
 	// Invoice identity is frozen in the database; the status transition is the
 	// financially meaningful change, so put it in the chain-protected detail.
@@ -216,6 +251,10 @@ func (h *DuesHandler) BatchUpdateStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	if !model.ValidInvoiceStatuses[body.Status] {
 		writeError(w, 400, "invalid status", "bad_request")
+		return
+	}
+	if body.Status == "paid" || body.Status == "partial" {
+		writeError(w, 409, "paid and partial are computed from recorded payments: record payments, or waive", "conflict")
 		return
 	}
 	for _, id := range body.IDs {
@@ -319,6 +358,23 @@ func (h *DuesHandler) RecordRefund(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "refund currency must match the invoice currency", "bad_request")
 		return
 	}
+	// A waived invoice's receivable was already written to zero; a refund
+	// posting against it corrupts A/R exactly like a payment would.
+	if inv.Status == "waived" {
+		writeError(w, 409, "invoice is waived: un-waive it before recording a refund", "conflict")
+		return
+	}
+	// You can only give back what actually came in: cap the refund at the
+	// net recorded total so repeated refunds can't mint money out of A/R.
+	paid, err := h.repo.PaidSum(r.Context(), invoiceID, inv.Currency)
+	if err != nil {
+		writeError(w, 500, "payment total lookup error", "internal_error")
+		return
+	}
+	if body.AmountMinor > paid {
+		writeError(w, 409, fmt.Sprintf("refund exceeds the amount actually paid: at most %d minor units are refundable", max(paid, 0)), "conflict")
+		return
+	}
 	status := "refunded"
 	var memberPtr *string
 	if inv.MemberID != "" {
@@ -328,7 +384,7 @@ func (h *DuesHandler) RecordRefund(w http.ResponseWriter, r *http.Request) {
 		InvoiceID:      &invoiceID,
 		MemberID:       memberPtr,
 		AmountMinor:    -body.AmountMinor, // negative → reversing GL entry
-		Currency:       currency,
+		Currency:       inv.Currency,      // canonical casing: recompute matches exactly
 		Provider:       body.Provider,
 		ProviderStatus: &status,
 		RecordedBy:     &userID,
@@ -361,6 +417,9 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		ProviderReference *string `json:"provider_reference_id"`
 		PaymentMethodType *string `json:"payment_method_type"`
 		Notes             *string `json:"notes"`
+		// AllowOverpayment acknowledges a payment beyond the invoice balance
+		// (a genuine overpay/donation) instead of a typo'd extra zero.
+		AllowOverpayment bool `json:"allow_overpayment"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -396,6 +455,19 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 409, "invoice is waived: un-waive it before recording a payment", "conflict")
 		return
 	}
+	// Guard the fat-fingered extra zero: a payment past the remaining balance
+	// needs an explicit acknowledgement.
+	paid, err := h.repo.PaidSum(r.Context(), invoiceID, inv.Currency)
+	if err != nil {
+		writeError(w, 500, "payment total lookup error", "internal_error")
+		return
+	}
+	if remaining := inv.AmountMinor - paid; body.AmountMinor > remaining && !body.AllowOverpayment {
+		writeError(w, 409,
+			fmt.Sprintf("payment exceeds the remaining balance (%d minor units): resend with allow_overpayment if intentional", max(remaining, 0)),
+			"conflict")
+		return
+	}
 	status := "succeeded"
 	providerStr := &status
 
@@ -411,7 +483,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		InvoiceID:           &invoiceID,
 		MemberID:            memberPtr,
 		AmountMinor:         body.AmountMinor,
-		Currency:            currency,
+		Currency:            inv.Currency, // canonical casing: recompute matches exactly
 		Provider:            body.Provider,
 		ProviderReferenceID: body.ProviderReference,
 		ProviderStatus:      providerStr,

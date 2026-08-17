@@ -23,6 +23,8 @@ func TestRecordRefund_Success(t *testing.T) {
 			return tx, nil
 		},
 		RecomputeInvoiceStatusFn: func(_ context.Context, _ string) error { return nil },
+		// The refund cap: 5000 was actually collected, so 5000 may go back.
+		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 5000, nil },
 	})
 	body := `{"amount_minor":5000,"currency":"USD","provider":"manual","note":"overpaid"}`
 	req := chiRequest("POST", "/dues/"+testUUID+"/refund", body, map[string]string{"id": testUUID})
@@ -174,8 +176,11 @@ func TestBudgetVsActual_Success(t *testing.T) {
 	if got["income_variance"].(float64) != -10000 {
 		t.Errorf("income_variance: got %v, want -10000", got["income_variance"])
 	}
-	if got["expense_variance"].(float64) != 5000 {
-		t.Errorf("expense_variance: got %v, want 5000", got["expense_variance"])
+	// Favorable-positive at every level: spending 85000 of an 80000 budget
+	// is 5000 UNFAVORABLE, i.e. -5000 — the same convention as the
+	// per-category rows, so one overspend never shows two signs.
+	if got["expense_variance"].(float64) != -5000 {
+		t.Errorf("expense_variance: got %v, want -5000", got["expense_variance"])
 	}
 }
 
@@ -190,5 +195,37 @@ func TestBudgetVsActual_BadDate(t *testing.T) {
 	h.VsActual(rr, req)
 	if rr.Code != 400 {
 		t.Errorf("status: got %d, want 400 for bad date", rr.Code)
+	}
+}
+
+// A refund can never exceed what was actually collected, and a waived
+// invoice refuses refunds outright (its receivable is already zero).
+func TestRecordRefund_Bounds(t *testing.T) {
+	h := NewDuesHandler(&mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, id string) (*model.DuesInvoice, error) {
+			return testInvoice(id, "m1"), nil
+		},
+		PaidSumFn: func(_ context.Context, _, _ string) (int64, error) { return 2000, nil },
+	})
+	body := `{"amount_minor":5000,"currency":"USD","provider":"manual"}`
+	req := chiRequest("POST", "/dues/"+testUUID+"/refund", body, map[string]string{"id": testUUID})
+	req = withCtxUser(req, "u1", "officer")
+	rr := httptest.NewRecorder()
+	h.RecordRefund(rr, req)
+	if rr.Code != 409 {
+		t.Fatalf("over-refund: got %d, want 409 (%s)", rr.Code, rr.Body)
+	}
+
+	waived := testInvoice(testUUID, "m1")
+	waived.Status = "waived"
+	h2 := NewDuesHandler(&mockDuesRepo{
+		GetInvoiceFn: func(_ context.Context, _ string) (*model.DuesInvoice, error) { return waived, nil },
+	})
+	req2 := chiRequest("POST", "/dues/"+testUUID+"/refund", `{"amount_minor":100,"currency":"USD","provider":"manual"}`, map[string]string{"id": testUUID})
+	req2 = withCtxUser(req2, "u1", "officer")
+	rr2 := httptest.NewRecorder()
+	h2.RecordRefund(rr2, req2)
+	if rr2.Code != 409 {
+		t.Fatalf("refund on waived: got %d, want 409 (%s)", rr2.Code, rr2.Body)
 	}
 }
