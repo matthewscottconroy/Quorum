@@ -44,7 +44,10 @@ func (r *MeetingsRepo) List(ctx context.Context, f MeetingFilter) ([]model.Meeti
 		conds = append(conds, "m.scheduled_at >= now() - interval '1 hour'")
 	}
 	if f.Query != "" {
-		args = append(args, "%"+f.Query+"%")
+		// Escape LIKE metacharacters: a lone trailing '\' is a Postgres
+		// error (500 for typing one character), and %/_ would over-match.
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(f.Query)
+		args = append(args, "%"+esc+"%")
 		conds = append(conds, fmt.Sprintf("m.title ILIKE $%d", len(args)))
 	}
 	if f.From != nil {
@@ -487,6 +490,45 @@ func (r *MeetingsRepo) FinalizeMinutes(ctx context.Context, meetingID, userID st
 		return ErrMinutesFinalized
 	}
 	return nil
+}
+
+// MeetingReminderRow is one meeting inside the reminder window.
+type MeetingReminderRow struct {
+	ID          string
+	Title       string
+	ScheduledAt time.Time
+	Location    string
+}
+
+// DueForReminder returns scheduled meetings inside the reminder window that
+// haven't been reminded about yet.
+func (r *MeetingsRepo) DueForReminder(ctx context.Context, from, to time.Time) ([]MeetingReminderRow, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text, title, scheduled_at, coalesce(location, '')
+		FROM meetings
+		WHERE status = 'scheduled' AND reminder_sent_at IS NULL
+		  AND scheduled_at >= $1 AND scheduled_at < $2
+		ORDER BY scheduled_at`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MeetingReminderRow
+	for rows.Next() {
+		var m MeetingReminderRow
+		if err := rows.Scan(&m.ID, &m.Title, &m.ScheduledAt, &m.Location); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// MarkMeetingReminded stamps the once-only reminder marker.
+func (r *MeetingsRepo) MarkMeetingReminded(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE meetings SET reminder_sent_at = now() WHERE id = $1::uuid`, id)
+	return err
 }
 
 // SetMinutesSnapshot stores the rendered minutes document captured at

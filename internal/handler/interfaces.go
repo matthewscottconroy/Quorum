@@ -172,6 +172,7 @@ type analyticsRepo interface {
 	Overview(ctx context.Context) (*model.AnalyticsOverview, error)
 	Membership(ctx context.Context) (*model.MembershipAnalytics, error)
 	Attendance(ctx context.Context) (*model.AttendanceAnalytics, error)
+	AttendancePerMember(ctx context.Context, from, to string) ([]repo.MemberAttendanceRow, error)
 	Governance(ctx context.Context) (*model.GovernanceAnalytics, error)
 	Payments(ctx context.Context) (*model.PaymentsAnalytics, error)
 }

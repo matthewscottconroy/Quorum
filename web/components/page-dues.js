@@ -43,6 +43,7 @@ class PageDues extends HTMLElement {
         <div style="display:flex;gap:.5rem">
           <button class="btn-secondary" id="export-dues-btn">Export dues</button>
           <button class="btn-secondary" id="export-tx-btn">Export payments</button>
+          ${canWrite() ? '<button class="btn-secondary" id="import-csv-btn" title="Paste a bank/Venmo/Stripe export and match rows to open invoices and bills">Match bank CSV</button>' : ''}
           ${canWrite() ? '<button class="btn-secondary" id="schedules-btn">Recurring dues</button>' : ''}
           ${canWrite() ? '<button class="btn-primary" id="add-btn">+ Create invoice</button>' : ''}
         </div>
@@ -72,6 +73,7 @@ class PageDues extends HTMLElement {
     this.querySelector('#period-inp')?.addEventListener('change', e => { this._period = e.target.value; this._offset = 0; this._selected.clear(); this._persist(); this.load(); });
     this.querySelector('#refresh-btn')?.addEventListener('click', () => this.load());
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
+    this.querySelector('#import-csv-btn')?.addEventListener('click', () => this.openBankMatchModal());
     this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
       try { await apiDownload('/export/dues.csv', 'dues.csv'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
@@ -290,7 +292,7 @@ class PageDues extends HTMLElement {
                     <td>${esc(t.provider)}</td>
                     <td>${esc(t.payment_method_type ?? '—')}</td>
                     <td class="num">${formatMoney(t.amount_minor, inv.currency)}</td>
-                    <td>${esc(t.provider_status ?? '—')}</td>
+                    <td>${esc(t.provider_status ?? '—')}${t.resource_id ? ` <button class="btn-ghost tx-doc" data-rid="${esc(t.resource_id)}" title="Open the supporting document" style="font-size:.72rem;padding:0 .3rem">📄</button>` : ''}</td>
                   </tr>`).join('')}
                 </tbody>
                </table>`}
@@ -307,6 +309,13 @@ class PageDues extends HTMLElement {
       `,
     });
     dialog.querySelector('#close-btn2').addEventListener('click', close);
+    dialog.querySelectorAll('.tx-doc').forEach(b => b.addEventListener('click', async () => {
+      try {
+        const r0 = await api('GET', `/resources/${b.dataset.rid}`);
+        if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
+        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+      } catch { toast("You don't have access to this document", 'error'); }
+    }));
     dialog.querySelector('#refund-btn')?.addEventListener('click', () => {
       close();
       this.openRefundModal(inv);
@@ -346,14 +355,21 @@ class PageDues extends HTMLElement {
   }
 
   openRefundModal(inv) {
+    // Same context treatment the payment modal got: what came in is the
+    // ceiling, shown and prefilled — refunds from memory were the last
+    // context-free money box on this page.
+    const collected = Math.max(inv.paid_minor ?? 0, 0);
+    const exp = moneyExponent(inv.currency);
+    const collectedStr = (collected / 10 ** exp).toFixed(exp);
     const { dialog, close } = openModal({
       title: `Refund — ${inv.member_name}`,
       maxWidth: '420px',
       body: `
         <div class="modal-body">
-          <p style="color:var(--color-text-muted);font-size:.85rem">Records a reversing entry in ${esc(inv.currency)}. Posts to the ledger and recomputes the invoice status.</p>
+          <p style="font-size:.85rem;margin-top:0">Collected to date: <strong>${formatMoney(collected, inv.currency)} ${esc(inv.currency)}</strong> of ${formatMoney(inv.amount_minor, inv.currency)} billed.</p>
+          <p style="color:var(--color-text-muted);font-size:.85rem">Records a reversing entry in ${esc(inv.currency)}. Posts to the ledger and recomputes the invoice status. At most the collected total can go back.</p>
           <div class="form-group"><label for="rf-amt">Amount (${esc(inv.currency)}) *</label>
-            <input id="rf-amt" inputmode="decimal" placeholder="0.00"></div>
+            <input id="rf-amt" inputmode="decimal" placeholder="${esc(collectedStr)}" value="${collected > 0 ? esc(collectedStr) : ''}"></div>
           <div class="form-group"><label for="rf-prov">Provider / method *</label>
             <select id="rf-prov">${providerOptions('manual')}</select></div>
           <div class="form-group"><label for="rf-note">Note</label>
@@ -666,6 +682,11 @@ class PageDues extends HTMLElement {
             <label for="f-notes">Notes</label>
             <textarea id="f-notes"></textarea>
           </div>
+          <div class="form-group">
+            <label for="f-doc">Supporting document (optional)</label>
+            <select id="f-doc"><option value="">— none —</option></select>
+            <div style="font-size:.72rem;color:var(--color-text-muted)">Check image or payment screenshot from the resource library.</div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancel-btn">Cancel</button>
@@ -675,6 +696,11 @@ class PageDues extends HTMLElement {
     });
 
     dialog.querySelector('#cancel-btn').addEventListener('click', close);
+    api('GET', '/resources?limit=200').then(pg => {
+      const sel = dialog.querySelector('#f-doc');
+      if (sel) sel.innerHTML = '<option value="">— none —</option>' +
+        (pg?.data ?? []).map(r0 => `<option value="${esc(r0.id)}">${r0.file_name ? '📄' : '🔗'} ${esc(r0.title)}</option>`).join('');
+    }).catch(() => {});
     const saveBtn = dialog.querySelector('#save-btn');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const amountMinor = parseMoney(dialog.querySelector('#f-amount').value, currency);
@@ -686,6 +712,7 @@ class PageDues extends HTMLElement {
         provider:             dialog.querySelector('#f-provider').value,
         provider_reference_id: dialog.querySelector('#f-ref').value.trim() || null,
         notes:                dialog.querySelector('#f-notes').value.trim() || null,
+        resource_id:          dialog.querySelector('#f-doc')?.value || null,
       };
       try {
         await api('POST', `/dues/${invoiceID}/transactions`, body);
@@ -713,5 +740,95 @@ class PageDues extends HTMLElement {
       }
     }));
   }
+  /** Bank-statement matching: paste CSV rows, get suggested matches against
+      open invoices (deposits) — one click records each as a payment with the
+      bank line as its reference. The manual version of this is exactly what
+      the treasurer does every month with two windows and a highlighter. */
+  async openBankMatchModal() {
+    const { dialog, close } = openModal({
+      title: 'Match a bank statement',
+      maxWidth: '760px',
+      body: `
+        <div class="modal-body">
+          <p style="font-size:.85rem;color:var(--color-text-muted);margin-top:0">
+            Paste CSV rows from your bank / Venmo / Stripe export (any format —
+            each line needs an amount; names help matching). Deposits are
+            matched against open invoices by amount due and member name.</p>
+          <textarea id="bm-text" rows="6" placeholder="2026-08-01, 50.00, ZELLE FROM GRACE HOPPER"></textarea>
+          <button class="btn-secondary" id="bm-parse" style="margin-top:.5rem">Suggest matches</button>
+          <div id="bm-rows" style="margin-top:.75rem"></div>
+        </div>
+        <div class="modal-footer"><button class="btn-secondary" id="bm-close">Close</button></div>`,
+    });
+    dialog.querySelector('#bm-close').addEventListener('click', close);
+    // Every open invoice, once: three status pages cover the open set.
+    let openInvoices = [];
+    try {
+      const pages = await Promise.all(['pending', 'partial', 'overdue'].map(s2 =>
+        api('GET', `/dues?status=${s2}&limit=500`)));
+      openInvoices = pages.flatMap(p => p?.data ?? []);
+    } catch { /* suggestions degrade to none */ }
+    const parseBtn = dialog.querySelector('#bm-parse');
+    parseBtn.addEventListener('click', () => {
+      const lines = dialog.querySelector('#bm-text').value.split('\n').map(l => l.trim()).filter(Boolean);
+      const out = [];
+      for (const line of lines) {
+        // The amount: prefer tokens WITH a decimal point (bank exports write
+        // 50.00), take the last one so leading dates ("2026-08-01") never win.
+        const tokens = (line.match(/-?\d{1,3}(?:,\d{3})*\.\d{1,2}|-?\d+\.\d{1,2}/g) ?? [])
+          .map(s2 => Number(s2.replace(/,/g, '')))
+          .filter(n => Number.isFinite(n) && Math.abs(n) >= 0.01 && Math.abs(n) < 1e7);
+        const amt = tokens.length ? tokens[tokens.length - 1] : undefined;
+        if (amt === undefined || amt === 0) continue;
+        out.push({ line, amt });
+      }
+      const lower = s2 => (s2 ?? '').toLowerCase();
+      const box = dialog.querySelector('#bm-rows');
+      if (!out.length) { box.innerHTML = '<p style="color:var(--color-text-muted)">No amounts found in the pasted rows.</p>'; return; }
+      box.innerHTML = out.map((row, i) => {
+        if (row.amt <= 0) {
+          return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem;color:var(--color-text-muted)">${esc(row.line.slice(0, 90))}<br>withdrawal — match it under Payables</div>`;
+        }
+        // Deposit: best invoice match = amount equals what is OWED, then
+        // name-in-line, then amount equals face value.
+        const cand = openInvoices
+          .map(inv => {
+            const owed = Math.max((inv.amount_minor ?? 0) - (inv.paid_minor ?? 0), 0);
+            const exp = moneyExponent(inv.currency);
+            const owedMajor = owed / 10 ** exp;
+            let score = 0;
+            if (Math.abs(owedMajor - row.amt) < 0.005) score += 2;
+            else if (Math.abs(inv.amount_minor / 10 ** exp - row.amt) < 0.005) score += 1;
+            if (score && lower(row.line).includes(lower(inv.member_name).split(' ')[0])) score += 2;
+            else if (lower(row.line).includes(lower(inv.member_name))) score += 3;
+            return { inv, score, owed };
+          })
+          .filter(c => c.score >= 2)
+          .sort((a, b) => b.score - a.score)[0];
+        if (!cand) {
+          return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem">${esc(row.line.slice(0, 90))}<br><span style="color:var(--color-text-muted)">no confident match — record manually</span></div>`;
+        }
+        return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem;display:flex;gap:.6rem;align-items:center">
+          <div style="flex:1">${esc(row.line.slice(0, 90))}<br>
+            <strong>→ ${esc(cand.inv.member_name)}, ${esc(cand.inv.period_label)}</strong>
+            <span style="color:var(--color-text-muted)">(owes ${formatMoney(cand.owed, cand.inv.currency)})</span></div>
+          <button class="btn-primary bm-rec" data-i="${i}" data-id="${esc(cand.inv.id)}" data-cur="${esc(cand.inv.currency)}" style="font-size:.78rem">Record</button>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('.bm-rec').forEach(btn => btn.addEventListener('click', guardButton(btn, async () => {
+        const row = out[Number(btn.dataset.i)];
+        const minor = parseMoney(String(row.amt.toFixed(2)), btn.dataset.cur);
+        try {
+          await api('POST', `/dues/${btn.dataset.id}/transactions`, {
+            amount_minor: minor, provider: 'bank-import',
+            provider_reference_id: row.line.slice(0, 120), notes: 'Matched from bank CSV',
+          });
+          btn.replaceWith(Object.assign(document.createElement('span'), { textContent: '✓ recorded', style: 'color:var(--color-success);font-size:.8rem' }));
+          this.load();
+        } catch (err) { toast(err.error ?? 'Record failed', 'error'); }
+      })));
+    });
+  }
+
 }
 customElements.define('page-dues', PageDues);

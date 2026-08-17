@@ -1,5 +1,6 @@
 import { api, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
+import { confirm } from './confirm-dialog.js';
 import { esc, fmtDateTime, guardButton } from '../utils.js';
 import './page-meetings.js';
 
@@ -24,6 +25,13 @@ class PageMeetingRun extends HTMLElement {
     try { mt = await api('GET', `/meetings/${id}`); }
     catch { toast('Meeting not found', 'error'); location.hash = '#/meetings'; return; }
     if (!this.isConnected) return;
+    // Button state keys on what the JOURNAL says, not just meeting status:
+    // "Call to order" journaled once must not re-arm and invite a duplicate.
+    let journalKinds = [];
+    try { journalKinds = ((await api('GET', `/meetings/${id}/minutes`)) ?? []).map(e => e.kind); }
+    catch { /* the buttons degrade to status-only gating */ }
+    const calledToOrder = journalKinds.includes('call_to_order');
+    const adjourned = journalKinds.includes('adjournment');
 
     this.innerHTML = `
       <div class="page-header" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
@@ -36,8 +44,8 @@ class PageMeetingRun extends HTMLElement {
           </div>
         </div>
         <div style="margin-left:auto;display:flex;gap:.5rem;flex-wrap:wrap">
-          ${canWrite() && mt.status === 'scheduled' ? '<button class="btn-primary" id="order-btn" title="Journals “called to order” with the current time">▶ Call to order</button>' : ''}
-          ${canWrite() && mt.status !== 'completed' && mt.status !== 'cancelled' ? '<button class="btn-secondary" id="adjourn-btn" title="Journals the adjournment and marks the meeting completed">■ Adjourn</button>' : ''}
+          ${canWrite() && mt.status === 'scheduled' && !calledToOrder ? '<button class="btn-primary" id="order-btn" title="Journals “called to order” with the current time">▶ Call to order</button>' : ''}
+          ${canWrite() && mt.status !== 'completed' && mt.status !== 'cancelled' && !adjourned ? '<button class="btn-secondary" id="adjourn-btn" title="Journals the adjournment and marks the meeting completed">■ Adjourn</button>' : ''}
           <button class="btn-secondary" id="edit-btn">Edit details</button>
         </div>
       </div>
@@ -55,6 +63,16 @@ class PageMeetingRun extends HTMLElement {
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:1.25rem">
+          ${canWrite() ? `
+          <div class="card" style="padding:.75rem 1.25rem">
+            <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+              <strong style="font-size:.85rem">⏱ Speaker</strong>
+              <input id="spk-name" placeholder="Who has the floor?" style="flex:1;min-width:140px;font-size:.85rem">
+              <span id="spk-clock" style="font-variant-numeric:tabular-nums;font-size:1rem;min-width:52px">0:00</span>
+              <button class="btn-secondary" id="spk-toggle" style="font-size:.8rem">Start</button>
+              <button class="btn-ghost" id="spk-log" style="font-size:.8rem" disabled title="Journals “X spoke, N min” as a discussion entry">Log</button>
+            </div>
+          </div>` : ''}
           <div class="card" style="padding:1rem 1.25rem"><div id="minutes-section"><span class="spinner"></span></div></div>
           <div class="card" style="padding:1rem 1.25rem">
             <h3 style="font-size:.95rem;margin-bottom:.6rem">Decision log</h3>
@@ -67,6 +85,49 @@ class PageMeetingRun extends HTMLElement {
     // Call to order / Adjourn journal the moment with the wall-clock time,
     // and Adjourn flips the meeting to completed.
     const stamp = () => new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    // The speaker timer: pure client state, one keypress from the journal —
+    // the tool a chair actually lacks mid-meeting.
+    {
+      const nameEl = this.querySelector('#spk-name');
+      const clockEl = this.querySelector('#spk-clock');
+      const toggleEl = this.querySelector('#spk-toggle');
+      const logEl = this.querySelector('#spk-log');
+      if (nameEl && clockEl && toggleEl && logEl) {
+        let startedAt = 0;
+        let tick = null;
+        const fmtClock = s2 => `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, '0')}`;
+        toggleEl.addEventListener('click', () => {
+          if (tick) {
+            clearInterval(tick);
+            tick = null;
+            toggleEl.textContent = 'Start';
+            logEl.disabled = false;
+          } else {
+            startedAt = Date.now();
+            clockEl.textContent = '0:00';
+            tick = setInterval(() => {
+              clockEl.textContent = fmtClock(Math.floor((Date.now() - startedAt) / 1000));
+            }, 1000);
+            toggleEl.textContent = 'Stop';
+            logEl.disabled = true;
+          }
+        });
+        logEl.addEventListener('click', guardButton(logEl, async () => {
+          const who = nameEl.value.trim() || 'Speaker';
+          const mins = Math.max(Math.round((Date.now() - startedAt) / 60000), 1);
+          try {
+            await api('POST', `/meetings/${mt.id}/minutes`, {
+              kind: 'discussion', body: `${who} spoke, ${mins} min.`,
+            });
+            toast('Logged to the journal', 'success');
+            nameEl.value = '';
+            clockEl.textContent = '0:00';
+            this._pm.renderMinutes(this, mt.id, mt);
+          } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+        }));
+      }
+    }
+
     const orderBtn = this.querySelector('#order-btn');
     orderBtn?.addEventListener('click', guardButton(orderBtn, async () => {
       try {
@@ -77,6 +138,9 @@ class PageMeetingRun extends HTMLElement {
     }));
     const adjournBtn = this.querySelector('#adjourn-btn');
     adjournBtn?.addEventListener('click', guardButton(adjournBtn, async () => {
+      // Ending the meeting deserves a beat of confirmation — and the natural
+      // next step (finalizing) is offered right after, not left for later.
+      if (!await confirm('Adjourn now? This journals the adjournment and marks the meeting completed.', 'Adjourn meeting')) return;
       // Two calls, deliberately ordered: if the journal line is refused
       // (finalized minutes), still mark the meeting completed — the status
       // is the part the run page can't otherwise reach.
@@ -86,7 +150,7 @@ class PageMeetingRun extends HTMLElement {
       } catch { journaled = false; }
       try {
         await api('PATCH', `/meetings/${mt.id}`, { status: 'completed' });
-        toast(journaled ? 'Adjourned — meeting marked completed' : 'Meeting marked completed (journal is finalized)', 'success');
+        toast(journaled ? 'Adjourned — review the journal, then finalize the minutes below' : 'Meeting marked completed (journal is finalized)', 'success');
         this.load();
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
     }));

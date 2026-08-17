@@ -63,8 +63,10 @@ func (h *MeetingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		Query:    strings.TrimSpace(q.Get("q")),
 		Limit:    100,
 	}
-	if len(f.Query) > 200 {
-		f.Query = f.Query[:200]
+	// Truncate in RUNES: a byte slice can bisect a multibyte character and
+	// hand Postgres invalid UTF-8.
+	if runes := []rune(f.Query); len(runes) > 200 {
+		f.Query = string(runes[:200])
 	}
 	// from/to (YYYY-MM-DD) bound scheduled_at for the calendar view: from is
 	// inclusive, to is exclusive-end-of-day (i.e. includes the whole `to` day).

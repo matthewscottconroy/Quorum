@@ -107,6 +107,37 @@ class PageAnalytics extends HTMLElement {
     this.mountChart(this.card(grid, 'Meeting attendance', `avg ${attendance.avg_present.toFixed(1)} present per meeting`),
       'bar-chart', (attendance.meetings ?? []).map(m => ({ label: m.label, value: m.present })));
 
+    // Per-member attendance: the bylaws number ("after N consecutive
+    // absences…") plus a CSV for the secretary's records.
+    const attHost = this.card(grid, 'Attendance by member', 'last 12 months · streak = current consecutive absences');
+    api('GET', '/analytics/attendance/members').then(res => {
+      const rows = res?.members ?? [];
+      if (!rows.length) { attHost.insertAdjacentHTML('beforeend', '<p style="font-size:.85rem;color:var(--color-text-muted)">No tracked meetings in range.</p>'); return; }
+      attHost.insertAdjacentHTML('beforeend', `
+        <div class="table-scroll" style="max-height:280px;overflow-y:auto">
+          <table style="font-size:.83rem">
+            <thead><tr><th>Member</th><th class="num">Attended</th><th class="num">Rate</th><th class="num">Absent streak</th></tr></thead>
+            <tbody>${rows.map(m2 => `
+              <tr>
+                <td>${esc(m2.name)}</td>
+                <td class="num">${m2.present}/${m2.meetings}</td>
+                <td class="num">${m2.meetings ? Math.round(100 * m2.present / m2.meetings) : 0}%</td>
+                <td class="num" ${m2.absent_streak >= 3 ? 'style="color:var(--color-danger);font-weight:700"' : ''}>${m2.absent_streak}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>
+        <button class="btn-ghost" id="att-csv" style="font-size:.75rem;margin-top:.4rem">Download CSV</button>`);
+      attHost.querySelector('#att-csv')?.addEventListener('click', () => {
+        const csv = ['member,attended,held,rate,absent_streak',
+          ...rows.map(m2 => `"${(m2.name ?? '').replace(/"/g, '""')}",${m2.present},${m2.meetings},${m2.meetings ? (m2.present / m2.meetings).toFixed(2) : '0'},${m2.absent_streak}`)].join('\n');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+        a.download = 'attendance-by-member.csv';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+    }).catch(() => {});
+
     // Governance
     this.mountChart(this.card(grid, 'Motion outcomes', `${governance.total_motions} motions total`),
       'donut-chart', governance.by_outcome);

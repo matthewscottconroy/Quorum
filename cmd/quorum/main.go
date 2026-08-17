@@ -351,6 +351,35 @@ func main() {
 	// and assignments.
 	governanceH.SetEventNotifier(notifySvc)
 	meetingsH.SetEventNotifier(notifySvc)
+	// Late fees read their knobs from org settings at run time.
+	duesSvc.SetSettingsSource(func(ctx context.Context) map[string]string {
+		all, err := orgSettingsRepo.All(ctx)
+		if err != nil {
+			return nil
+		}
+		return all
+	})
+	// Payment receipts: the thank-you email fired after any successful
+	// recording — manual, report-confirm, or webhook.
+	receiptSender := service.NewReceiptSender(duesRepo, emailSvc)
+	duesH.SetReceiptSender(receiptSender)
+	payReportsH.SetReceiptSender(receiptSender)
+	webhooksH.SetReceiptSender(receiptSender)
+	// Nightly follow-ups under the same leader lock: meeting reminders
+	// (~2 days out, with an RSVP nudge) and action-item due notices.
+	followups := service.NewFollowupsService(meetingsRepo, actionItemsRepo, notifySvc, emailSvc, func(ctx context.Context) *time.Location {
+		if all, err := orgSettingsRepo.All(ctx); err == nil {
+			if tz := all["timezone"]; tz != "" {
+				if loc, err := time.LoadLocation(tz); err == nil {
+					return loc
+				}
+			}
+		}
+		return time.Local
+	})
+	duesSvc.AddNightlyTask(followups.MeetingReminders)
+	duesSvc.AddNightlyTask(followups.ActionItemReminders)
+
 	meetingsH.SetGovernanceSource(governanceRepo) // motions/votes for the minutes document
 	// The org's display timezone (minutes documents, meeting emails): read
 	// per use — it changes rarely and the reads are cheap key lookups.
@@ -597,7 +626,9 @@ func main() {
 			r.With(mw.RequireRole("officer")).Post("/dues/{id}/refund", duesH.RecordRefund)
 			r.With(mw.RequireRole("officer")).Get("/dues/{id}/installments", duesH.GetInstallments)
 			r.With(mw.RequireRole("officer")).Put("/dues/{id}/installments", duesH.SetInstallments)
-			r.With(mw.RequireRole("officer")).Get("/dues/transactions", duesH.ListTransactions)
+			// Members reach this too: the handler pins non-officers to their
+			// OWN member_id, so a member sees exactly their payment history.
+			r.With(mw.RequireRole("member")).Get("/dues/transactions", duesH.ListTransactions)
 
 			// Recurring dues schedules (auto-generate invoices per tier).
 			r.With(mw.RequireRole("officer")).Get("/dues/schedules", duesH.ListSchedules)
@@ -627,6 +658,7 @@ func main() {
 			r.With(mw.RequireRole("officer")).Get("/analytics/overview", analyticsH.Overview)
 			r.With(mw.RequireRole("officer")).Get("/analytics/membership", analyticsH.Membership)
 			r.With(mw.RequireRole("officer")).Get("/analytics/attendance", analyticsH.Attendance)
+			r.With(mw.RequireRole("officer")).Get("/analytics/attendance/members", analyticsH.AttendanceMembers)
 			r.With(mw.RequireRole("officer")).Get("/analytics/governance", analyticsH.Governance)
 			r.With(mw.RequireRole("officer")).Get("/analytics/payments", analyticsH.Payments)
 

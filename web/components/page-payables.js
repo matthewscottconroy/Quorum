@@ -73,6 +73,7 @@ class PagePayables extends HTMLElement {
           <span class="badge badge-${esc(badge)}">${esc(b.status)}</span>
         </div>
         ${b.memo ? `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.2rem">${esc(b.memo)}</div>` : ''}
+        ${b.resource_id ? `<button class="btn-ghost bl-doc" data-rid="${esc(b.resource_id)}" style="font-size:.75rem;padding:.05rem .4rem">📄 vendor document</button>` : ''}
         <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.3rem">
           billed ${esc(new Date(b.bill_date).toLocaleDateString())}
           ${due ? ` · due <span style="${overdue ? 'color:var(--color-danger);font-weight:700' : ''}">${esc(due.toLocaleDateString())}</span>` : ''}
@@ -90,6 +91,13 @@ class PagePayables extends HTMLElement {
       onNavigate: off => { this._offset = off; this.load(); },
     });
 
+    box.querySelectorAll('.bl-doc').forEach(b => b.addEventListener('click', async () => {
+      try {
+        const r0 = await api('GET', `/resources/${b.dataset.rid}`);
+        if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
+        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+      } catch { toast("You don't have access to this document", 'error'); }
+    }));
     box.querySelectorAll('.bl-pay').forEach(btn => btn.addEventListener('click', () =>
       this.openPayModal(this._bills.find(b => b.id === btn.dataset.id))));
     box.querySelectorAll('.bl-void').forEach(btn => btn.addEventListener('click', async () => {
@@ -130,6 +138,8 @@ class PagePayables extends HTMLElement {
           </div>
           <div class="form-group"><label for="nb-memo">Memo</label>
             <input id="nb-memo" placeholder="What is this bill for?"></div>
+          <div class="form-group"><label for="nb-doc">Vendor invoice / receipt (optional)</label>
+            <select id="nb-doc"><option value="">— none —</option></select></div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="nb-cancel">Cancel</button>
@@ -152,6 +162,11 @@ class PagePayables extends HTMLElement {
     };
     dialog.querySelector('#nb-exp').addEventListener('change', budgetHint);
     budgetHint();
+    api('GET', '/resources?limit=200').then(pg => {
+      const sel = dialog.querySelector('#nb-doc');
+      if (sel) sel.innerHTML = '<option value="">— none —</option>' +
+        (pg?.data ?? []).map(r0 => `<option value="${esc(r0.id)}">${r0.file_name ? '📄' : '🔗'} ${esc(r0.title)}</option>`).join('');
+    }).catch(() => {});
     const saveBtn = dialog.querySelector('#nb-save');
     saveBtn.addEventListener('click', guardButton(saveBtn, async () => {
       const currency = dialog.querySelector('#nb-cur').value.trim().toUpperCase();
@@ -165,6 +180,7 @@ class PagePayables extends HTMLElement {
           bill_date: dialog.querySelector('#nb-billdate').value || '',
           due_date: dialog.querySelector('#nb-due').value || '',
           memo: dialog.querySelector('#nb-memo').value.trim() || null,
+          resource_id: dialog.querySelector('#nb-doc')?.value || null,
         });
         toast('Bill recorded and accrued', 'success');
         close(); this.load();

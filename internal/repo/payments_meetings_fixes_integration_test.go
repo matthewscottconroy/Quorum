@@ -544,3 +544,119 @@ func TestIntegration_BallotRespectsRoll(t *testing.T) {
 		t.Fatalf("active member's ballot refused: %v", err)
 	}
 }
+
+// ── round-5 features ─────────────────────────────────────────────────────
+
+// Late fees post once per overdue invoice, past grace only, in the
+// invoice's currency, and never twice.
+func TestIntegration_LateFees(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	dues := repo.NewDuesRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	memberID := newMember(t, mr, uniq("tier"), "active")
+
+	mk := func(daysOverdue int) model.DuesInvoice {
+		created, err := dues.CreateInvoiceBatch(ctx, []*model.DuesInvoice{{
+			MemberID: memberID, AmountMinor: 5000, Currency: "USD",
+			PeriodLabel: uniq("period"), DueDate: time.Now().AddDate(0, 0, -daysOverdue), Status: "pending",
+		}})
+		if err != nil {
+			t.Fatalf("invoice: %v", err)
+		}
+		if _, err := dues.MarkOverdue(ctx); err != nil {
+			t.Fatalf("age: %v", err)
+		}
+		return created[0]
+	}
+	deepOverdue := mk(30)
+	justOverdue := mk(2)
+
+	n, err := dues.ApplyLateFees(ctx, 500, 7)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("applied %d fees, want at least the 30-day invoice", n)
+	}
+	var feeID *string
+	if err := pool.QueryRow(ctx, `SELECT late_fee_invoice_id::text FROM dues_invoices WHERE id = $1::uuid`, deepOverdue.ID).Scan(&feeID); err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	if feeID == nil {
+		t.Fatal("30-day overdue invoice got no fee")
+	}
+	fee, err := dues.GetInvoice(ctx, *feeID)
+	if err != nil {
+		t.Fatalf("fee invoice: %v", err)
+	}
+	if fee.AmountMinor != 500 || fee.Currency != "USD" {
+		t.Fatalf("fee %d %s, want 500 USD", fee.AmountMinor, fee.Currency)
+	}
+	// Inside grace: untouched.
+	var justFee *string
+	if err := pool.QueryRow(ctx, `SELECT late_fee_invoice_id::text FROM dues_invoices WHERE id = $1::uuid`, justOverdue.ID).Scan(&justFee); err != nil {
+		t.Fatalf("marker2: %v", err)
+	}
+	if justFee != nil {
+		t.Fatal("2-day overdue invoice was fee'd despite 7-day grace")
+	}
+	// Idempotent: a second run adds nothing for the same invoice.
+	if _, err := dues.ApplyLateFees(ctx, 500, 7); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM dues_invoices WHERE member_id = $1::uuid AND period_label LIKE 'Late fee%'`,
+		memberID).Scan(&cnt); err != nil {
+		t.Fatalf("count fees: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("%d fee invoices after two runs, want exactly 1", cnt)
+	}
+}
+
+// Meeting reminders: window + once-only marker.
+func TestIntegration_MeetingReminderWindow(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	mtRepo := repo.NewMeetingsRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	uid := newUser(t, ar)
+
+	in48h, err := mtRepo.Create(ctx, &model.Meeting{Title: uniq("Soon"), ScheduledAt: time.Now().Add(48 * time.Hour), Status: "scheduled"}, uid)
+	if err != nil {
+		t.Fatalf("meeting: %v", err)
+	}
+	if _, err := mtRepo.Create(ctx, &model.Meeting{Title: uniq("Far"), ScheduledAt: time.Now().Add(200 * time.Hour), Status: "scheduled"}, uid); err != nil {
+		t.Fatalf("far meeting: %v", err)
+	}
+	due, err := mtRepo.DueForReminder(ctx, time.Now().Add(24*time.Hour), time.Now().Add(72*time.Hour))
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	found := false
+	for _, m := range due {
+		if m.ID == in48h.ID {
+			found = true
+		}
+		if m.Title[:3] == "Far" {
+			t.Fatal("outside-window meeting in the reminder set")
+		}
+	}
+	if !found {
+		t.Fatal("48h-out meeting missing from the reminder window")
+	}
+	if err := mtRepo.MarkMeetingReminded(ctx, in48h.ID); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	due2, err := mtRepo.DueForReminder(ctx, time.Now().Add(24*time.Hour), time.Now().Add(72*time.Hour))
+	if err != nil {
+		t.Fatalf("due2: %v", err)
+	}
+	for _, m := range due2 {
+		if m.ID == in48h.ID {
+			t.Fatal("reminded meeting still in the window")
+		}
+	}
+}

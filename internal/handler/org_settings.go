@@ -39,6 +39,37 @@ var orgSettingKeys = map[string]orgSetting{
 	// IANA zone name (e.g. "America/New_York"). Everything rendered
 	// server-side — minutes documents, notification emails — uses it; an
 	// empty value falls back to the server's own zone.
+	// Flat late fee in minor units posted by the nightly job once an invoice
+	// is past due + grace; 0/empty disables the feature entirely.
+	"late_fee_minor": {validate: func(v string) bool {
+		if v == "" {
+			return true
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		return err == nil && n >= 0 && n <= 100_000_000
+	}},
+	"late_fee_grace_days": {validate: func(v string) bool {
+		if v == "" {
+			return true
+		}
+		n, err := strconv.Atoi(v)
+		return err == nil && n >= 0 && n <= 365
+	}},
+	// Named agenda templates for the meeting scheduler: a JSON array of
+	// {"name": "...", "agenda": "..."} objects, managed on the Settings page.
+	"agenda_templates": {validate: func(v string) bool {
+		if v == "" {
+			return true
+		}
+		if len(v) > 8000 {
+			return false
+		}
+		var arr []struct {
+			Name   string `json:"name"`
+			Agenda string `json:"agenda"`
+		}
+		return json.Unmarshal([]byte(v), &arr) == nil
+	}},
 	"timezone": {validate: func(v string) bool {
 		if v == "" {
 			return true

@@ -49,7 +49,13 @@ class PageMyAccount extends HTMLElement {
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
     this.querySelector('#statement-btn').addEventListener('click', async () => {
-      try { await apiDownload(`/auth/me/statement.pdf?year=${new Date().getFullYear()}`, 'member-statement.pdf'); }
+      // January treasurer season is mostly about LAST year: ask which.
+      const y = new Date().getFullYear();
+      const pick = prompt(`Statement for which year?`, String(new Date().getMonth() < 3 ? y - 1 : y));
+      if (pick === null) return;
+      const year = Number(pick);
+      if (!Number.isInteger(year) || year < 2000 || year > y) { toast('Enter a year like ' + y, 'error'); return; }
+      try { await apiDownload(`/auth/me/statement.pdf?year=${year}`, `member-statement-${year}.pdf`); }
       catch (err) { toast(err.error ?? 'Could not build statement', 'error'); }
     });
     this.querySelector('#calendar-btn').addEventListener('click', () => this._openCalendarModal());
@@ -102,6 +108,16 @@ class PageMyAccount extends HTMLElement {
 
       <section class="card table-scroll" style="margin-bottom:1.25rem">
         <div class="panel-header" style="padding:.75rem 1rem;border-bottom:1px solid var(--color-border)"><h2 style="font-size:1rem">My dues</h2></div>
+        ${(() => {
+          const owedTotals = {};
+          for (const inv of invoices) {
+            if (inv.status === 'paid' || inv.status === 'waived') continue;
+            const owed = Math.max((inv.amount_minor ?? 0) - (inv.paid_minor ?? 0), 0);
+            if (owed > 0) owedTotals[inv.currency] = (owedTotals[inv.currency] ?? 0) + owed;
+          }
+          const parts = Object.entries(owedTotals).map(([cur, minor]) => `${formatMoney(minor, cur)} ${esc(cur)}`);
+          return parts.length ? `<p style="padding:.6rem 1rem 0;font-size:.85rem">You currently owe <strong>${parts.join(' + ')}</strong>.</p>` : '';
+        })()}
         ${duesFailed
           ? '<p class="empty-state" style="padding:1rem;color:var(--color-danger)">Couldn\'t load your dues — try again.</p>'
           : invoices.length === 0
@@ -111,10 +127,11 @@ class PageMyAccount extends HTMLElement {
               <tbody>
                 ${invoices.map(inv => {
                   const open = inv.status !== 'paid' && inv.status !== 'waived';
+                  const owed = Math.max((inv.amount_minor ?? 0) - (inv.paid_minor ?? 0), 0);
                   return `
                   <tr>
                     <td>${esc(inv.period_label)}</td>
-                    <td class="num">${formatMoney(inv.amount_minor, inv.currency)}</td>
+                    <td class="num">${formatMoney(inv.amount_minor, inv.currency)}${open && owed > 0 && owed !== inv.amount_minor ? `<div style="font-size:.72rem;color:var(--color-text-muted)">due: ${formatMoney(owed, inv.currency)}</div>` : ''}</td>
                     <td>${fmtDate(inv.due_date)}</td>
                     <td><span class="badge badge-${esc(inv.status)}">${esc(inv.status)}</span></td>
                     <td style="text-align:right;white-space:nowrap">
@@ -125,6 +142,11 @@ class PageMyAccount extends HTMLElement {
                 }).join('')}
               </tbody>
              </table>`}
+      </section>
+
+      <section class="card table-scroll" style="margin-bottom:1.25rem">
+        <div class="panel-header" style="padding:.75rem 1rem;border-bottom:1px solid var(--color-border)"><h2 style="font-size:1rem">My payments</h2></div>
+        <div id="my-payments"><p class="empty-state" style="padding:1rem"><span class="spinner"></span></p></div>
       </section>
 
       <section class="card" style="overflow:hidden">
@@ -152,14 +174,17 @@ class PageMyAccount extends HTMLElement {
       btn.addEventListener('click', () => this._openReportModal(btn.dataset.id, btn.dataset.period));
     });
     this._renderHowToPay(this._howToPay);
+    this._loadMyPayments(); // the section exists only after this render
   }
 
   /** Builds the configured pay-link for an invoice, filling placeholders.
-      Exponent-aware: a hardcoded /100 told JPY members to pay 1/100th of
-      their dues — this number gets typed into Venmo on trust. */
+      Exponent-aware AND balance-aware: the link asks for what is OWED —
+      a member who half-paid must not be told to pay the face value again
+      (the webhook path would post whatever arrives). */
   _payLink(inv) {
     const exp = moneyExponent(inv.currency);
-    const major = (Number(inv.amount_minor) || 0) / 10 ** exp;
+    const owedMinor = Math.max((Number(inv.amount_minor) || 0) - (Number(inv.paid_minor) || 0), 0);
+    const major = owedMinor / 10 ** exp;
     return (this._payTemplate || '')
       .replace('{amount_major}', encodeURIComponent(major.toFixed(exp)))
       .replace('{reference}', encodeURIComponent(inv.id));
@@ -244,5 +269,31 @@ class PageMyAccount extends HTMLElement {
       } catch { toast('Could not reset', 'error'); }
     });
   }
+  /** The member's own payment history — the server pins the filter to the
+      caller's member id, so this is exactly "my receipts". */
+  async _loadMyPayments() {
+    const box = this.querySelector('#my-payments');
+    if (!box) return;
+    let txs = [];
+    try { txs = (await api('GET', '/dues/transactions?limit=50'))?.data ?? []; }
+    catch { box.innerHTML = '<p class="empty-state" style="padding:1rem">Could not load payments.</p>'; return; }
+    if (!txs.length) {
+      box.innerHTML = '<p class="empty-state" style="padding:1rem">No payments recorded yet.</p>';
+      return;
+    }
+    box.innerHTML = `
+      <table>
+        <thead><tr><th>Date</th><th class="num">Amount</th><th>Via</th><th>Reference</th></tr></thead>
+        <tbody>
+          ${txs.map(t => `<tr>
+            <td>${fmtDate(t.occurred_at)}</td>
+            <td class="num">${formatMoney(t.amount_minor, t.currency)}${t.amount_minor < 0 ? ' <span style="font-size:.72rem;color:var(--color-text-muted)">(refund)</span>' : ''}</td>
+            <td>${esc(t.provider)}</td>
+            <td style="font-size:.8rem;color:var(--color-text-muted)">${esc(t.provider_reference_id ?? '—')}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
 }
 customElements.define('page-my-account', PageMyAccount);

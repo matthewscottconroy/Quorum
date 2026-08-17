@@ -852,6 +852,10 @@ func (m *mockAnalyticsRepo) Overview(ctx context.Context) (*model.AnalyticsOverv
 func (m *mockAnalyticsRepo) Membership(ctx context.Context) (*model.MembershipAnalytics, error) {
 	return m.MembershipFn(ctx)
 }
+func (m *mockAnalyticsRepo) AttendancePerMember(ctx context.Context, from, to string) ([]repo.MemberAttendanceRow, error) {
+	return []repo.MemberAttendanceRow{}, nil
+}
+
 func (m *mockAnalyticsRepo) Attendance(ctx context.Context) (*model.AttendanceAnalytics, error) {
 	return m.AttendanceFn(ctx)
 }

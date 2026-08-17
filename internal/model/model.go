@@ -53,18 +53,21 @@ var ValidInvoiceStatuses = map[string]bool{
 // AmountMinor is the amount in the currency's minor units (e.g. cents); see
 // money.go. Divide by 10^CurrencyExponent(Currency) for the major-unit value.
 type DuesInvoice struct {
-	ID           string        `json:"id"`
-	MemberID     string        `json:"member_id"`
-	ContactID    *string       `json:"contact_id,omitempty"`
-	AmountMinor  int64         `json:"amount_minor"`
-	Currency     string        `json:"currency"`
-	PeriodLabel  string        `json:"period_label"`
-	DueDate      time.Time     `json:"due_date"`
-	Status       string        `json:"status"`
-	Notes        *string       `json:"notes,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
-	MemberName   string        `json:"member_name,omitempty"`
+	ID          string    `json:"id"`
+	MemberID    string    `json:"member_id"`
+	ContactID   *string   `json:"contact_id,omitempty"`
+	AmountMinor int64     `json:"amount_minor"`
+	Currency    string    `json:"currency"`
+	PeriodLabel string    `json:"period_label"`
+	DueDate     time.Time `json:"due_date"`
+	Status      string    `json:"status"`
+	Notes       *string   `json:"notes,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	MemberName  string    `json:"member_name,omitempty"`
+	// PaidMinor is the same-currency net recorded total — the number that
+	// makes "amount due" honest everywhere (member pay links, prefills).
+	PaidMinor    int64         `json:"paid_minor"`
 	Transactions []Transaction `json:"transactions,omitempty"`
 }
 
@@ -84,7 +87,10 @@ type Transaction struct {
 	RecordedBy          *string   `json:"recorded_by,omitempty"`
 	OccurredAt          time.Time `json:"occurred_at"`
 	Notes               *string   `json:"notes,omitempty"`
-	MemberName          string    `json:"member_name,omitempty"`
+	// ResourceID links a supporting document (check image, screenshot) from
+	// the resource library, same as purchase requests.
+	ResourceID *string `json:"resource_id,omitempty"`
+	MemberName string  `json:"member_name,omitempty"`
 }
 
 // Meeting represents a scheduled or completed organizational meeting.
@@ -1040,8 +1046,9 @@ type Bill struct {
 	PaidAt             *time.Time `json:"paid_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	// Input-only date strings (YYYY-MM-DD); empty means default/null.
-	BillDateStr string `json:"-"`
-	DueDateStr  string `json:"-"`
+	BillDateStr string  `json:"-"`
+	DueDateStr  string  `json:"-"`
+	ResourceID  *string `json:"resource_id,omitempty"`
 }
 
 // ArcadeScore is one leaderboard row: a user's best score on a cabinet.

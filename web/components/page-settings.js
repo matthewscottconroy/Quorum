@@ -113,6 +113,11 @@ class PageSettings extends HTMLElement {
           <div class="form-row">
             <div class="form-group" style="max-width:220px"><label for="og-fy">Fiscal year starts (month 1–12)</label>
               <input id="og-fy" type="number" min="1" max="12" value="1"></div>
+            <div class="form-group" style="max-width:200px"><label for="og-latefee">Late fee (minor units)</label>
+              <input id="og-latefee" type="number" min="0" placeholder="0 = off">
+              <div style="font-size:.72rem;color:var(--color-text-muted)">Posted nightly as a separate fee invoice once dues are past due + grace. Waive the fee invoice to forgive it.</div></div>
+            <div class="form-group" style="max-width:160px"><label for="og-lategrace">Late-fee grace (days)</label>
+              <input id="og-lategrace" type="number" min="0" max="365" placeholder="0"></div>
             <div class="form-group" style="max-width:260px"><label for="og-tz">Timezone (IANA name)</label>
               <input id="og-tz" placeholder="America/New_York">
               <div style="font-size:.72rem;color:var(--color-text-muted)">Used wherever the server renders times: minutes documents and meeting emails. Blank = the server's own zone.</div></div>
@@ -125,6 +130,9 @@ class PageSettings extends HTMLElement {
               </select>
               <div style="font-size:.72rem;color:var(--color-text-muted)">Server-enforced. Un-enrolled accounts at/above the chosen role are walked through setup at next use (takes effect within ~30s).</div></div>
           </div>
+          <div class="form-group"><label for="og-agendatpl">Agenda templates (JSON)</label>
+            <textarea id="og-agendatpl" rows="3" placeholder='[{"name":"Board meeting","agenda":"1. Call to order\n2. Minutes\n3. Treasurer\u2019s report\n4. Old business\n5. New business\n6. Adjourn"}]'></textarea>
+            <div style="font-size:.72rem;color:var(--color-text-muted)">Offered as a picker when scheduling a meeting.</div></div>
           <div class="form-group"><label for="og-pay">How to pay (shown to members)</label>
             <textarea id="og-pay" rows="3" placeholder="Zelle: treasurer@…  ·  Venmo: @org-handle  ·  Checks payable to …"></textarea></div>
           <div class="form-group"><label for="og-paylink">Pay-now link template (optional)</label>
@@ -799,6 +807,8 @@ customElements.define('page-settings', PageSettings);
         const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
         set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
         set('#og-tz', st.timezone);
+        set('#og-latefee', st.late_fee_minor); set('#og-lategrace', st.late_fee_grace_days);
+        set('#og-agendatpl', st.agenda_templates);
         set('#og-2fa', st.require_2fa ?? 'off');
         set('#og-infra', st.infrastructure_facts); set('#og-watch', st.continuity_watch_days);
         set('#og-paylink', st.payment_link_template); set('#og-vocab', st.vocab_overrides);
@@ -812,6 +822,9 @@ customElements.define('page-settings', PageSettings);
           const saved = await api('PUT', '/settings/org', {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
             timezone: this.querySelector('#og-tz').value.trim(),
+            late_fee_minor: this.querySelector('#og-latefee').value.trim(),
+            late_fee_grace_days: this.querySelector('#og-lategrace').value.trim(),
+            agenda_templates: this.querySelector('#og-agendatpl').value.trim(),
             require_2fa: this.querySelector('#og-2fa').value,
             how_to_pay: this.querySelector('#og-pay').value,
             payment_link_template: this.querySelector('#og-paylink').value,

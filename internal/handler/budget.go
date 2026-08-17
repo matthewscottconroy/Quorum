@@ -244,8 +244,11 @@ func (h *BudgetHandler) Compare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "too many scenarios to compare at once", "bad_request")
 		return
 	}
-	for _, id := range ids {
-		if !isValidUUID(strings.TrimSpace(id)) {
+	// Validate AND query the same strings: trimming only for validation let
+	// "?ids=a, b" pass the check and 500 in the ::uuid cast.
+	for i, id := range ids {
+		ids[i] = strings.TrimSpace(id)
+		if !isValidUUID(ids[i]) {
 			writeError(w, http.StatusBadRequest, "each id must be a UUID", "bad_request")
 			return
 		}

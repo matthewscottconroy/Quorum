@@ -1,6 +1,11 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+
+	"quorum/internal/repo"
+)
 
 // AnalyticsHandler serves aggregate analytics for the dashboard (officer+).
 type AnalyticsHandler struct {
@@ -40,6 +45,32 @@ func (h *AnalyticsHandler) Attendance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a)
+}
+
+// AttendanceMembers returns the per-member transpose: attended/held/streak
+// over ?from=&to= (defaults: the last 12 months).
+func (h *AnalyticsHandler) AttendanceMembers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	from, to := q.Get("from"), q.Get("to")
+	if from == "" {
+		from = time.Now().AddDate(-1, 0, 0).Format("2006-01-02")
+	}
+	if to == "" {
+		to = time.Now().Format("2006-01-02")
+	}
+	if !validISODate(from) || !validISODate(to) {
+		writeError(w, http.StatusBadRequest, "from and to must be YYYY-MM-DD", "bad_request")
+		return
+	}
+	rows, err := h.repo.AttendancePerMember(r.Context(), from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "analytics error", "internal_error")
+		return
+	}
+	if rows == nil {
+		rows = []repo.MemberAttendanceRow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"from": from, "to": to, "members": rows})
 }
 
 // Governance returns motion outcomes and the vote split.

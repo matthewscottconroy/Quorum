@@ -385,6 +385,7 @@ func TestDuesListTransactions(t *testing.T) {
 		},
 	})
 	req := httptest.NewRequest("GET", "/dues/transactions", nil)
+	req = withCtxUser(req, "u", "officer")
 	rr := httptest.NewRecorder()
 	h.ListTransactions(rr, req)
 	if rr.Code != 200 {
@@ -403,6 +404,7 @@ func TestDuesListTransactions_BadUUIDFilters(t *testing.T) {
 	for _, param := range []string{"invoice_id", "member_id"} {
 		h := NewDuesHandler(&mockDuesRepo{})
 		req := httptest.NewRequest("GET", "/dues/transactions?"+param+"=garbage", nil)
+		req = withCtxUser(req, "u", "officer")
 		rr := httptest.NewRecorder()
 		h.ListTransactions(rr, req)
 		if rr.Code != 400 {
@@ -503,5 +505,36 @@ func TestDuesTransaction_OverpaymentGuard(t *testing.T) {
 	h.CreateTransaction(rr2, withCtxUser(req2, "u", "officer"))
 	if rr2.Code != http.StatusCreated || !recorded {
 		t.Fatalf("acknowledged overpay: got %d recorded=%v, want 201 (%s)", rr2.Code, recorded, rr2.Body)
+	}
+}
+
+// A plain member hitting /dues/transactions sees exactly their own history:
+// the handler pins member_id to the caller regardless of what was asked.
+func TestListTransactions_MemberPinnedToSelf(t *testing.T) {
+	var gotMember string
+	h := NewDuesHandler(&mockDuesRepo{
+		ListTransactionsFn: func(_ context.Context, f repo.TransactionFilter) ([]model.Transaction, int, error) {
+			gotMember = f.MemberID
+			return []model.Transaction{}, 0, nil
+		},
+	})
+	// The member asks for SOMEONE ELSE's history; the pin overrides it.
+	req := httptest.NewRequest("GET", "/dues/transactions?member_id=99999999-9999-4999-8999-999999999999", nil)
+	req = withCtxUserMember(req, "u", "member", "11111111-1111-4111-8111-111111111111")
+	rr := httptest.NewRecorder()
+	h.ListTransactions(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	if gotMember != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("filter member = %q, want the CALLER's id", gotMember)
+	}
+	// No member link at all: refused.
+	req2 := httptest.NewRequest("GET", "/dues/transactions", nil)
+	req2 = withCtxUser(req2, "u", "member")
+	rr2 := httptest.NewRecorder()
+	h.ListTransactions(rr2, req2)
+	if rr2.Code != 403 {
+		t.Fatalf("unlinked member: got %d, want 403", rr2.Code)
 	}
 }

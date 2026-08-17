@@ -18,12 +18,15 @@ export function assembleMinutesText(mt, entries, motions) {
   return parts.filter(Boolean).join('\n');
 }
 
-/** Cold→hot color pair for a normalized frequency t in [0,1]. */
+/** Cold→hot color pair for a normalized frequency t in [0,1]. The
+ *  foreground rides the app's text token so tiles stay readable on BOTH
+ *  themes — the old hardcoded dark HSL text was dark-on-dark in dark mode —
+ *  and the hue arrives through the low-alpha background wash instead. */
 function heat(t) {
   const hue = Math.round(215 - t * 215); // 215 = cool blue … 0 = red
   return {
-    bg: `hsla(${hue}, 85%, 50%, ${(0.10 + 0.28 * t).toFixed(2)})`,
-    fg: `hsl(${hue}, 65%, ${Math.round(38 - 10 * t)}%)`,
+    bg: `hsla(${hue}, 85%, 50%, ${(0.14 + 0.34 * t).toFixed(2)})`,
+    fg: 'var(--color-text)',
   };
 }
 

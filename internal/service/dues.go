@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -88,12 +89,29 @@ type DuesService struct {
 	reportHook     func(context.Context)
 	legalHold      func(context.Context) bool
 
+	// extraTasks run at the end of each nightly job under the same leader
+	// lock: late fees, meeting reminders, action-item reminders. Each task
+	// owns its own idempotency (markers in the DB).
+	extraTasks []func(context.Context)
+	// settings supplies org_settings values (late-fee knobs) at run time.
+	settings func(context.Context) map[string]string
+
 	// lastSuccessUnix is the wall-clock time (unix seconds) the nightly job
 	// last completed, for the observability gauge and startup catch-up. 0 until
 	// the first run of this process. Accessed atomically.
 	lastSuccessUnix atomic.Int64
 	onJobDone       func() // optional metric hook fired after a successful run
 }
+
+// AddNightlyTask appends a step to the nightly job (runs under the leader
+// lock, after the core dues work).
+func (s *DuesService) AddNightlyTask(fn func(context.Context)) {
+	s.extraTasks = append(s.extraTasks, fn)
+}
+
+// SetSettingsSource attaches the org-settings reader used by settings-driven
+// nightly steps (late fees).
+func (s *DuesService) SetSettingsSource(fn func(context.Context) map[string]string) { s.settings = fn }
 
 // SetJobDoneHook attaches a callback fired after each successful nightly run
 // (used to stamp the last-success metric).
@@ -156,9 +174,15 @@ func (s *DuesService) RunNightlyJob(ctx context.Context) {
 	// but the job itself still ran — fall through to the success marker so
 	// liveness monitoring and catch-up don't treat an email-less deployment as
 	// a perpetually-failing job.
+	s.applyLateFees(ctx)
+
 	if s.email != nil && s.email.configured() {
 		s.sendMemberReminders(ctx)
 		s.sendAdminDigest(ctx)
+	}
+
+	for _, task := range s.extraTasks {
+		task(ctx)
 	}
 
 	if s.postHook != nil {
@@ -207,6 +231,45 @@ func (s *DuesService) generateRecurringDues(ctx context.Context) {
 	}
 }
 
+// applyLateFees posts a flat late fee (org setting late_fee_minor, after
+// late_fee_grace_days beyond the due date) as a SEPARATE fee invoice, at most
+// once per overdue invoice — the pointer on the original makes it idempotent,
+// and waiving the fee invoice is the normal forgiveness path.
+func (s *DuesService) applyLateFees(ctx context.Context) {
+	if s.settings == nil {
+		return
+	}
+	cfg := s.settings(ctx)
+	fee, _ := strconv.ParseInt(cfg["late_fee_minor"], 10, 64)
+	if fee <= 0 {
+		return // feature off
+	}
+	grace, _ := strconv.Atoi(cfg["late_fee_grace_days"])
+	if grace < 0 {
+		grace = 0
+	}
+	lf, ok := s.repo.(lateFeeApplier)
+	if !ok {
+		return
+	}
+	n, err := lf.ApplyLateFees(ctx, fee, grace)
+	if err != nil {
+		log.Printf("late fees: %v", err)
+	} else if n > 0 {
+		log.Printf("late fees: posted %d fee invoice(s) of %d minor units", n, fee)
+	}
+}
+
+// installmentReader is implemented by *repo.DuesRepo.
+type installmentReader interface {
+	ListInstallments(ctx context.Context, invoiceID string) ([]model.InvoiceInstallment, error)
+}
+
+// lateFeeApplier is implemented by *repo.DuesRepo.
+type lateFeeApplier interface {
+	ApplyLateFees(ctx context.Context, feeMinor int64, graceDays int) (int, error)
+}
+
 // sendMemberReminders emails each member whose dues are overdue, escalating
 // through first / 7-day / 30-day notices. It advances an invoice's stage only
 // after a successful send, so a transient SMTP failure is retried next night
@@ -219,11 +282,33 @@ func (s *DuesService) sendMemberReminders(ctx context.Context) {
 	}
 	today := time.Now()
 	sent := 0
+	planner, _ := s.repo.(installmentReader)
 	for _, rem := range reminders {
 		daysOverdue := int(today.Sub(rem.DueDate).Hours() / 24)
 		target := reminderStageForDaysOverdue(daysOverdue)
 		if target <= rem.ReminderStage {
 			continue // already at or past the appropriate stage
+		}
+		// A payment plan changes what "owed now" means: dun only for the
+		// installments due to date, minus what's been paid — a member who is
+		// current on their plan gets nothing at all.
+		if planner != nil {
+			if plan, err := planner.ListInstallments(ctx, rem.InvoiceID); err == nil && len(plan) > 0 {
+				var dueToDate int64
+				for _, p := range plan {
+					if !p.DueDate.After(today) {
+						dueToDate += p.AmountMinor
+					}
+				}
+				paid := rem.AmountMinor - rem.RemainingMinor
+				owedNow := dueToDate - paid
+				if owedNow <= 0 {
+					continue // on schedule: the plan IS the arrangement
+				}
+				if owedNow < rem.RemainingMinor {
+					rem.RemainingMinor = owedNow
+				}
+			}
 		}
 		subject, body := reminderMessage(rem, target, s.email.baseURL())
 		if err := s.email.Send([]string{rem.MemberEmail}, subject, body); err != nil {

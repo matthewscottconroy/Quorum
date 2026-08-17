@@ -30,6 +30,7 @@ import (
 
 // WebhooksHandler processes inbound payment-provider webhook events.
 type WebhooksHandler struct {
+	receipts            func(invoiceID string, amountMinor int64)
 	dues                duesRepo
 	stripeWebhookSecret string
 	paypalWebhookID     string
@@ -39,6 +40,9 @@ type WebhooksHandler struct {
 	// unverifiable events.
 	allowUnsigned bool
 }
+
+// SetReceiptSender attaches the payment-receipt email hook.
+func (h *WebhooksHandler) SetReceiptSender(fn func(string, int64)) { h.receipts = fn }
 
 // NewWebhooksHandler constructs a WebhooksHandler.
 func NewWebhooksHandler(d duesRepo, stripeSecret, paypalWebhookID string, allowUnsigned bool) *WebhooksHandler {
@@ -247,7 +251,7 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 		memPtr = &memberID
 	}
 
-	_, err := h.dues.RecordWebhookPayment(r.Context(), claimKey, &model.Transaction{
+	already, err := h.dues.RecordWebhookPayment(r.Context(), claimKey, &model.Transaction{
 		InvoiceID:           invPtr,
 		MemberID:            memPtr,
 		AmountMinor:         amountMinor,
@@ -258,6 +262,9 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 		PaymentMethodType:   &pmType,
 		OccurredAt:          time.Now(),
 	})
+	if err == nil && !already && invPtr != nil && h.receipts != nil {
+		h.receipts(*invPtr, amountMinor) // thank the member, with their new balance
+	}
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		// Payment arrived for a waived invoice — acknowledged to the provider
 		// (no retry storm) but not posted; an officer must reconcile it.
@@ -434,7 +441,7 @@ func (h *WebhooksHandler) handlePayPalCapture(r *http.Request, eventID string, r
 		}
 	}
 
-	_, err = h.dues.RecordWebhookPayment(r.Context(), eventID, &model.Transaction{
+	already2, err := h.dues.RecordWebhookPayment(r.Context(), eventID, &model.Transaction{
 		InvoiceID:           invoiceID,
 		AmountMinor:         amountMinor,
 		Currency:            currency,
@@ -444,6 +451,9 @@ func (h *WebhooksHandler) handlePayPalCapture(r *http.Request, eventID string, r
 		PaymentMethodType:   &pmType,
 		OccurredAt:          time.Now(),
 	})
+	if err == nil && !already2 && invoiceID != nil && h.receipts != nil {
+		h.receipts(*invoiceID, amountMinor)
+	}
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		log.Printf("paypal: payment for waived invoice %v needs manual reconciliation (provider ref %s)", invoiceID, providerID)
 		return nil

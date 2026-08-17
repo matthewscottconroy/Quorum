@@ -86,7 +86,10 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		SELECT COUNT(*) OVER() AS total_count,
 		       di.id::text, coalesce(di.member_id::text, ''), di.amount, di.currency, di.period_label,
 		       di.due_date, di.status, di.notes, di.created_at, di.updated_at,
-		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text
+		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text,
+		       coalesce((SELECT sum(t.amount) FROM transactions t
+		                 WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
+		                   AND t.currency = di.currency), 0) AS paid_minor
 		FROM dues_invoices di
 		LEFT JOIN members m ON m.id = di.member_id
 		LEFT JOIN contacts c ON c.id = di.contact_id
@@ -107,7 +110,7 @@ func (r *DuesRepo) ListInvoices(ctx context.Context, f InvoiceFilter) ([]model.D
 		var inv model.DuesInvoice
 		if err := rows.Scan(&total, &inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID); err != nil {
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID, &inv.PaidMinor); err != nil {
 			return nil, 0, err
 		}
 		invoices = append(invoices, inv)
@@ -170,14 +173,17 @@ func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoic
 	err := r.db.QueryRow(ctx, `
 		SELECT di.id::text, coalesce(di.member_id::text, ''), di.amount, di.currency, di.period_label,
 		       di.due_date, di.status, di.notes, di.created_at, di.updated_at,
-		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text
+		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text,
+		       coalesce((SELECT sum(t.amount) FROM transactions t
+		                 WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
+		                   AND t.currency = di.currency), 0)
 		FROM dues_invoices di
 		LEFT JOIN members m ON m.id = di.member_id
 		LEFT JOIN contacts c ON c.id = di.contact_id
 		WHERE di.id = $1::uuid`, id).
 		Scan(&inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID)
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID, &inv.PaidMinor)
 	if err != nil {
 		return nil, err
 	}
@@ -365,12 +371,12 @@ func (r *DuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transa
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO transactions
 		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,
-		     provider_status, payment_method_type, recorded_by, occurred_at, notes)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)
+		     provider_status, payment_method_type, recorded_by, occurred_at, notes, resource_id)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11, $12::uuid)
 		RETURNING id::text, occurred_at`,
 		t.InvoiceID, t.MemberID, t.AmountMinor, t.Currency, t.Provider,
 		t.ProviderReferenceID, t.ProviderStatus, t.PaymentMethodType,
-		t.RecordedBy, t.OccurredAt, t.Notes).Scan(&t.ID, &t.OccurredAt); err != nil {
+		t.RecordedBy, t.OccurredAt, t.Notes, t.ResourceID).Scan(&t.ID, &t.OccurredAt); err != nil {
 		return nil, 0, err
 	}
 	if _, err := tx.Exec(ctx, recomputeInvoiceStatusSQL, *t.InvoiceID); err != nil {
@@ -380,6 +386,96 @@ func (r *DuesRepo) CreateGuardedTransaction(ctx context.Context, t *model.Transa
 		return nil, 0, err
 	}
 	return t, 0, nil
+}
+
+// ReceiptInfo is what a payment-receipt email needs to say thank you.
+type ReceiptInfo struct {
+	MemberName     string
+	MemberEmail    string
+	PeriodLabel    string
+	Currency       string
+	RemainingMinor int64
+}
+
+// ReceiptInfoFor fetches receipt context; ok=false when the invoice has no
+// reachable member (contact invoices, no email on file).
+func (r *DuesRepo) ReceiptInfoFor(ctx context.Context, invoiceID string) (ReceiptInfo, bool, error) {
+	var info ReceiptInfo
+	var email *string
+	err := r.db.QueryRow(ctx, `
+		SELECT m.display_name, m.email, di.period_label, di.currency,
+		       di.amount - coalesce((SELECT sum(t.amount) FROM transactions t
+		                             WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
+		                               AND t.currency = di.currency), 0)
+		FROM dues_invoices di
+		JOIN members m ON m.id = di.member_id
+		WHERE di.id = $1::uuid`,
+		invoiceID).Scan(&info.MemberName, &email, &info.PeriodLabel, &info.Currency, &info.RemainingMinor)
+	if err != nil {
+		return info, false, err
+	}
+	if email == nil || *email == "" {
+		return info, false, nil
+	}
+	info.MemberEmail = *email
+	return info, true, nil
+}
+
+// ApplyLateFees creates one flat-fee invoice per sufficiently-overdue member
+// invoice that hasn't been charged yet, linking it back via
+// late_fee_invoice_id so the nightly job is idempotent. Fees post in the
+// ORIGINAL invoice's currency at face value (a flat amount, documented in
+// settings); contact invoices and already-fee'd invoices are skipped.
+func (r *DuesRepo) ApplyLateFees(ctx context.Context, feeMinor int64, graceDays int) (int, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	rows, err := tx.Query(ctx, `
+		SELECT di.id::text, di.member_id::text, di.currency, di.period_label
+		FROM dues_invoices di
+		WHERE di.status IN ('overdue', 'partial')
+		  AND di.due_date < CURRENT_DATE - $1::int
+		  AND di.late_fee_invoice_id IS NULL
+		  AND di.member_id IS NOT NULL
+		FOR UPDATE OF di SKIP LOCKED
+		LIMIT 500`, graceDays)
+	if err != nil {
+		return 0, err
+	}
+	type cand struct{ id, member, currency, period string }
+	var cands []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.id, &c.member, &c.currency, &c.period); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		cands = append(cands, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, c := range cands {
+		var feeID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status)
+			VALUES ($1::uuid, $2, $3, $4, CURRENT_DATE + 14, 'pending')
+			RETURNING id::text`,
+			c.member, feeMinor, c.currency, "Late fee — "+c.period).Scan(&feeID); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE dues_invoices SET late_fee_invoice_id = $2::uuid WHERE id = $1::uuid`,
+			c.id, feeID); err != nil {
+			return 0, err
+		}
+		n++
+	}
+	return n, tx.Commit(ctx)
 }
 
 // MarkOverdue flips past-due pending invoices to overdue and returns the count.
@@ -444,7 +540,7 @@ func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([
 		SELECT COUNT(*) OVER() AS total_count,
 		       t.id::text, t.invoice_id::text, t.member_id::text, t.amount, t.currency,
 		       t.provider, t.provider_reference_id, t.provider_status, t.payment_method_type,
-		       t.recorded_by::text, t.occurred_at, t.notes,
+		       t.recorded_by::text, t.occurred_at, t.notes, t.resource_id::text,
 		       coalesce(m.display_name, '') as member_name
 		FROM transactions t
 		LEFT JOIN members m ON m.id = t.member_id
@@ -465,7 +561,7 @@ func (r *DuesRepo) ListTransactions(ctx context.Context, f TransactionFilter) ([
 		var t model.Transaction
 		if err := rows.Scan(&total, &t.ID, &t.InvoiceID, &t.MemberID, &t.AmountMinor, &t.Currency,
 			&t.Provider, &t.ProviderReferenceID, &t.ProviderStatus, &t.PaymentMethodType,
-			&t.RecordedBy, &t.OccurredAt, &t.Notes, &t.MemberName); err != nil {
+			&t.RecordedBy, &t.OccurredAt, &t.Notes, &t.ResourceID, &t.MemberName); err != nil {
 			return nil, 0, err
 		}
 		txs = append(txs, t)

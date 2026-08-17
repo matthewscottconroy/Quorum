@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,6 +39,49 @@ type ActionItemFilter struct {
 	CarryoverExcluding string
 	Limit              int
 	Offset             int
+}
+
+// ItemReminderRow is one open card due (or overdue) with a reachable assignee.
+type ItemReminderRow struct {
+	ID            string
+	Title         string
+	DueDate       time.Time
+	AssigneeName  string
+	AssigneeEmail string
+}
+
+// DueForReminder returns open items whose due date has arrived, not yet
+// reminded, whose assignee is an active member with an email on file.
+func (r *ActionItemsRepo) DueForReminder(ctx context.Context) ([]ItemReminderRow, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT ai.id::text, ai.title, ai.due_date, m.display_name, m.email
+		FROM action_items ai
+		JOIN members m ON m.id = ai.assignee_id
+		WHERE ai.status = 'open' AND ai.due_date IS NOT NULL AND ai.due_date <= CURRENT_DATE
+		  AND ai.due_reminded_at IS NULL
+		  AND m.status = 'active' AND m.email IS NOT NULL AND m.email <> ''
+		ORDER BY ai.due_date
+		LIMIT 500`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ItemReminderRow
+	for rows.Next() {
+		var it ItemReminderRow
+		if err := rows.Scan(&it.ID, &it.Title, &it.DueDate, &it.AssigneeName, &it.AssigneeEmail); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// MarkDueReminded stamps the once-only due notice marker.
+func (r *ActionItemsRepo) MarkDueReminded(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE action_items SET due_reminded_at = now() WHERE id = $1::uuid`, id)
+	return err
 }
 
 // List returns a page of action items matching the filter, plus the total count.

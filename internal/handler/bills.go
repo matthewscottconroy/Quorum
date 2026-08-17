@@ -64,6 +64,7 @@ func (h *BillsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ExpenseAccountID string  `json:"expense_account_id"`
 		BillDate         string  `json:"bill_date"`
 		DueDate          string  `json:"due_date"`
+		ResourceID       *string `json:"resource_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -84,10 +85,18 @@ func (h *BillsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.ResourceID != nil && *body.ResourceID == "" {
+		body.ResourceID = nil
+	}
+	if body.ResourceID != nil && !isValidUUID(*body.ResourceID) {
+		writeError(w, 400, "resource_id must be a UUID", "bad_request")
+		return
+	}
 	created, err := h.repo.Create(r.Context(), &model.Bill{
 		ContactID: body.ContactID, Amount: body.AmountMinor, Currency: body.Currency,
 		Memo: body.Memo, ExpenseAccountID: body.ExpenseAccountID,
 		BillDateStr: body.BillDate, DueDateStr: body.DueDate,
+		ResourceID: body.ResourceID,
 	}, userIDFromCtx(r))
 	if err != nil {
 		writeRepoError(w, err, "contact or account not found", "create error")

@@ -133,18 +133,22 @@ class PageMeetings extends HTMLElement {
     });
   }
 
-  openCreateModal() {
+  openCreateModal(prefill = {}) {
     const { dialog, close } = openModal({
       title: 'Schedule meeting',
       body: `
         <div class="modal-body">
-          <div class="form-group"><label for="f-title">Title *</label><input id="f-title"></div>
+          <div class="form-group"><label for="f-title">Title *</label><input id="f-title" value="${esc(prefill.title ?? '')}"></div>
           <div class="form-row">
-            <div class="form-group"><label for="f-dt">Starts *</label><input id="f-dt" type="datetime-local"></div>
-            <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local"></div>
+            <div class="form-group"><label for="f-dt">Starts *</label><input id="f-dt" type="datetime-local" value="${esc(prefill.starts ?? '')}"></div>
+            <div class="form-group"><label for="f-end">Ends</label><input id="f-end" type="datetime-local" value="${esc(prefill.ends ?? '')}"></div>
           </div>
-          <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link"></div>
-          <div class="form-group"><label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="4"></textarea></div>
+          <div class="form-group"><label for="f-loc">Location</label><input id="f-loc" placeholder="Room or video link" value="${esc(prefill.location ?? '')}"></div>
+          <div class="form-group"><label for="f-agenda-tpl" style="display:none"></label>
+            <div id="agenda-tpl-row" style="display:none;margin-bottom:.3rem">
+              <select id="f-agenda-tpl" style="font-size:.85rem" aria-label="Agenda template"><option value="">— agenda template —</option></select>
+            </div>
+            <label for="f-agenda">Agenda</label><textarea id="f-agenda" rows="4">${esc(prefill.agenda ?? '')}</textarea></div>
           <div class="form-group"><label>Attendees (optional — you can also edit them later)</label>
             <div id="new-attendance"><span class="spinner"></span></div>
           </div>
@@ -155,6 +159,24 @@ class PageMeetings extends HTMLElement {
         </div>
       `,
     });
+
+    // Standing meetings have standing agendas: templates come from org
+    // settings (managed by an admin on the Settings page).
+    api('GET', '/settings/org').then(st => {
+      let tpls = [];
+      try { tpls = JSON.parse(st?.agenda_templates || '[]'); } catch { /* bad JSON: no templates */ }
+      if (!Array.isArray(tpls) || !tpls.length) return;
+      const row = dialog.querySelector('#agenda-tpl-row');
+      const sel = dialog.querySelector('#f-agenda-tpl');
+      if (!row || !sel) return;
+      sel.innerHTML = '<option value="">— agenda template —</option>' +
+        tpls.map((t, i) => `<option value="${i}">${esc(t.name ?? 'Template ' + (i + 1))}</option>`).join('');
+      row.style.display = '';
+      sel.addEventListener('change', () => {
+        const t = tpls[Number(sel.value)];
+        if (t?.agenda) dialog.querySelector('#f-agenda').value = t.agenda;
+      });
+    }).catch(() => {});
 
     let newRoster = () => [];
     this.loadRosterData().then(({ members, groups }) => {
@@ -303,6 +325,7 @@ class PageMeetings extends HTMLElement {
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="run-page-btn" style="margin-right:auto" title="Full-screen view for running the meeting live">▶ Run meeting</button>
+          ${canWrite() ? '<button class="btn-ghost" id="next-occurrence-btn" title="Schedule the same meeting one week later (edit anything before saving)">↻ Schedule next</button>' : ''}
           <button class="btn-secondary" id="cancel-btn">Close</button>
           ${canWrite()?'<button class="btn-primary" id="save-btn">Save changes</button>':''}
         </div>
@@ -366,6 +389,26 @@ class PageMeetings extends HTMLElement {
     dialog.querySelector('#cancel-btn').addEventListener('click', guardedClose);
     dialog.querySelector('#run-page-btn').addEventListener('click', () => {
       if (guardedClose()) location.hash = `#/meeting-run?id=${id}`;
+    });
+    // "Same meeting, next week/month" covers most recurring-meeting need
+    // without recurrence-rule plumbing: prefill the create modal, +1 week.
+    dialog.querySelector('#next-occurrence-btn')?.addEventListener('click', () => {
+      const base = new Date(mt.scheduled_at);
+      const next = new Date(base.getTime() + 7 * 24 * 3600 * 1000);
+      const toLocal = d => toLocalInputValue(d.toISOString());
+      let ends = '';
+      if (mt.ends_at) {
+        const dur = new Date(mt.ends_at).getTime() - base.getTime();
+        ends = toLocal(new Date(next.getTime() + dur));
+      }
+      if (!guardedClose()) return;
+      this.openCreateModal({
+        title: mt.title,
+        starts: toLocal(next),
+        ends,
+        location: mt.location ?? '',
+        agenda: mt.agenda ?? '',
+      });
     });
     this._lastEditorDialog = dialog;
 

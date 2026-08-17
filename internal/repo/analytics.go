@@ -232,6 +232,64 @@ func (r *AnalyticsRepo) Membership(ctx context.Context) (*model.MembershipAnalyt
 
 // Attendance returns present/total counts for the most recent meetings and the
 // average present count across them.
+// MemberAttendanceRow is one member's attendance record over a range.
+type MemberAttendanceRow struct {
+	MemberID     string `json:"member_id"`
+	Name         string `json:"name"`
+	Present      int    `json:"present"`
+	Meetings     int    `json:"meetings"`
+	AbsentStreak int    `json:"absent_streak"` // consecutive most-recent absences
+}
+
+// AttendancePerMember transposes the attendance table: for each active
+// member, meetings attended vs held in the range, plus their CURRENT run of
+// consecutive absences — the number bylaws care about ("after N consecutive
+// absences…"). Only meetings with a recorded roster count. The streak folds
+// in Go over rows ordered newest-first: SQL for "leading absences" is
+// possible but unreadable, and this path runs on demand, not per request.
+func (r *AnalyticsRepo) AttendancePerMember(ctx context.Context, from, to string) ([]MemberAttendanceRow, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH tracked AS (
+			SELECT DISTINCT ma.meeting_id, m.scheduled_at
+			FROM meeting_attendees ma
+			JOIN meetings m ON m.id = ma.meeting_id
+			WHERE m.scheduled_at >= $1::date AND m.scheduled_at < ($2::date + 1)
+		)
+		SELECT mem.id::text, mem.display_name, coalesce(ma.present, FALSE)
+		FROM members mem
+		CROSS JOIN tracked t
+		LEFT JOIN meeting_attendees ma ON ma.meeting_id = t.meeting_id AND ma.member_id = mem.id
+		WHERE mem.status = 'active'
+		ORDER BY mem.display_name, mem.id, t.scheduled_at DESC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemberAttendanceRow
+	var cur *MemberAttendanceRow
+	streakOpen := false
+	for rows.Next() {
+		var id, name string
+		var present bool
+		if err := rows.Scan(&id, &name, &present); err != nil {
+			return nil, err
+		}
+		if cur == nil || cur.MemberID != id {
+			out = append(out, MemberAttendanceRow{MemberID: id, Name: name})
+			cur = &out[len(out)-1]
+			streakOpen = true // rows arrive newest-first: streak counts until the first presence
+		}
+		cur.Meetings++
+		if present {
+			cur.Present++
+			streakOpen = false
+		} else if streakOpen {
+			cur.AbsentStreak++
+		}
+	}
+	return out, rows.Err()
+}
+
 func (r *AnalyticsRepo) Attendance(ctx context.Context) (*model.AttendanceAnalytics, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT m.title, m.scheduled_at,

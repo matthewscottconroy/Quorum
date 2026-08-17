@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,22 @@ import (
 // DuesHandler handles dues invoice and transaction endpoints.
 type DuesHandler struct {
 	repo duesRepo
+	// receipts, when set, emails the member a payment receipt (async, best
+	// effort) after a successful recording. Wired in main.
+	receipts func(invoiceID string, amountMinor int64)
+}
+
+// SetReceiptSender attaches the receipt-email hook.
+func (h *DuesHandler) SetReceiptSender(fn func(invoiceID string, amountMinor int64)) { h.receipts = fn }
+
+// cloneValuesWithMember pins the member_id filter to the caller's own id.
+func cloneValuesWithMember(q url.Values, memberID string) url.Values {
+	out := url.Values{}
+	for k, v := range q {
+		out[k] = v
+	}
+	out.Set("member_id", memberID)
+	return out
 }
 
 // NewDuesHandler constructs a DuesHandler.
@@ -442,6 +459,9 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		// AllowOverpayment acknowledges a payment beyond the invoice balance
 		// (a genuine overpay/donation) instead of a typo'd extra zero.
 		AllowOverpayment bool `json:"allow_overpayment"`
+		// ResourceID optionally links a supporting document (check image,
+		// payment screenshot) from the resource library.
+		ResourceID *string `json:"resource_id"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, 400, "invalid body", "bad_request")
@@ -485,6 +505,13 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 	// the repo under the invoice row lock, and the recompute commits with the
 	// insert — no window for a webhook to slip a payment between our read
 	// and our write.
+	if body.ResourceID != nil && *body.ResourceID == "" {
+		body.ResourceID = nil
+	}
+	if body.ResourceID != nil && !isValidUUID(*body.ResourceID) {
+		writeError(w, 400, "resource_id must be a UUID", "bad_request")
+		return
+	}
 	tx, limit, err := h.repo.CreateGuardedTransaction(r.Context(), &model.Transaction{
 		InvoiceID:           &invoiceID,
 		MemberID:            memberPtr,
@@ -497,6 +524,7 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		RecordedBy:          &userID,
 		OccurredAt:          time.Now(),
 		Notes:               body.Notes,
+		ResourceID:          body.ResourceID,
 	}, body.AllowOverpayment)
 	if errors.Is(err, repo.ErrExceedsRemaining) {
 		writeError(w, 409,
@@ -512,11 +540,17 @@ func (h *DuesHandler) CreateTransaction(w http.ResponseWriter, r *http.Request) 
 		writeRepoError(w, err, "", "create error")
 		return
 	}
-
+	// A receipt closes the loop the payment-reports queue exists to absorb:
+	// "did you get my check?" — yes, and here's your remaining balance.
+	if h.receipts != nil {
+		h.receipts(invoiceID, body.AmountMinor)
+	}
 	writeJSON(w, 201, tx)
 }
 
-// ListTransactions handles listing payment transactions.
+// ListTransactions handles listing payment transactions. Officers see
+// everything; a plain member sees exactly their own history (the route
+// admits members, and the filter is forced to their member id here).
 func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for _, p := range []string{"invoice_id", "member_id"} {
@@ -524,6 +558,14 @@ func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, p+" must be a UUID", "bad_request")
 			return
 		}
+	}
+	if !roleAtLeast(roleFromCtx(r), "officer") {
+		own := memberIDFromCtx(r)
+		if own == "" {
+			writeError(w, 403, "your login isn't linked to a member record", "forbidden")
+			return
+		}
+		q = cloneValuesWithMember(q, own)
 	}
 	f := repo.TransactionFilter{
 		InvoiceID: q.Get("invoice_id"),

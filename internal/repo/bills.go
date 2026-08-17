@@ -26,7 +26,7 @@ func NewBillsRepo(db *pgxpool.Pool) *BillsRepo {
 const billSelect = `
 	SELECT b.id::text, b.contact_id::text, c.name, b.amount, b.currency,
 	       b.memo, b.expense_account_id::text, a.code, a.name,
-	       b.bill_date, b.due_date, b.status, b.paid_at, b.created_at
+	       b.bill_date, b.due_date, b.status, b.paid_at, b.created_at, b.resource_id::text
 	FROM bills b
 	JOIN contacts c ON c.id = b.contact_id
 	JOIN accounts a ON a.id = b.expense_account_id`
@@ -35,7 +35,7 @@ func scanBill(row scannable) (model.Bill, error) {
 	var b model.Bill
 	err := row.Scan(&b.ID, &b.ContactID, &b.ContactName, &b.Amount, &b.Currency,
 		&b.Memo, &b.ExpenseAccountID, &b.ExpenseAccountCode, &b.ExpenseAccountName,
-		&b.BillDate, &b.DueDate, &b.Status, &b.PaidAt, &b.CreatedAt)
+		&b.BillDate, &b.DueDate, &b.Status, &b.PaidAt, &b.CreatedAt, &b.ResourceID)
 	return b, err
 }
 
@@ -49,11 +49,11 @@ func (r *BillsRepo) Create(ctx context.Context, b *model.Bill, createdBy string)
 
 	var id string
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO bills (contact_id, amount, currency, memo, expense_account_id, bill_date, due_date, created_by)
-		VALUES ($1::uuid, $2, $3, $4, $5::uuid, coalesce($6::date, current_date), $7::date, $8::uuid)
+		INSERT INTO bills (contact_id, amount, currency, memo, expense_account_id, bill_date, due_date, created_by, resource_id)
+		VALUES ($1::uuid, $2, $3, $4, $5::uuid, coalesce($6::date, current_date), $7::date, $8::uuid, $9::uuid)
 		RETURNING id::text`,
 		b.ContactID, b.Amount, b.Currency, b.Memo, b.ExpenseAccountID,
-		nilIfEmpty(b.BillDateStr), nilIfEmpty(b.DueDateStr), createdBy).Scan(&id); err != nil {
+		nilIfEmpty(b.BillDateStr), nilIfEmpty(b.DueDateStr), createdBy, b.ResourceID).Scan(&id); err != nil {
 		return nil, err
 	}
 	var eid string
@@ -150,7 +150,7 @@ func (r *BillsRepo) List(ctx context.Context, status string, limit, offset int) 
 		var b model.Bill
 		if err := rows.Scan(&total, &b.ID, &b.ContactID, &b.ContactName, &b.Amount, &b.Currency,
 			&b.Memo, &b.ExpenseAccountID, &b.ExpenseAccountCode, &b.ExpenseAccountName,
-			&b.BillDate, &b.DueDate, &b.Status, &b.PaidAt, &b.CreatedAt); err != nil {
+			&b.BillDate, &b.DueDate, &b.Status, &b.PaidAt, &b.CreatedAt, &b.ResourceID); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, b)

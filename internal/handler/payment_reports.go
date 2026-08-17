@@ -31,9 +31,13 @@ type prDuesRepo interface {
 // "I paid via Zelle/check", officers see a queue, and confirming records the
 // real transaction against the invoice.
 type PaymentReportsHandler struct {
-	repo paymentReportsRepo
-	dues prDuesRepo
+	repo     paymentReportsRepo
+	dues     prDuesRepo
+	receipts func(invoiceID string, amountMinor int64)
 }
+
+// SetReceiptSender attaches the payment-receipt email hook.
+func (h *PaymentReportsHandler) SetReceiptSender(fn func(string, int64)) { h.receipts = fn }
 
 // NewPaymentReportsHandler constructs the handler.
 func NewPaymentReportsHandler(r paymentReportsRepo, d prDuesRepo) *PaymentReportsHandler {
@@ -132,6 +136,9 @@ func (h *PaymentReportsHandler) Confirm(w http.ResponseWriter, r *http.Request) 
 	if !out.Posted {
 		writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": false, "reason": out.Reason})
 		return
+	}
+	if h.receipts != nil {
+		h.receipts(out.InvoiceID, out.AmountMinor)
 	}
 	setAuditDetail(r, map[string]any{"invoice": out.InvoiceID, "amount_minor": out.AmountMinor})
 	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true, "posted": true, "amount_minor": out.AmountMinor})
