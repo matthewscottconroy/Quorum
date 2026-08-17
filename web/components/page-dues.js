@@ -16,6 +16,8 @@ class PageDues extends HTMLElement {
     this._offset   = 0;
     this._total    = 0;
     this._selected = new Set();
+    this._member   = '';      // ?member= journey filter — deliberate, never persisted
+    this._memberName = '';    // resolved from the first row for the chip label
   }
 
   _persist() { saveFilters('dues', { status: this._status, period: this._period }); }
@@ -29,6 +31,10 @@ class PageDues extends HTMLElement {
       this._status = st;
       this._persist();
     }
+    // #/dues?member=<id> is the member→invoices leg of the journey; it is a
+    // one-off view, so it rides instance state and never touches saved filters.
+    const mem = qs.get('member');
+    if (mem && /^[0-9a-f-]{36}$/i.test(mem)) this._member = mem;
     this.render();
     this.load();
   }
@@ -54,6 +60,7 @@ class PageDues extends HTMLElement {
           ${STATUSES.map(s => `<option value="${s}" ${this._status===s?'selected':''}>${s||'All statuses'}</option>`).join('')}
         </select>
         <input id="period-inp" placeholder="Period label (e.g. Annual 2026)" value="${esc(this._period)}" style="max-width:260px">
+        <span id="member-chip"></span>
         <button class="btn-secondary" id="refresh-btn">Refresh</button>
       </div>
       <div id="summary-strip" style="font-size:.85rem;color:var(--color-text-muted);padding:.15rem .2rem .5rem"></div>
@@ -75,7 +82,15 @@ class PageDues extends HTMLElement {
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
     this.querySelector('#import-csv-btn')?.addEventListener('click', () => this.openBankMatchModal());
     this.querySelector('#export-dues-btn')?.addEventListener('click', async () => {
-      try { await apiDownload('/export/dues.csv', 'dues.csv'); }
+      // The export mirrors the view: filters active means the CSV is the
+      // filtered set, said out loud — not a silent full-table dump.
+      const p = new URLSearchParams();
+      if (this._status) p.set('status', this._status);
+      if (this._period) p.set('period', this._period);
+      if (this._member) p.set('member_id', this._member);
+      const qs2 = p.toString();
+      if (qs2) toast('Exporting the filtered set (clear filters to export everything)', 'info');
+      try { await apiDownload('/export/dues.csv' + (qs2 ? '?' + qs2 : ''), 'dues.csv'); }
       catch (err) { toast(err.error ?? 'Export failed','error'); }
     });
     this.querySelector('#export-tx-btn')?.addEventListener('click', async () => {
@@ -181,13 +196,35 @@ class PageDues extends HTMLElement {
     const params = new URLSearchParams({ limit: '50', offset: String(this._offset) });
     if (this._status) params.set('status', this._status);
     if (this._period) params.set('period', this._period);
+    if (this._member) params.set('member_id', this._member);
     try {
       const _dPage = await api('GET', '/dues?' + params);
       if (seq !== this._seq) return; // A newer load() superseded this one.
       this._invoices = _dPage?.data ?? _dPage ?? [];
       this._total = _dPage?.total ?? this._invoices.length;
+      const filtered = this._status || this._period || this._member;
       tbody.innerHTML = this._rows()
-        || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No invoices found.</p></div></td></tr>`;
+        || `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>No invoices found.</p>
+            ${filtered ? '<button class="btn-secondary" id="empty-clear" style="margin-top:.5rem">Clear filters</button>'
+              : (canWrite() ? '<button class="btn-primary" id="empty-create" style="margin-top:.5rem">+ Create the first invoice</button>' : '')}
+           </div></td></tr>`;
+      this.querySelector('#empty-clear')?.addEventListener('click', () => {
+        this._status = ''; this._period = ''; this._member = ''; this._offset = 0;
+        this._persist(); this.render(); this.load();
+      });
+      this.querySelector('#empty-create')?.addEventListener('click', () => this.openCreateModal());
+      // The member chip names who the view is scoped to, and offers the exit.
+      this._memberName = this._member ? (this._invoices[0]?.member_name ?? this._memberName ?? '') : '';
+      const chip = this.querySelector('#member-chip');
+      if (chip) {
+        chip.innerHTML = this._member
+          ? `<span class="badge badge-none" style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem">Member: ${esc(this._memberName || 'selected')}
+               <button id="member-chip-x" aria-label="Clear member filter" style="all:unset;cursor:pointer;font-weight:700;padding:0 .15rem">×</button></span>`
+          : '';
+        chip.querySelector('#member-chip-x')?.addEventListener('click', () => {
+          this._member = ''; this._offset = 0; this._selected.clear(); this.load();
+        });
+      }
       this._wireRows(tbody);
       renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this._selected.clear(); this.load(); } });
       const strip = this.querySelector('#summary-strip');
@@ -210,7 +247,7 @@ class PageDues extends HTMLElement {
     return this._invoices.map(inv => `
       <tr class="inv-row" data-id="${esc(inv.id)}" style="cursor:pointer" tabindex="0" role="button" aria-label="Open invoice ${esc(inv.member_name)} ${esc(inv.period_label)}">
         ${canWrite() ? `<td><input type="checkbox" class="sel-cb" value="${esc(inv.id)}" ${this._selected.has(inv.id) ? 'checked' : ''} style="width:auto" aria-label="Select invoice"></td>` : ''}
-        <td>${esc(inv.member_name)}</td>
+        <td>${inv.member_id ? `<a href="#/dues?member=${esc(inv.member_id)}" class="member-link" data-mid="${esc(inv.member_id)}" data-mname="${esc(inv.member_name)}" title="All invoices for ${esc(inv.member_name)}">${esc(inv.member_name)}</a>` : esc(inv.member_name)}</td>
         <td>${esc(inv.period_label)}</td>
         <td class="num">${formatMoney(inv.amount_minor, inv.currency)}</td>
         <td>${fmtDate(inv.due_date)}</td>
@@ -244,7 +281,7 @@ class PageDues extends HTMLElement {
     this._renderBulkBar();
     tbody.querySelectorAll('.inv-row').forEach(row => {
       const open = e => {
-        if (e.target.classList.contains('waive-btn') || e.target.classList.contains('tx-btn') || e.target.classList.contains('sel-cb')) return;
+        if (e.target.classList.contains('waive-btn') || e.target.classList.contains('tx-btn') || e.target.classList.contains('sel-cb') || e.target.classList.contains('member-link')) return;
         this.openDetailModal(row.dataset.id);
       };
       row.addEventListener('click', open);
@@ -257,7 +294,7 @@ class PageDues extends HTMLElement {
     });
     tbody.querySelectorAll('.waive-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if (!await confirm('Waive this invoice?', 'Waive invoice')) return;
+        if (!await confirm('Waive this invoice? The remaining balance is written off in the ledger.', 'Waive invoice')) return;
         try {
           await api('PATCH', `/dues/${btn.dataset.id}`, { status: 'waived' });
           toast('Invoice waived', 'success');
@@ -268,6 +305,14 @@ class PageDues extends HTMLElement {
     tbody.querySelectorAll('.tx-btn').forEach(btn => {
       btn.addEventListener('click', () => this.openTransactionModal(btn.dataset.id));
     });
+    tbody.querySelectorAll('.member-link').forEach(a => a.addEventListener('click', e => {
+      // Same-page scope switch: no re-navigation, just refilter and label.
+      e.preventDefault();
+      this._member = a.dataset.mid;
+      this._memberName = a.dataset.mname;
+      this._offset = 0; this._selected.clear();
+      this.load();
+    }));
   }
 
   async openDetailModal(id) {
@@ -281,6 +326,8 @@ class PageDues extends HTMLElement {
         <div class="modal-body">
           <p><strong>Amount:</strong> ${formatMoney(inv.amount_minor, inv.currency)} &nbsp; <strong>Status:</strong> <span class="badge badge-${esc(inv.status)}">${esc(inv.status)}</span></p>
           <p style="margin-top:.4rem"><strong>Due:</strong> ${fmtDate(inv.due_date)}</p>
+          ${inv.reminder_stage > 0 ? `<p style="margin-top:.4rem;font-size:.85rem;color:var(--color-text-muted)">⏰ Reminded ${inv.reminder_stage} time${inv.reminder_stage === 1 ? '' : 's'}${inv.last_reminder_at ? `, last on ${fmtDate(inv.last_reminder_at)}` : ''}</p>`
+            : (['pending','overdue','partial'].includes(inv.status) ? '<p style="margin-top:.4rem;font-size:.85rem;color:var(--color-text-muted)">⏰ No reminders sent yet</p>' : '')}
           ${inv.notes ? `<p style="margin-top:.4rem;color:var(--color-text-muted)">${esc(inv.notes)}</p>` : ''}
           <h3 style="margin-top:1.25rem;margin-bottom:.5rem">Transactions</h3>
           ${!inv.transactions?.length ? '<p style="color:var(--color-text-muted)">No transactions recorded.</p>'
@@ -460,13 +507,35 @@ class PageDues extends HTMLElement {
     if (!bar) return;
     const n = this._selected.size;
     if (!n) { bar.innerHTML = ''; return; }
+    // When the whole visible page is picked and the filter matches more,
+    // offer the REAL bulk job: everything the filter matches, not the page.
+    const pageAll = this._invoices.length > 0 && this._invoices.every(i => this._selected.has(i.id));
+    const offerAll = pageAll && this._total > this._selected.size;
     bar.innerHTML = `
       <div class="card" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;padding:.6rem .9rem;margin-bottom:.6rem">
         <strong style="font-size:.9rem">${n} selected</strong>
+        ${offerAll ? `<button class="btn-ghost" id="bulk-select-matching" style="font-size:.82rem">Select all ${this._total} matching this filter</button>` : ''}
         <button class="btn-secondary" id="bulk-waive" style="font-size:.82rem">Waive</button>
         <button class="btn-secondary" id="bulk-reopen" style="font-size:.82rem">Re-open (pending)</button>
         <button class="btn-ghost" id="bulk-clear" style="margin-left:auto">Clear</button>
       </div>`;
+    bar.querySelector('#bulk-select-matching')?.addEventListener('click', async e => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        // 500 is also the batch endpoint's cap — selecting more would only
+        // manufacture a failing "Waive 800" click.
+        const params = new URLSearchParams({ limit: '500' });
+        if (this._status) params.set('status', this._status);
+        if (this._period) params.set('period', this._period);
+        if (this._member) params.set('member_id', this._member);
+        const pg = await api('GET', '/dues?' + params);
+        (pg?.data ?? []).forEach(i => this._selected.add(i.id));
+        if (this._total > 500) toast('Selected the first 500 (the bulk limit) — narrow the filter for the rest', 'info');
+        this.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = this._selected.has(cb.value); });
+        this._renderBulkBar();
+      } catch { toast('Failed to fetch the full set', 'error'); btn.disabled = false; }
+    });
     const apply = async status => {
       const verb = status === 'waived' ? 'Waive' : 'Re-open';
       if (!await confirm(`${verb} ${n} invoice${n === 1 ? '' : 's'}? ${status === 'waived' ? 'Waiving writes off the remaining balance in the ledger.' : 'Recorded payments still decide paid/partial.'}`, `${verb} ${n} invoice${n === 1 ? '' : 's'}`)) return;

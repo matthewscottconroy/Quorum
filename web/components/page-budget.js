@@ -77,7 +77,7 @@ class PageBudget extends HTMLElement {
         Draft budget scenarios, model income and expenses as quantity × unit amount, and tweak the numbers to see the
         surplus or deficit update. Clone a scenario to explore a variation, or seed dues income straight from your roster.
       </p>
-      <div style="display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:1.25rem;align-items:start" id="b-grid">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:1.25rem;align-items:start" id="b-grid">
         <div id="b-list"><div style="text-align:center;padding:1rem"><span class="spinner"></span></div></div>
         <div id="b-detail"><div class="empty-state" style="padding:2rem"><p>Select a scenario, or create one to begin.</p></div></div>
       </div>
@@ -400,7 +400,29 @@ class PageBudget extends HTMLElement {
       row.querySelector('.l-up').addEventListener('click', () => move(-1));
       row.querySelector('.l-down').addEventListener('click', () => move(1));
       row.querySelector('.l-del').addEventListener('click', async () => {
-        try { await api('DELETE', `/budget-lines/${row.dataset.id}`); this.select(id); this.loadList(); }
+        const label = row.querySelector('.l-label').value.trim() || 'this line';
+        if (!await confirm(`Delete “${label}” from the budget?`, 'Delete line')) return;
+        // Capture enough to resurrect it — delete is the only destructive
+        // click in the app that used to have neither confirm nor undo.
+        const snapshot = {
+          kind: row.closest('tbody')?.dataset.kind ?? 'expense',
+          label,
+          category: row.querySelector('.l-cat').value.trim() || null,
+          account_id: row.querySelector('.l-acct').value || null,
+          quantity: Number.parseInt(row.querySelector('.l-qty').value, 10) || 1,
+          unit_amount_minor: parseMoney(row.querySelector('.l-unit').value.trim() || '0', row.dataset.currency) ?? 0,
+        };
+        try {
+          await api('DELETE', `/budget-lines/${row.dataset.id}`);
+          toast('Line deleted', 'success', {
+            action: 'Undo',
+            onAction: async () => {
+              try { await api('POST', `/budgets/${id}/lines`, snapshot); this.select(id); this.loadList(); }
+              catch { toast('Undo failed', 'error'); }
+            },
+          });
+          this.select(id); this.loadList();
+        }
         catch { toast('Delete failed','error'); }
       });
     });
@@ -463,6 +485,7 @@ class PageBudget extends HTMLElement {
       confirmDelete({
         noun: 'budget scenario',
         name: s.name,
+        message: `This will <strong>permanently delete</strong> the scenario and all its lines. This <strong>cannot be undone</strong>. (No one is notified — budgets are internal planning documents.)`,
         onConfirm: async (confirmVal) => {
           try {
             await api('DELETE', `/budgets/${id}?confirm=${encodeURIComponent(confirmVal)}`);

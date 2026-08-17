@@ -292,3 +292,35 @@ func (r *BillsRepo) APAging(ctx context.Context, asOf string) ([]model.ARAgingRo
 	}
 	return out, rows.Err()
 }
+
+// BillSummary is the per-currency roll-up for the payables header strip:
+// the page's first question is "how much do we owe?", answered for the
+// same filtered set the list shows.
+type BillSummary struct {
+	Currency         string `json:"currency"`
+	Count            int    `json:"count"`
+	OutstandingMinor int64  `json:"outstanding_minor"`
+}
+
+// Summarize totals bills per currency for the given status filter
+// (empty status = all).
+func (r *BillsRepo) Summarize(ctx context.Context, status string) ([]BillSummary, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT currency, count(*), coalesce(sum(amount), 0)
+		FROM bills
+		WHERE ($1 = '' OR status = $1)
+		GROUP BY currency ORDER BY currency`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BillSummary
+	for rows.Next() {
+		var s BillSummary
+		if err := rows.Scan(&s.Currency, &s.Count, &s.OutstandingMinor); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

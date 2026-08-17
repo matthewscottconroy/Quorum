@@ -36,6 +36,7 @@ class PagePayables extends HTMLElement {
         What the organization owes vendors. Entering a bill puts the liability on the books
         immediately; paying it moves cash. Both are journal entries — nothing here bypasses
         the ledger.</p>
+      <div id="bl-strip" style="font-size:.85rem;color:var(--color-text-muted);padding:.15rem .2rem .5rem"></div>
       <div class="search-bar">
         <select id="bl-status" aria-label="Filter by bill status" style="max-width:160px">
           <option value="open" ${this._status==='open'?'selected':''}>Open</option>
@@ -52,11 +53,22 @@ class PagePayables extends HTMLElement {
 
   async load() {
     const qs = `?limit=${PAGE}&offset=${this._offset}` + (this._status ? `&status=${this._status}` : '');
+    let summary = [];
     try {
       const pg = await api('GET', '/bills' + qs);
       this._bills = pg?.data ?? [];
       this._total = pg?.total ?? this._bills.length;
+      summary = pg?.summary ?? [];
     } catch { toast('Failed to load bills', 'error'); return; }
+    // Same first-question treatment the dues page got: "how much do we owe?"
+    // answered per currency for the SAME filtered set the list shows.
+    const strip = this.querySelector('#bl-strip');
+    if (strip) {
+      const verb = { open: 'owed', paid: 'paid', void: 'voided' }[this._status] ?? 'total';
+      strip.innerHTML = summary
+        .map(s => `${s.count} ${this._status || ''} bill${s.count === 1 ? '' : 's'} · <strong style="color:var(--color-text);font-variant-numeric:tabular-nums">${formatMoney(s.outstanding_minor, s.currency)} ${esc(s.currency)}</strong> ${verb}`)
+        .join(' &nbsp;·&nbsp; ');
+    }
     const box = this.querySelector('#bl-list');
     box.innerHTML = this._bills.map(b => {
       const badge = BILL_BADGE[b.status] ?? 'draft';
@@ -68,7 +80,7 @@ class PagePayables extends HTMLElement {
       return `
       <div class="card" style="padding:.8rem 1rem">
         <div style="display:flex;justify-content:space-between;gap:.8rem;flex-wrap:wrap;align-items:baseline">
-          <div><b>${formatMoney(b.amount_minor, b.currency)} ${esc(b.currency)}</b> → ${esc(b.contact_name)}
+          <div><b style="font-variant-numeric:tabular-nums">${formatMoney(b.amount_minor, b.currency)} ${esc(b.currency)}</b> → ${esc(b.contact_name)}
             <span style="font-size:.78rem;color:var(--color-text-muted)">· ${esc(b.expense_account_code)} ${esc(b.expense_account_name)}</span></div>
           <span class="badge badge-${esc(badge)}">${esc(b.status)}</span>
         </div>
@@ -85,7 +97,10 @@ class PagePayables extends HTMLElement {
           ${isAdmin() ? `<button class="btn-ghost bl-void" data-id="${esc(b.id)}" style="font-size:.78rem;color:var(--color-danger)">Void</button>` : ''}
         </div>` : ''}
       </div>`;
-    }).join('') || `<div class="empty-state"><p>No ${this._status || ''} bills.</p></div>`;
+    }).join('') || `<div class="empty-state"><p>No ${this._status || ''} bills.</p>
+      ${canWrite() && this._status !== 'paid' && this._status !== 'void'
+        ? '<button class="btn-primary" id="bl-empty-new" style="margin-top:.5rem">+ Record your first bill</button>' : ''}</div>`;
+    this.querySelector('#bl-empty-new')?.addEventListener('click', () => this.openBillModal());
     renderPager(this.querySelector('#bl-pager'), {
       offset: this._offset, limit: PAGE, total: this._total,
       onNavigate: off => { this._offset = off; this.load(); },

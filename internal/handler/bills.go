@@ -16,6 +16,7 @@ type billsRepo interface {
 	Create(ctx context.Context, b *model.Bill, createdBy string) (*model.Bill, error)
 	Get(ctx context.Context, id string) (*model.Bill, error)
 	List(ctx context.Context, status string, limit, offset int) ([]model.Bill, int, error)
+	Summarize(ctx context.Context, status string) ([]repo.BillSummary, error)
 	Pay(ctx context.Context, id, fundID, provider string) (*model.Bill, error)
 	Void(ctx context.Context, id string) (*model.Bill, error)
 	APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error)
@@ -51,7 +52,20 @@ func (h *BillsHandler) List(w http.ResponseWriter, r *http.Request) {
 	if bills == nil {
 		bills = []model.Bill{}
 	}
-	writePage(w, bills, total, limit, offset)
+	// Same convention as the dues list: the header strip's "how much do we
+	// owe?" answer rides in the list response, for the SAME filtered set.
+	summary, err := h.repo.Summarize(r.Context(), status)
+	if err != nil {
+		writeError(w, 500, "query error", "internal_error")
+		return
+	}
+	if summary == nil {
+		summary = []repo.BillSummary{}
+	}
+	writeJSON(w, 200, map[string]any{
+		"data": bills, "total": total, "limit": limit, "offset": offset,
+		"summary": summary,
+	})
 }
 
 // Create records a vendor bill and accrues it on the books.

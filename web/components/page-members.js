@@ -152,7 +152,9 @@ class PageMembers extends HTMLElement {
         <td>${esc(m.email ?? '—')}</td>
         <td>${esc(m.tier)}</td>
         <td><span class="badge badge-${esc(m.status)}">${esc(m.status)}</span></td>
-        <td><payment-status-badge status="${esc(m.dues_status || 'none')}"></payment-status-badge></td>
+        <td>${canWrite()
+          ? `<a href="#/dues?member=${esc(m.id)}" title="All invoices for ${esc(m.display_name)}" style="text-decoration:none"><payment-status-badge status="${esc(m.dues_status || 'none')}"></payment-status-badge></a>`
+          : `<payment-status-badge status="${esc(m.dues_status || 'none')}"></payment-status-badge>`}</td>
         ${canWrite() ? `<td style="text-align:right;white-space:nowrap">
           <button class="btn-ghost edit-btn" data-id="${esc(m.id)}">Edit</button>
           ${isAdmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" data-name="${esc(m.display_name)}" style="color:var(--color-danger)">Del</button>` : ''}

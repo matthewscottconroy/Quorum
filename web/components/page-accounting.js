@@ -81,7 +81,7 @@ class PageAccounting extends HTMLElement {
             <h3 style="margin:0 0 .5rem;font-size:.95rem">Receivables aging <span style="font-weight:400;color:var(--color-text-muted)">as of ${esc(to)}</span></h3>
             <table style="width:100%"><tbody>
               ${(st.ar_aging ?? []).map(a => `<tr><td>${esc(a.currency)}</td><td>${esc(a.bucket)}</td><td>${a.invoices} inv.</td>
-                <td style="text-align:right">${formatMoney(a.amount, a.currency)}</td></tr>`).join('') || '<tr><td style="color:var(--color-text-muted)">No open receivables.</td></tr>'}
+                <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(a.amount, a.currency)}</td></tr>`).join('') || '<tr><td style="color:var(--color-text-muted)">No open receivables.</td></tr>'}
             </tbody></table>
             <div style="font-size:.78rem;margin-top:.4rem;${tb.reconciled ? 'color:var(--color-success,#137333)' : 'color:var(--color-danger)'}">
               ${tb.reconciled ? '✓ GL and dues subledger reconcile' : '⚠ RECONCILIATION MISMATCH — investigate'}</div>
@@ -90,7 +90,7 @@ class PageAccounting extends HTMLElement {
             <h3 style="margin:0 0 .5rem;font-size:.95rem">Payables aging <span style="font-weight:400;color:var(--color-text-muted)">as of ${esc(to)}</span></h3>
             <table style="width:100%"><tbody>
               ${(st.ap_aging ?? []).map(a => `<tr><td>${esc(a.currency)}</td><td>${esc(a.bucket)}</td><td>${a.invoices} bills</td>
-                <td style="text-align:right">${formatMoney(a.amount, a.currency)}</td></tr>`).join('') || '<tr><td style="color:var(--color-text-muted)">No open bills.</td></tr>'}
+                <td style="text-align:right;font-variant-numeric:tabular-nums">${formatMoney(a.amount, a.currency)}</td></tr>`).join('') || '<tr><td style="color:var(--color-text-muted)">No open bills.</td></tr>'}
             </tbody></table>
             <div style="font-size:.78rem;color:var(--color-text-muted);margin-top:.4rem">
               Open vendor bills live under <a href="#/payables">Payables</a>.</div>
@@ -228,6 +228,7 @@ class PageAccounting extends HTMLElement {
           </div>
           <div id="en-lines">${lineRow()}${lineRow()}</div>
           <button class="btn-ghost" id="en-more" style="font-size:.78rem">+ line</button>
+          <div id="en-totals" aria-live="polite" style="font-size:.82rem;margin-top:.5rem;font-variant-numeric:tabular-nums"></div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" id="en-cancel">Cancel</button>
@@ -235,8 +236,36 @@ class PageAccounting extends HTMLElement {
         </div>`,
     });
     dialog.querySelector('#en-cancel').addEventListener('click', close);
-    dialog.querySelector('#en-more').addEventListener('click', () =>
-      dialog.querySelector('#en-lines').insertAdjacentHTML('beforeend', lineRow()));
+    // Live Dr/Cr totals: imbalance surfaces AS YOU TYPE, not as a database
+    // rejection after submit. Advisory only — the DB check stays the law.
+    const runningTotals = () => {
+      const box = dialog.querySelector('#en-totals');
+      if (!box) return;
+      const per = new Map(); // currency → {dr, cr}
+      dialog.querySelectorAll('.en-line').forEach(row => {
+        const currency = row.querySelector('.en-cur').value.trim().toUpperCase() || 'USD';
+        const cell = sel => {
+          const raw = row.querySelector(sel).value.trim();
+          if (!raw) return 0;
+          const minor = parseMoney(raw, currency);
+          return minor === null || minor < 0 ? 0 : minor;
+        };
+        const t = per.get(currency) ?? { dr: 0, cr: 0 };
+        t.dr += cell('.en-debit'); t.cr += cell('.en-credit');
+        per.set(currency, t);
+      });
+      box.innerHTML = [...per.entries()].filter(([, t]) => t.dr || t.cr).map(([c, t]) => {
+        const ok = t.dr === t.cr;
+        return `Dr ${formatMoney(t.dr, c)} · Cr ${formatMoney(t.cr, c)} ${esc(c)} — ` +
+          (ok ? '<strong style="color:var(--color-success,#137333)">balanced ✓</strong>'
+              : `<strong style="color:var(--color-danger)">off by ${formatMoney(Math.abs(t.dr - t.cr), c)}</strong>`);
+      }).join('<br>');
+    };
+    dialog.querySelector('#en-lines').addEventListener('input', runningTotals);
+    dialog.querySelector('#en-more').addEventListener('click', () => {
+      dialog.querySelector('#en-lines').insertAdjacentHTML('beforeend', lineRow());
+      runningTotals();
+    });
     const postBtn = dialog.querySelector('#en-post');
     postBtn.addEventListener('click', guardButton(postBtn, async () => {
       const memo = dialog.querySelector('#en-memo').value.trim();

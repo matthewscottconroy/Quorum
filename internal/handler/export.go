@@ -76,10 +76,11 @@ func (h *ExportHandler) allMembers(ctx context.Context) ([]model.Member, error) 
 }
 
 // allInvoices pages through invoices, optionally scoped to one member.
-func (h *ExportHandler) allInvoices(ctx context.Context, memberID string) ([]model.DuesInvoice, error) {
+func (h *ExportHandler) allInvoices(ctx context.Context, f repo.InvoiceFilter) ([]model.DuesInvoice, error) {
 	var out []model.DuesInvoice
 	for offset := 0; ; offset += exportPageSize {
-		page, total, err := h.dues.ListInvoices(ctx, repo.InvoiceFilter{MemberID: memberID, Limit: exportPageSize, Offset: offset})
+		f.Limit, f.Offset = exportPageSize, offset
+		page, total, err := h.dues.ListInvoices(ctx, f)
 		if err != nil {
 			return nil, err
 		}
@@ -129,8 +130,20 @@ func (h *ExportHandler) ExportMembersCSV(w http.ResponseWriter, r *http.Request)
 
 // ExportDuesCSV streams every dues invoice as CSV (officer role and above).
 func (h *ExportHandler) ExportDuesCSV(w http.ResponseWriter, r *http.Request) {
-	auditExport(r, h.audit, "dues.csv", nil)
-	invoices, err := h.allInvoices(r.Context(), "")
+	// The export honors the page's active filter — "Export" next to a
+	// filtered list that silently dumps everything is a trap. No params
+	// still means everything.
+	q := r.URL.Query()
+	f := repo.InvoiceFilter{Status: q.Get("status"), PeriodLabel: q.Get("period")}
+	if v := q.Get("member_id"); v != "" && isValidUUID(v) {
+		f.MemberID = v
+	}
+	var detail map[string]any
+	if f.Status != "" || f.PeriodLabel != "" || f.MemberID != "" {
+		detail = map[string]any{"status": f.Status, "period": f.PeriodLabel, "member_id": f.MemberID}
+	}
+	auditExport(r, h.audit, "dues.csv", detail)
+	invoices, err := h.allInvoices(r.Context(), f)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "export failed", "internal_error")
 		return
@@ -187,7 +200,7 @@ func (h *ExportHandler) ExportMyStatement(w http.ResponseWriter, r *http.Request
 		year = y
 	}
 	member, _ := h.members.Get(r.Context(), *user.MemberID)
-	invs, _ := h.allInvoices(r.Context(), *user.MemberID)
+	invs, _ := h.allInvoices(r.Context(), repo.InvoiceFilter{MemberID: *user.MemberID})
 	txns, _ := h.allTransactions(r.Context(), *user.MemberID)
 
 	name := user.Email
@@ -289,7 +302,7 @@ func (h *ExportHandler) ExportMyData(w http.ResponseWriter, r *http.Request) {
 		if m, merr := h.members.Get(r.Context(), *user.MemberID); merr == nil {
 			out["member"] = m
 		}
-		if invs, ierr := h.allInvoices(r.Context(), *user.MemberID); ierr == nil && invs != nil {
+		if invs, ierr := h.allInvoices(r.Context(), repo.InvoiceFilter{MemberID: *user.MemberID}); ierr == nil && invs != nil {
 			out["invoices"] = invs
 		}
 		if txns, terr := h.allTransactions(r.Context(), *user.MemberID); terr == nil && txns != nil {

@@ -32,8 +32,10 @@ class ToastNotification extends HTMLElement {
    * @param {string} message - Human-readable text to display.
    * @param {'info'|'success'|'error'|'warning'} [type='info'] - Controls the badge colour via CSS class.
    * @param {number} [duration=3500] - Time in milliseconds before auto-dismiss.
+   * @param {{action?: string, onAction?: function}} [opts] - Optional inline
+   *   action button (e.g. "Undo"). Clicking runs onAction and dismisses.
    */
-  show(message, type = 'info', duration = 3500) {
+  show(message, type = 'info', duration = 3500, opts = {}) {
     const el = document.createElement('div');
     el.className = `toast toast-${type}`;
     // Errors should interrupt screen readers assertively; do it on the
@@ -41,6 +43,16 @@ class ToastNotification extends HTMLElement {
     // container's aria-live, which would affect other toasts still visible.
     if (type === 'error') el.setAttribute('role', 'alert');
     el.textContent = message;
+    if (opts.action && typeof opts.onAction === 'function') {
+      // An action extends the toast's life: 3.5s is fine for "Saved" but
+      // too short to read, decide, and click "Undo".
+      duration = Math.max(duration, 8000);
+      const btn = document.createElement('button');
+      btn.textContent = opts.action;
+      btn.style.cssText = 'all:unset;cursor:pointer;font-weight:700;text-decoration:underline;margin-left:.6rem';
+      btn.addEventListener('click', () => { el.remove(); opts.onAction(); });
+      el.appendChild(btn);
+    }
     this.appendChild(el);
     this.#promote();
     setTimeout(() => {
@@ -83,7 +95,8 @@ function getToast() {
  * Shows a transient toast notification. Creates the singleton element on first call.
  * @param {string} message - Text to display.
  * @param {'info'|'success'|'error'|'warning'} [type='info'] - Visual style.
+ * @param {{action?: string, onAction?: function}} [opts] - Optional action button.
  */
-export function toast(message, type = 'info') {
-  getToast().show(message, type);
+export function toast(message, type = 'info', opts = undefined) {
+  getToast().show(message, type, 3500, opts ?? {});
 }

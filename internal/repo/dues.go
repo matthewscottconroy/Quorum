@@ -176,14 +176,16 @@ func (r *DuesRepo) GetInvoice(ctx context.Context, id string) (*model.DuesInvoic
 		       coalesce(m.display_name, c.name || ' (contact)'), di.contact_id::text,
 		       coalesce((SELECT sum(t.amount) FROM transactions t
 		                 WHERE t.invoice_id = di.id AND t.provider_status != 'failed'
-		                   AND t.currency = di.currency), 0)
+		                   AND t.currency = di.currency), 0),
+		       di.reminder_stage, di.last_reminder_at
 		FROM dues_invoices di
 		LEFT JOIN members m ON m.id = di.member_id
 		LEFT JOIN contacts c ON c.id = di.contact_id
 		WHERE di.id = $1::uuid`, id).
 		Scan(&inv.ID, &inv.MemberID, &inv.AmountMinor, &inv.Currency,
 			&inv.PeriodLabel, &inv.DueDate, &inv.Status, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID, &inv.PaidMinor)
+			&inv.CreatedAt, &inv.UpdatedAt, &inv.MemberName, &inv.ContactID, &inv.PaidMinor,
+			&inv.ReminderStage, &inv.LastReminderAt)
 	if err != nil {
 		return nil, err
 	}

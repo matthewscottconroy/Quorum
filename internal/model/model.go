@@ -69,6 +69,10 @@ type DuesInvoice struct {
 	// makes "amount due" honest everywhere (member pay links, prefills).
 	PaidMinor    int64         `json:"paid_minor"`
 	Transactions []Transaction `json:"transactions,omitempty"`
+	// Dunning history, surfaced on the detail view so an officer answering
+	// "did we chase this?" doesn't have to trust their memory.
+	ReminderStage  int        `json:"reminder_stage"`
+	LastReminderAt *time.Time `json:"last_reminder_at,omitempty"`
 }
 
 // Transaction records a single payment event against a DuesInvoice.

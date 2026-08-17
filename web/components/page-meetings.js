@@ -59,7 +59,19 @@ class PageMeetings extends HTMLElement {
     `;
 
     this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this._offset = 0; saveFilters('meetings', { upcoming: this._upcoming, q: this._q }); this.load(); });
-    this.querySelector('#mt-search')?.addEventListener('change', e => { this._q = e.target.value.trim(); this._offset = 0; saveFilters('meetings', { upcoming: this._upcoming, q: this._q }); this.load(); });
+    // Live search, debounced: typing filters as you go (the seq guard in
+    // load() already drops stale responses), no blur/Enter required.
+    let qTimer = null;
+    this.querySelector('#mt-search')?.addEventListener('input', e => {
+      clearTimeout(qTimer);
+      qTimer = setTimeout(() => {
+        const q = e.target.value.trim();
+        if (q === this._q) return;
+        this._q = q; this._offset = 0;
+        saveFilters('meetings', { upcoming: this._upcoming, q: this._q });
+        this.load();
+      }, 300);
+    });
     this.querySelector('#add-btn')?.addEventListener('click', () => this.openCreateModal());
   }
 
@@ -94,10 +106,12 @@ class PageMeetings extends HTMLElement {
               <div style="font-size:.85rem;color:var(--color-text-muted)">${fmtDateTime(m.scheduled_at)}${m.ends_at ? ' – ' + esc(new Date(m.ends_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})) : ''}${m.location ? ' · ' + esc(m.location) : ''}</div>
             </div>
             <span class="badge badge-${esc(m.status)}">${esc(m.status)}</span>
-            <button class="btn-secondary run-btn" data-id="${esc(m.id)}" style="font-size:.78rem" title="Full-screen view for running the meeting live: motions, minutes, attendance">▶ Run</button>
+            <button class="btn-secondary run-btn" data-id="${esc(m.id)}" style="font-size:.78rem" title="${canWrite() ? 'Full-screen view for running the meeting live: motions, minutes, attendance' : 'Follow the live meeting: motions, minutes, attendance'}">${canWrite() ? '▶ Run' : '👁 View live'}</button>
             ${isSuperadmin() ? `<button class="btn-ghost del-btn" data-id="${esc(m.id)}" style="color:var(--color-danger)">Delete</button>` : ''}
           </div>`).join('')
-      : '<div class="empty-state"><p>No meetings found.</p></div>';
+      : `<div class="empty-state"><p>No meetings found${this._q ? ' for this search' : ''}.</p>
+          ${!this._q && canWrite() ? '<button class="btn-primary" id="mt-empty-new" style="margin-top:.5rem">+ Schedule the first meeting</button>' : ''}</div>`;
+    list.querySelector('#mt-empty-new')?.addEventListener('click', () => this.openCreateModal());
 
     list.querySelectorAll('.meeting-card').forEach(card => {
       const open = e => {
@@ -235,9 +249,19 @@ class PageMeetings extends HTMLElement {
             ${mt.location ? `<p style="margin:0 0 .6rem;color:var(--color-text-muted)">${esc(mt.location)}</p>` : ''}
             <div id="rsvp-section" style="margin:.6rem 0 .9rem"><span class="spinner"></span></div>
             ${mt.agenda ? `<h3 style="font-size:.9rem;margin:.6rem 0 .3rem">Agenda</h3><p style="white-space:pre-wrap;font-size:.88rem">${esc(mt.agenda)}</p>` : ''}
+            ${(mt.decisions ?? []).length ? `
+            <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Decisions</h3>
+            ${mt.decisions.map(d => `
+              <div style="border:1px solid var(--color-border);border-radius:var(--radius);padding:.45rem .65rem;margin-bottom:.4rem">
+                <div style="font-weight:600;font-size:.85rem">${esc(d.summary)}</div>
+                <div style="font-size:.75rem;color:var(--color-text-muted)">${esc(d.outcome)}${d.vote_for != null ? ` · ${esc(d.vote_for)}/${esc(d.vote_against)}/${esc(d.vote_abstain)}` : ''}</div>
+              </div>`).join('')}` : ''}
             <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Motions &amp; voting</h3>
             <div id="gov-section"><span class="spinner"></span></div>
-            <div style="margin-top:.8rem"><button class="btn-secondary" id="ro-minutes" style="font-size:.8rem">Minutes (.md)</button></div>
+            <div style="margin-top:.8rem;display:flex;gap:.4rem;flex-wrap:wrap">
+              ${mt.status === 'scheduled' ? '<button class="btn-secondary" id="ro-ics" style="font-size:.8rem" title="Add to your calendar">📅 Add to calendar (.ics)</button>' : ''}
+              <button class="btn-secondary" id="ro-minutes" style="font-size:.8rem;display:none">Minutes (.md)</button>
+            </div>
           </div>`,
       });
       this.renderRSVP(dialog, id);
@@ -245,8 +269,35 @@ class PageMeetings extends HTMLElement {
       // view, and govMarkup's member mode renders exactly the self-vote
       // buttons the old editor path used to provide.
       this.renderGovernance(dialog, id);
+      // Offer the minutes download only when there ARE minutes: an empty
+      // journal renders a header-only document nobody meant to ask for.
+      api('GET', `/meetings/${id}/minutes`).then(entries => {
+        if ((entries ?? []).length || mt.minutes_finalized_at) {
+          const b = dialog.querySelector('#ro-minutes');
+          if (b) b.style.display = '';
+        }
+      }).catch(() => {});
       dialog.querySelector('#ro-minutes').addEventListener('click', () => {
         apiDownload(`/meetings/${id}/minutes.md`, 'minutes.md').catch(() => toast('Export failed', 'error'));
+      });
+      dialog.querySelector('#ro-ics')?.addEventListener('click', () => {
+        // Client-built VEVENT: the meeting's when/where in the member's own
+        // calendar app, no server round-trip.
+        const icsEsc = t => String(t ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+        const stamp = d => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+        const end = mt.ends_at ?? new Date(new Date(mt.scheduled_at).getTime() + 60 * 60 * 1000).toISOString();
+        const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Quorum//meetings//EN', 'BEGIN:VEVENT',
+          `UID:${mt.id}@quorum`, `DTSTAMP:${stamp(new Date().toISOString())}`,
+          `DTSTART:${stamp(mt.scheduled_at)}`, `DTEND:${stamp(end)}`,
+          `SUMMARY:${icsEsc(mt.title)}`,
+          mt.location ? `LOCATION:${icsEsc(mt.location)}` : null,
+          mt.agenda ? `DESCRIPTION:${icsEsc(mt.agenda)}` : null,
+          'END:VEVENT', 'END:VCALENDAR'].filter(Boolean).join('\r\n');
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
+        a.download = 'meeting.ics';
+        a.click();
+        URL.revokeObjectURL(a.href);
       });
       return { dialog };
     }

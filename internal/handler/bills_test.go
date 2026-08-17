@@ -42,6 +42,9 @@ func (m *mockBillsRepo) Void(ctx context.Context, id string) (*model.Bill, error
 func (m *mockBillsRepo) APAging(ctx context.Context, asOf string) ([]model.ARAgingRow, error) {
 	return nil, nil
 }
+func (m *mockBillsRepo) Summarize(ctx context.Context, status string) ([]repo.BillSummary, error) {
+	return nil, nil
+}
 
 const billID = "55555555-5555-5555-5555-555555555555"
 

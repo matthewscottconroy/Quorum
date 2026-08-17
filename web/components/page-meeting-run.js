@@ -13,6 +13,8 @@ import './page-meetings.js';
  * generic root, so the modal and this page can never drift apart.
  */
 class PageMeetingRun extends HTMLElement {
+  disconnectedCallback() { clearInterval(this._elapsedTimer); }
+
   connectedCallback() {
     this._pm = new (customElements.get('page-meetings'))();
     this.load();
@@ -27,11 +29,14 @@ class PageMeetingRun extends HTMLElement {
     if (!this.isConnected) return;
     // Button state keys on what the JOURNAL says, not just meeting status:
     // "Call to order" journaled once must not re-arm and invite a duplicate.
-    let journalKinds = [];
-    try { journalKinds = ((await api('GET', `/meetings/${id}/minutes`)) ?? []).map(e => e.kind); }
+    let journal = [];
+    try { journal = (await api('GET', `/meetings/${id}/minutes`)) ?? []; }
     catch { /* the buttons degrade to status-only gating */ }
-    const calledToOrder = journalKinds.includes('call_to_order');
-    const adjourned = journalKinds.includes('adjournment');
+    const orderEntry = journal.find(e => e.kind === 'call_to_order');
+    const calledToOrder = !!orderEntry;
+    const adjourned = journal.some(e => e.kind === 'adjournment');
+    const inSession = calledToOrder && !adjourned && mt.status !== 'completed' && mt.status !== 'cancelled';
+    clearInterval(this._elapsedTimer);
 
     this.innerHTML = `
       <div class="page-header" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
@@ -41,6 +46,7 @@ class PageMeetingRun extends HTMLElement {
           <div style="font-size:.85rem;color:var(--color-text-muted)">
             ${fmtDateTime(mt.scheduled_at)}${mt.location ? ' · ' + esc(mt.location) : ''}
             <span class="badge badge-${esc(mt.status)}" style="margin-left:.4rem">${esc(mt.status)}</span>
+            ${inSession ? '<span id="elapsed-chip" class="badge" style="margin-left:.4rem;background:var(--color-bg);color:var(--color-text);font-variant-numeric:tabular-nums" title="Since call to order">⏱ …</span>' : ''}
           </div>
         </div>
         <div style="margin-left:auto;display:flex;gap:.5rem;flex-wrap:wrap">
@@ -49,7 +55,23 @@ class PageMeetingRun extends HTMLElement {
           <button class="btn-secondary" id="edit-btn">Edit details</button>
         </div>
       </div>
-      ${mt.agenda ? `
+      ${mt.agenda && canWrite() && !adjourned ? (() => {
+        // The agenda as a WORKLIST: each line is checkable, and checking it
+        // journals "Taken up: …" — the minutes write themselves as the chair
+        // works down the list. Already-journaled lines render done.
+        const lines = mt.agenda.split('\n').map(l => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter(Boolean).slice(0, 40);
+        return `
+      <div class="card" style="padding:.75rem 1.25rem;margin-bottom:1rem">
+        <strong style="font-size:.85rem">Agenda</strong>
+        <div id="agenda-checklist" style="margin-top:.4rem;display:flex;flex-direction:column;gap:.15rem">
+          ${lines.map((l, i) => {
+            const done = journal.some(e => e.body === `Taken up: ${l}` || e.body === `Taken up: ${l}.`);
+            return `<label style="display:flex;gap:.45rem;align-items:baseline;margin:0;font-weight:400;text-transform:none;letter-spacing:normal;font-size:.85rem;${done ? 'color:var(--color-text-muted);text-decoration:line-through' : ''}">
+              <input type="checkbox" class="ag-item" data-line="${esc(l)}" ${done ? 'checked disabled' : ''} style="width:auto" title="${done ? 'Already journaled' : 'Journal “Taken up: …” to the minutes'}">${esc(l)}</label>`;
+          }).join('')}
+        </div>
+      </div>`;
+      })() : mt.agenda ? `
       <details style="margin-bottom:1rem">
         <summary style="cursor:pointer;font-size:.85rem;font-weight:600">Agenda</summary>
         <p style="white-space:pre-wrap;font-size:.85rem;color:var(--color-text-muted);margin-top:.4rem">${esc(mt.agenda)}</p>
@@ -77,6 +99,14 @@ class PageMeetingRun extends HTMLElement {
           <div class="card" style="padding:1rem 1.25rem">
             <h3 style="font-size:.95rem;margin-bottom:.6rem">Decision log</h3>
             <div id="run-decisions"><span class="spinner"></span></div>
+            ${canWrite() && mt.status !== 'cancelled' ? `
+            <div style="display:flex;gap:.4rem;margin-top:.6rem;flex-wrap:wrap">
+              <input id="qd-summary" placeholder="Quick decision (no formal motion)…" style="flex:1;min-width:160px;font-size:.85rem">
+              <select id="qd-outcome" style="font-size:.85rem;max-width:110px" aria-label="Outcome">
+                <option>passed</option><option>failed</option><option>tabled</option><option>noted</option>
+              </select>
+              <button class="btn-secondary" id="qd-add" style="font-size:.8rem">Record</button>
+            </div>` : ''}
           </div>
         </div>
       </div>`;
@@ -85,6 +115,44 @@ class PageMeetingRun extends HTMLElement {
     // Call to order / Adjourn journal the moment with the wall-clock time,
     // and Adjourn flips the meeting to completed.
     const stamp = () => new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    // The elapsed chip: how long the room has been in session, off the
+    // call-to-order journal line's own timestamp.
+    const chipEl = this.querySelector('#elapsed-chip');
+    if (chipEl && orderEntry?.recorded_at) {
+      const t0 = new Date(orderEntry.recorded_at).getTime();
+      const paint = () => {
+        const mins = Math.max(Math.floor((Date.now() - t0) / 60000), 0);
+        chipEl.textContent = `⏱ ${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`} in session`;
+      };
+      paint();
+      this._elapsedTimer = setInterval(paint, 30000);
+    }
+    // Agenda checklist → journal: one click per item, minutes written live.
+    this.querySelectorAll('.ag-item:not([disabled])').forEach(cb => cb.addEventListener('change', async () => {
+      if (!cb.checked) return;
+      cb.disabled = true;
+      try {
+        await api('POST', `/meetings/${mt.id}/minutes`, { kind: 'note', body: `Taken up: ${cb.dataset.line}` });
+        const label = cb.closest('label');
+        if (label) { label.style.color = 'var(--color-text-muted)'; label.style.textDecoration = 'line-through'; }
+        this._pm.renderMinutes(this, mt.id, mt);
+      } catch (err) {
+        cb.checked = false; cb.disabled = false;
+        toast(err.error ?? 'Failed to journal', 'error');
+      }
+    }));
+    // Quick decisions land straight in the log — no editor-over-the-run-page.
+    const qdAdd = this.querySelector('#qd-add');
+    qdAdd?.addEventListener('click', guardButton(qdAdd, async () => {
+      const summary = this.querySelector('#qd-summary').value.trim();
+      if (!summary) { toast('What was decided?', 'error'); return; }
+      try {
+        await api('POST', `/meetings/${mt.id}/decisions`, { summary, outcome: this.querySelector('#qd-outcome').value });
+        this.querySelector('#qd-summary').value = '';
+        toast('Decision recorded', 'success');
+        renderDecisions();
+      } catch (err) { toast(err.error ?? 'Failed', 'error'); }
+    }));
     // The speaker timer: pure client state, one keypress from the journal —
     // the tool a chair actually lacks mid-meeting.
     {
@@ -150,8 +218,19 @@ class PageMeetingRun extends HTMLElement {
       } catch { journaled = false; }
       try {
         await api('PATCH', `/meetings/${mt.id}`, { status: 'completed' });
-        toast(journaled ? 'Adjourned — review the journal, then finalize the minutes below' : 'Meeting marked completed (journal is finalized)', 'success');
-        this.load();
+        toast(journaled ? 'Adjourned' : 'Meeting marked completed (journal is finalized)', 'success');
+        await this.load();
+        // The natural next step, offered in the moment: adjournment is when
+        // minutes get finalized, not "later" (which becomes never).
+        if (journaled && await confirm('Finalize the minutes now? Review the journal first if anything is missing — finalizing freezes it into the official record.', 'Finalize minutes?')) {
+          // renderMinutes streams in after load(); wait for its button.
+          for (let i = 0; i < 20 && !this.querySelector('#min-finalize'); i++) {
+            await new Promise(r2 => setTimeout(r2, 150));
+          }
+          const fin = this.querySelector('#min-finalize');
+          if (fin) { fin.scrollIntoView({ block: 'center' }); fin.click(); }
+          else toast('Journal still loading — use “Finalize minutes” below', 'info');
+        }
       } catch (err) { toast(err.error ?? 'Failed', 'error'); }
     }));
     // Editing details still happens in the familiar modal, layered on top.

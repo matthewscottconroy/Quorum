@@ -1,6 +1,6 @@
 import { api, getUser, currentMemberId, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
 
 // Purchase statuses ride the shared badge system (dark-safe) instead of a
 // private hex-and-emoji palette.
@@ -20,7 +20,7 @@ class PageFunds extends HTMLElement {
     this._funds = [];
     this._users = [];
     this._purchases = [];
-    this._fund = '';   // filter
+    this._fund = loadFilters('funds')?.fund ?? '';   // filter, survives navigation like dues/payables
   }
 
   connectedCallback() {
@@ -40,13 +40,14 @@ class PageFunds extends HTMLElement {
         <span class="spinner"></span></div>
       <div class="page-header" style="margin-top:.5rem"><h2 style="font-size:1.1rem">Purchase requests</h2>
         <div style="display:flex;gap:.5rem">
-          <select id="pf-fund"><option value="">All funds</option></select>
+          <select id="pf-fund" aria-label="Filter purchase requests by fund"><option value="">All funds</option></select>
           ${canWrite() ? '<button class="btn-secondary" id="pr-new">+ Request purchase</button>' : ''}
         </div></div>
+      <div id="pr-strip" style="font-size:.85rem;color:var(--color-text-muted);padding:.15rem .2rem .5rem"></div>
       <div id="pr-list" style="display:flex;flex-direction:column;gap:.6rem"></div>`;
     this.querySelector('#fund-new')?.addEventListener('click', () => this.openFundModal());
     this.querySelector('#pr-new')?.addEventListener('click', () => this.openPurchaseModal());
-    this.querySelector('#pf-fund').addEventListener('change', e => { this._fund = e.target.value; this.loadPurchases(); });
+    this.querySelector('#pf-fund').addEventListener('change', e => { this._fund = e.target.value; saveFilters('funds', { fund: this._fund }); this.loadPurchases(); });
   }
 
   async load() {
@@ -57,6 +58,12 @@ class PageFunds extends HTMLElement {
       ]);
       this._funds = funds ?? [];
       this._users = users ?? [];
+      // A remembered filter pointing at a deleted fund would silently show
+      // an empty queue forever; fall back to "All funds" instead.
+      if (this._fund && !this._funds.some(f => f.id === this._fund)) {
+        this._fund = '';
+        saveFilters('funds', { fund: '' });
+      }
       this.renderFunds();
       const sel = this.querySelector('#pf-fund');
       sel.innerHTML = `<option value="">All funds</option>` +
@@ -85,7 +92,9 @@ class PageFunds extends HTMLElement {
           <button class="btn-secondary fd-transfer" data-id="${esc(f.id)}" style="font-size:.78rem">Transfer</button>
           <button class="btn-ghost fd-edit" data-id="${esc(f.id)}" style="font-size:.78rem">Policy</button>
         </div>` : ''}
-      </div>`).join('') || '<div class="empty-state"><p>No funds yet — an admin can create one.</p></div>';
+      </div>`).join('') || `<div class="empty-state"><p>No funds yet${isAdmin() ? '' : ' — an admin can create one'}.</p>
+        ${isAdmin() ? '<button class="btn-primary" id="fd-empty-new" style="margin-top:.5rem">+ Create the first fund</button>' : ''}</div>`;
+    grid.querySelector('#fd-empty-new')?.addEventListener('click', () => this.openFundModal());
     grid.querySelectorAll('.fd-transfer').forEach(b => b.addEventListener('click', () =>
       this.openTransferModal(this._funds.find(f => f.id === b.dataset.id))));
     grid.querySelectorAll('.fd-edit').forEach(b => b.addEventListener('click', () =>
@@ -98,6 +107,18 @@ class PageFunds extends HTMLElement {
     catch { toast('Failed to load purchases', 'error'); return; }
     const me = getUser()?.id;
     const myMember = currentMemberId();
+    // The strip answers the queue's real questions for the SAME filtered
+    // set: how many are stuck waiting for ink, and how many need MY pen.
+    const strip = this.querySelector('#pr-strip');
+    if (strip) {
+      const pending = this._purchases.filter(p => p.status === 'pending');
+      const ready = this._purchases.filter(p => p.status === 'approved');
+      const mine = pending.filter(p => p.requester_id !== me && !(p.approvals ?? []).some(a => a.approver_id === me)).length;
+      const parts = [];
+      if (pending.length) parts.push(`<strong style="color:var(--color-text)">${pending.length}</strong> awaiting signatures${mine ? ` (<strong style="color:var(--color-text)">${mine}</strong> can take yours)` : ''}`);
+      if (ready.length) parts.push(`<strong style="color:var(--color-text)">${ready.length}</strong> approved, ready to complete`);
+      strip.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+    }
     const box = this.querySelector('#pr-list');
     box.innerHTML = this._purchases.map(p => {
       const badge = STATUS_BADGE[p.status] ?? 'draft';
@@ -107,7 +128,7 @@ class PageFunds extends HTMLElement {
       <div class="card" style="padding:.8rem 1rem">
         <div style="display:flex;justify-content:space-between;gap:.8rem;flex-wrap:wrap;align-items:baseline">
           <div>
-            <b>${formatMoney(p.amount_minor, p.currency)} ${esc(p.currency)}</b> → ${esc(p.payee)}
+            <b style="font-variant-numeric:tabular-nums">${formatMoney(p.amount_minor, p.currency)} ${esc(p.currency)}</b> → ${esc(p.payee)}
             <span style="font-size:.78rem;color:var(--color-text-muted)">from ${esc(p.fund_name)}</span>
           </div>
           <span class="badge badge-${esc(badge)}">${esc(p.status)}</span>
@@ -129,7 +150,9 @@ class PageFunds extends HTMLElement {
           ${['pending', 'approved'].includes(p.status) && (p.requester_id === me || isAdmin()) ? `<button class="btn-ghost pr-cancel" data-id="${esc(p.id)}" style="font-size:.78rem">Cancel</button>` : ''}
         </div>
       </div>`;
-    }).join('') || `<div class="empty-state"><p>No purchase requests${this._fund ? ' for this fund' : ''}.</p></div>`;
+    }).join('') || `<div class="empty-state"><p>No purchase requests${this._fund ? ' for this fund' : ''}.</p>
+      ${canWrite() && this._funds.length ? '<button class="btn-secondary" id="pr-empty-new" style="margin-top:.5rem">+ Request a purchase</button>' : ''}</div>`;
+    box.querySelector('#pr-empty-new')?.addEventListener('click', () => this.openPurchaseModal());
 
     box.querySelectorAll('.pr-doc-open').forEach(b => b.addEventListener('click', async () => {
       try {
