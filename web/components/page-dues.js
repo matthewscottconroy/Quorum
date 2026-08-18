@@ -34,7 +34,13 @@ class PageDues extends HTMLElement {
     // #/dues?member=<id> is the member→invoices leg of the journey; it is a
     // one-off view, so it rides instance state and never touches saved filters.
     const mem = qs.get('member');
-    if (mem && /^[0-9a-f-]{36}$/i.test(mem)) this._member = mem;
+    if (mem && /^[0-9a-f-]{36}$/i.test(mem)) {
+      this._member = mem;
+      // The link promised "all invoices for X" — a sticky status/period from
+      // a previous visit would silently intersect it. View-only reset.
+      this._status = '';
+      this._period = '';
+    }
     this.render();
     this.load();
   }
@@ -215,16 +221,7 @@ class PageDues extends HTMLElement {
       this.querySelector('#empty-create')?.addEventListener('click', () => this.openCreateModal());
       // The member chip names who the view is scoped to, and offers the exit.
       this._memberName = this._member ? (this._invoices[0]?.member_name ?? this._memberName ?? '') : '';
-      const chip = this.querySelector('#member-chip');
-      if (chip) {
-        chip.innerHTML = this._member
-          ? `<span class="badge badge-none" style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem">Member: ${esc(this._memberName || 'selected')}
-               <button id="member-chip-x" aria-label="Clear member filter" style="all:unset;cursor:pointer;font-weight:700;padding:0 .15rem">×</button></span>`
-          : '';
-        chip.querySelector('#member-chip-x')?.addEventListener('click', () => {
-          this._member = ''; this._offset = 0; this._selected.clear(); this.load();
-        });
-      }
+      this._renderMemberChip();
       this._wireRows(tbody);
       renderPager(this.querySelector('#pager'), { offset: this._offset, limit: 50, total: this._total, onNavigate: o => { this._offset = o; this._selected.clear(); this.load(); } });
       const strip = this.querySelector('#summary-strip');
@@ -238,8 +235,21 @@ class PageDues extends HTMLElement {
       tbody.innerHTML = `<tr><td colspan="${this._cols()}"><div class="empty-state"><p>Failed to load dues.</p></div></td></tr>`;
       const strip = this.querySelector('#summary-strip');
       if (strip) strip.innerHTML = ''; // never answer "how much?" from the PREVIOUS filter over an error
+      this._renderMemberChip(); // the scope (and its ×) must survive a failed fetch
       toast('Failed to load dues', 'error');
     }
+  }
+
+  _renderMemberChip() {
+    const chip = this.querySelector('#member-chip');
+    if (!chip) return;
+    chip.innerHTML = this._member
+      ? `<span class="badge badge-none" style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem">Member: ${esc(this._memberName || 'selected')}
+           <button id="member-chip-x" aria-label="Clear member filter" style="all:unset;cursor:pointer;font-weight:700;padding:0 .15rem">×</button></span>`
+      : '';
+    chip.querySelector('#member-chip-x')?.addEventListener('click', () => {
+      this._member = ''; this._offset = 0; this._selected.clear(); this.load();
+    });
   }
 
   _rows() {
@@ -531,7 +541,12 @@ class PageDues extends HTMLElement {
         if (this._member) params.set('member_id', this._member);
         const pg = await api('GET', '/dues?' + params);
         (pg?.data ?? []).forEach(i => this._selected.add(i.id));
-        if (this._total > 500) toast('Selected the first 500 (the bulk limit) — narrow the filter for the rest', 'info');
+        // Report what actually happened — never claim more than the set holds.
+        if (this._selected.size < this._total) {
+          toast(`Selected ${this._selected.size} of ${this._total} (the bulk limit is 500) — narrow the filter for the rest`, 'info');
+        } else {
+          toast(`Selected all ${this._selected.size} matching`, 'success');
+        }
         this.querySelectorAll('.sel-cb').forEach(cb => { cb.checked = this._selected.has(cb.value); });
         this._renderBulkBar();
       } catch { toast('Failed to fetch the full set', 'error'); btn.disabled = false; }
@@ -858,35 +873,40 @@ class PageDues extends HTMLElement {
         if (row.amt <= 0) {
           return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem;color:var(--color-text-muted)">${esc(row.line.slice(0, 90))}<br>withdrawal — match it under Payables</div>`;
         }
-        // Deposit: best invoice match = amount equals what is OWED, then
-        // name-in-line, then amount equals face value.
-        const cand = openInvoices
-          .map(inv => {
-            const owed = Math.max((inv.amount_minor ?? 0) - (inv.paid_minor ?? 0), 0);
-            const exp = moneyExponent(inv.currency);
-            const owedMajor = owed / 10 ** exp;
-            let score = 0;
-            if (Math.abs(owedMajor - row.amt) < 0.005) score += 2;
-            else if (Math.abs(inv.amount_minor / 10 ** exp - row.amt) < 0.005) score += 1;
-            if (score && lower(row.line).includes(lower(inv.member_name).split(' ')[0])) score += 2;
-            else if (lower(row.line).includes(lower(inv.member_name))) score += 3;
-            return { inv, score, owed };
-          })
-          .filter(c => c.score >= 2)
-          .sort((a, b) => b.score - a.score)[0];
-        if (!cand) {
-          return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem">${esc(row.line.slice(0, 90))}<br><span style="color:var(--color-text-muted)">no confident match — record manually</span></div>`;
+        // Deposit: amount evidence (owed beats face value) PLUS name
+        // evidence, scored independently — a payer name in the line must be
+        // able to break an amount tie, and in a uniform-dues club amount
+        // alone ties everyone.
+        const scored = openInvoices.map(inv => {
+          const owed = Math.max((inv.amount_minor ?? 0) - (inv.paid_minor ?? 0), 0);
+          const exp = moneyExponent(inv.currency);
+          let score = 0;
+          if (Math.abs(owed / 10 ** exp - row.amt) < 0.005) score += 2;
+          else if (Math.abs(inv.amount_minor / 10 ** exp - row.amt) < 0.005) score += 1;
+          const name = lower(inv.member_name);
+          const first = name.split(' ')[0];
+          const reEsc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (name && lower(row.line).includes(name)) score += 3;
+          else if (first.length >= 3 && new RegExp(`\\b${reEsc(first)}\\b`).test(lower(row.line))) score += 2;
+          return { inv, score, owed };
+        }).filter(c => c.score >= 2).sort((a, b) => b.score - a.score);
+        const cand = scored[0];
+        // An amount-only score that another invoice equals is a coin flip,
+        // not a match — never offer one-click money movement on a tie.
+        const tied = cand && scored.length > 1 && scored[1].score === cand.score && cand.score <= 2;
+        if (!cand || tied) {
+          return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem">${esc(row.line.slice(0, 90))}<br><span style="color:var(--color-text-muted)">${tied ? `${scored.length} invoices match this amount — record manually` : 'no confident match — record manually'}</span></div>`;
         }
         return `<div style="padding:.35rem 0;border-bottom:1px solid var(--color-border);font-size:.82rem;display:flex;gap:.6rem;align-items:center">
           <div style="flex:1">${esc(row.line.slice(0, 90))}<br>
             <strong>→ ${esc(cand.inv.member_name)}, ${esc(cand.inv.period_label)}</strong>
             <span style="color:var(--color-text-muted)">(owes ${formatMoney(cand.owed, cand.inv.currency)})</span></div>
-          <button class="btn-primary bm-rec" data-i="${i}" data-id="${esc(cand.inv.id)}" data-cur="${esc(cand.inv.currency)}" style="font-size:.78rem">Record</button>
+          <button class="btn-primary bm-rec" data-i="${i}" data-id="${esc(cand.inv.id)}" data-cur="${esc(cand.inv.currency)}" style="font-size:.78rem" title="Records exactly this amount against this invoice">Record ${esc(row.amt.toFixed(moneyExponent(cand.inv.currency) === 0 ? 0 : 2))} ${esc(cand.inv.currency)}</button>
         </div>`;
       }).join('');
       box.querySelectorAll('.bm-rec').forEach(btn => btn.addEventListener('click', guardButton(btn, async () => {
         const row = out[Number(btn.dataset.i)];
-        const minor = parseMoney(String(row.amt.toFixed(2)), btn.dataset.cur);
+        const minor = Math.round(row.amt * 10 ** moneyExponent(btn.dataset.cur));
         try {
           await api('POST', `/dues/${btn.dataset.id}/transactions`, {
             amount_minor: minor, provider: 'bank-import',

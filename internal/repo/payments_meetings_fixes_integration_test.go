@@ -607,12 +607,32 @@ func TestIntegration_LateFees(t *testing.T) {
 	}
 	var cnt int
 	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM dues_invoices WHERE member_id = $1::uuid AND period_label LIKE 'Late fee%'`,
+		SELECT count(*) FROM dues_invoices WHERE member_id = $1::uuid AND late_fee_for IS NOT NULL`,
 		memberID).Scan(&cnt); err != nil {
 		t.Fatalf("count fees: %v", err)
 	}
 	if cnt != 1 {
 		t.Fatalf("%d fee invoices after two runs, want exactly 1", cnt)
+	}
+	// Anti-compounding: age the FEE invoice deep past due and run again —
+	// a fee invoice must never receive its own late fee.
+	if _, err := pool.Exec(ctx, `
+		UPDATE dues_invoices SET due_date = CURRENT_DATE - 60 WHERE id = $1::uuid`, *feeID); err != nil {
+		t.Fatalf("age fee: %v", err)
+	}
+	if _, err := dues.MarkOverdue(ctx); err != nil {
+		t.Fatalf("age fee status: %v", err)
+	}
+	if _, err := dues.ApplyLateFees(ctx, 500, 7); err != nil {
+		t.Fatalf("apply after aging fee: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM dues_invoices WHERE member_id = $1::uuid AND late_fee_for IS NOT NULL`,
+		memberID).Scan(&cnt); err != nil {
+		t.Fatalf("recount fees: %v", err)
+	}
+	if cnt != 1 {
+		t.Fatalf("%d fee invoices after aging the fee itself, want exactly 1 — LATE FEES ARE COMPOUNDING", cnt)
 	}
 }
 

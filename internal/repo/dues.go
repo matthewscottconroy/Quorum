@@ -413,6 +413,11 @@ func (r *DuesRepo) ReceiptInfoFor(ctx context.Context, invoiceID string) (Receip
 		JOIN members m ON m.id = di.member_id
 		WHERE di.id = $1::uuid`,
 		invoiceID).Scan(&info.MemberName, &email, &info.PeriodLabel, &info.Currency, &info.RemainingMinor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Contact invoices have no member row: "no receipt to send", not a
+		// database failure — honor the documented ok=false contract.
+		return info, false, nil
+	}
 	if err != nil {
 		return info, false, err
 	}
@@ -434,12 +439,16 @@ func (r *DuesRepo) ApplyLateFees(ctx context.Context, feeMinor int64, graceDays 
 		return 0, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	// late_fee_for IS NULL is the anti-compounding rule: a fee invoice is
+	// never itself a candidate, no matter how overdue it goes. Without it,
+	// each fee spawned another 15+grace days later, forever.
 	rows, err := tx.Query(ctx, `
 		SELECT di.id::text, di.member_id::text, di.currency, di.period_label
 		FROM dues_invoices di
 		WHERE di.status IN ('overdue', 'partial')
 		  AND di.due_date < CURRENT_DATE - $1::int
 		  AND di.late_fee_invoice_id IS NULL
+		  AND di.late_fee_for IS NULL
 		  AND di.member_id IS NOT NULL
 		FOR UPDATE OF di SKIP LOCKED
 		LIMIT 500`, graceDays)
@@ -462,12 +471,19 @@ func (r *DuesRepo) ApplyLateFees(ctx context.Context, feeMinor int64, graceDays 
 	}
 	n := 0
 	for _, c := range cands {
+		// The label is display-only; the machine link is late_fee_for.
+		// Truncate to the schema's 200-char bound so one long period label
+		// can't violate the CHECK and roll back the entire batch.
+		label := "Late fee — " + c.period
+		if r2 := []rune(label); len(r2) > 200 {
+			label = string(r2[:200])
+		}
 		var feeID string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status)
-			VALUES ($1::uuid, $2, $3, $4, CURRENT_DATE + 14, 'pending')
+			INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status, late_fee_for)
+			VALUES ($1::uuid, $2, $3, $4, CURRENT_DATE + 14, 'pending', $5::uuid)
 			RETURNING id::text`,
-			c.member, feeMinor, c.currency, "Late fee — "+c.period).Scan(&feeID); err != nil {
+			c.member, feeMinor, c.currency, label, c.id).Scan(&feeID); err != nil {
 			return 0, err
 		}
 		if _, err := tx.Exec(ctx, `

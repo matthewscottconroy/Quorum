@@ -113,7 +113,7 @@ class PageFunds extends HTMLElement {
     if (strip) {
       const pending = this._purchases.filter(p => p.status === 'pending');
       const ready = this._purchases.filter(p => p.status === 'approved');
-      const mine = pending.filter(p => p.requester_id !== me && !(p.approvals ?? []).some(a => a.approver_id === me)).length;
+      const mine = pending.filter(p => p.requester_id !== me && !(p.approvals ?? []).some(a => a.approver_id === me) && !(p.recusals ?? []).some(x => x.member_id === myMember)).length;
       const parts = [];
       if (pending.length) parts.push(`<strong style="color:var(--color-text)">${pending.length}</strong> awaiting signatures${mine ? ` (<strong style="color:var(--color-text)">${mine}</strong> can take yours)` : ''}`);
       if (ready.length) parts.push(`<strong style="color:var(--color-text)">${ready.length}</strong> approved, ready to complete`);

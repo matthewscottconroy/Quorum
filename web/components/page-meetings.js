@@ -22,6 +22,10 @@ function intOrNull(v) {
 }
 
 class PageMeetings extends HTMLElement {
+  // A pending search debounce firing after navigation would persist a
+  // half-typed query as the saved filter; leaving the page cancels it.
+  disconnectedCallback() { clearTimeout(this._qTimer); }
+
   constructor() {
     super();
     this._meetings = [];
@@ -61,10 +65,9 @@ class PageMeetings extends HTMLElement {
     this.querySelector('#upcoming-chk')?.addEventListener('change', e => { this._upcoming = e.target.checked; this._offset = 0; saveFilters('meetings', { upcoming: this._upcoming, q: this._q }); this.load(); });
     // Live search, debounced: typing filters as you go (the seq guard in
     // load() already drops stale responses), no blur/Enter required.
-    let qTimer = null;
     this.querySelector('#mt-search')?.addEventListener('input', e => {
-      clearTimeout(qTimer);
-      qTimer = setTimeout(() => {
+      clearTimeout(this._qTimer);
+      this._qTimer = setTimeout(() => {
         const q = e.target.value.trim();
         if (q === this._q) return;
         this._q = q; this._offset = 0;
@@ -187,6 +190,7 @@ class PageMeetings extends HTMLElement {
         tpls.map((t, i) => `<option value="${i}">${esc(t.name ?? 'Template ' + (i + 1))}</option>`).join('');
       row.style.display = '';
       sel.addEventListener('change', () => {
+        if (sel.value === '') return; // backing out to the placeholder is not a pick
         const t = tpls[Number(sel.value)];
         if (t?.agenda) dialog.querySelector('#f-agenda').value = t.agenda;
       });
@@ -224,7 +228,7 @@ class PageMeetings extends HTMLElement {
         }
         toast('Meeting scheduled','success');
         close();
-        this.load();
+        if (this.isConnected) this.load(); // run page uses a detached host
         setTimeout(() => this.openEditor(m.id), 100);
       } catch (err) { toast(err.error ?? 'Failed','error'); }
     }));
@@ -445,12 +449,16 @@ class PageMeetings extends HTMLElement {
     // without recurrence-rule plumbing: prefill the create modal, +1 week.
     dialog.querySelector('#next-occurrence-btn')?.addEventListener('click', () => {
       const base = new Date(mt.scheduled_at);
-      const next = new Date(base.getTime() + 7 * 24 * 3600 * 1000);
+      // setDate() does LOCAL calendar math: a 7 PM meeting stays 7 PM even
+      // when the week crosses a DST transition (168 raw hours would not).
+      const next = new Date(base);
+      next.setDate(next.getDate() + 7);
       const toLocal = d => toLocalInputValue(d.toISOString());
       let ends = '';
       if (mt.ends_at) {
-        const dur = new Date(mt.ends_at).getTime() - base.getTime();
-        ends = toLocal(new Date(next.getTime() + dur));
+        const endNext = new Date(mt.ends_at);
+        endNext.setDate(endNext.getDate() + 7);
+        ends = toLocal(endNext);
       }
       if (!guardedClose()) return;
       this.openCreateModal({

@@ -132,10 +132,22 @@ func (h *ExportHandler) ExportMembersCSV(w http.ResponseWriter, r *http.Request)
 func (h *ExportHandler) ExportDuesCSV(w http.ResponseWriter, r *http.Request) {
 	// The export honors the page's active filter — "Export" next to a
 	// filtered list that silently dumps everything is a trap. No params
-	// still means everything.
+	// still means everything — but a filter we can't honor is REFUSED, not
+	// dropped: silently widening "one member's dues" to the whole ledger is
+	// the worse failure.
 	q := r.URL.Query()
 	f := repo.InvoiceFilter{Status: q.Get("status"), PeriodLabel: q.Get("period")}
-	if v := q.Get("member_id"); v != "" && isValidUUID(v) {
+	switch f.Status {
+	case "", "pending", "overdue", "paid", "partial", "waived":
+	default:
+		writeError(w, http.StatusBadRequest, "unknown status filter", "bad_request")
+		return
+	}
+	if v := q.Get("member_id"); v != "" {
+		if !isValidUUID(v) {
+			writeError(w, http.StatusBadRequest, "member_id must be a UUID", "bad_request")
+			return
+		}
 		f.MemberID = v
 	}
 	var detail map[string]any

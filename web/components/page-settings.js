@@ -115,7 +115,7 @@ class PageSettings extends HTMLElement {
               <input id="og-fy" type="number" min="1" max="12" value="1"></div>
             <div class="form-group" style="max-width:200px"><label for="og-latefee">Late fee (minor units)</label>
               <input id="og-latefee" type="number" min="0" placeholder="0 = off">
-              <div style="font-size:.72rem;color:var(--color-text-muted)">Posted nightly as a separate fee invoice once dues are past due + grace. Waive the fee invoice to forgive it.</div></div>
+              <div style="font-size:.72rem;color:var(--color-text-muted)">Posted nightly as a separate fee invoice once dues are past due + grace — including invoices already overdue when you enable it. The number is charged at face value in each invoice's own currency (500 = $5.00 or ¥500). Waive the fee invoice to forgive it.</div></div>
             <div class="form-group" style="max-width:160px"><label for="og-lategrace">Late-fee grace (days)</label>
               <input id="og-lategrace" type="number" min="0" max="365" placeholder="0"></div>
             <div class="form-group" style="max-width:260px"><label for="og-tz">Timezone (IANA name)</label>

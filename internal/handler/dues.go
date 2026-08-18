@@ -53,7 +53,10 @@ func (h *DuesHandler) List(w http.ResponseWriter, r *http.Request) {
 		PeriodLabel: q.Get("period"),
 		Limit:       100,
 	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// This list backs bulk jobs (select-all-matching, the bank matcher) whose
+	// working set is the batch endpoint's 500 cap — accept up to that here,
+	// matching the repo clamp, instead of the general 200 page bound.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
@@ -572,7 +575,8 @@ func (h *DuesHandler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 		MemberID:  q.Get("member_id"),
 		Limit:     50,
 	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// Repo clamps at 500; the invoice-detail view legitimately asks for it.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {

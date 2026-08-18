@@ -254,6 +254,7 @@ func (r *AnalyticsRepo) AttendancePerMember(ctx context.Context, from, to string
 			FROM meeting_attendees ma
 			JOIN meetings m ON m.id = ma.meeting_id
 			WHERE m.scheduled_at >= $1::date AND m.scheduled_at < ($2::date + 1)
+			  AND m.status != 'cancelled'
 		)
 		SELECT mem.id::text, mem.display_name, coalesce(ma.present, FALSE)
 		FROM members mem

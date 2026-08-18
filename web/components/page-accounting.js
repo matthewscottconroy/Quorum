@@ -242,24 +242,30 @@ class PageAccounting extends HTMLElement {
       const box = dialog.querySelector('#en-totals');
       if (!box) return;
       const per = new Map(); // currency → {dr, cr}
+      let bad = 0; // cells submit would reject — the preview must not vouch for them
       dialog.querySelectorAll('.en-line').forEach(row => {
-        const currency = row.querySelector('.en-cur').value.trim().toUpperCase() || 'USD';
+        const currency = row.querySelector('.en-cur').value.trim().toUpperCase();
         const cell = sel => {
           const raw = row.querySelector(sel).value.trim();
           if (!raw) return 0;
-          const minor = parseMoney(raw, currency);
-          return minor === null || minor < 0 ? 0 : minor;
+          const minor = parseMoney(raw, currency || 'USD');
+          if (minor === null || minor < 0) { bad++; return 0; }
+          return minor;
         };
-        const t = per.get(currency) ?? { dr: 0, cr: 0 };
+        const t = per.get(currency || '?') ?? { dr: 0, cr: 0 };
         t.dr += cell('.en-debit'); t.cr += cell('.en-credit');
-        per.set(currency, t);
+        per.set(currency || '?', t);
       });
-      box.innerHTML = [...per.entries()].filter(([, t]) => t.dr || t.cr).map(([c, t]) => {
+      const totals = [...per.entries()].filter(([, t]) => t.dr || t.cr).map(([c, t]) => {
         const ok = t.dr === t.cr;
-        return `Dr ${formatMoney(t.dr, c)} · Cr ${formatMoney(t.cr, c)} ${esc(c)} — ` +
-          (ok ? '<strong style="color:var(--color-success,#137333)">balanced ✓</strong>'
-              : `<strong style="color:var(--color-danger)">off by ${formatMoney(Math.abs(t.dr - t.cr), c)}</strong>`);
-      }).join('<br>');
+        const cur = c === '?' ? 'USD' : c;
+        return `Dr ${formatMoney(t.dr, cur)} · Cr ${formatMoney(t.cr, cur)} ${esc(c === '?' ? '(set currency)' : c)} — ` +
+          (ok && !bad ? '<strong style="color:var(--color-success,#137333)">balanced ✓</strong>'
+            : ok ? '<strong style="color:var(--color-warning,#b45309)">totals match, but a value won\u2019t parse</strong>'
+            : `<strong style="color:var(--color-danger)">off by ${formatMoney(Math.abs(t.dr - t.cr), cur)}</strong>`);
+      });
+      if (bad && !totals.length) totals.push('<strong style="color:var(--color-danger)">check amounts — decimals like 10.50</strong>');
+      box.innerHTML = totals.join('<br>');
     };
     dialog.querySelector('#en-lines').addEventListener('input', runningTotals);
     dialog.querySelector('#en-more').addEventListener('click', () => {

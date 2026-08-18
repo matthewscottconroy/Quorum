@@ -409,7 +409,7 @@ class PageBudget extends HTMLElement {
           label,
           category: row.querySelector('.l-cat').value.trim() || null,
           account_id: row.querySelector('.l-acct').value || null,
-          quantity: Number.parseInt(row.querySelector('.l-qty').value, 10) || 1,
+          quantity: Number.parseInt(row.querySelector('.l-qty').value, 10) || 0,
           unit_amount_minor: parseMoney(row.querySelector('.l-unit').value.trim() || '0', row.dataset.currency) ?? 0,
         };
         try {

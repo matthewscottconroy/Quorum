@@ -13,7 +13,7 @@ import './page-meetings.js';
  * generic root, so the modal and this page can never drift apart.
  */
 class PageMeetingRun extends HTMLElement {
-  disconnectedCallback() { clearInterval(this._elapsedTimer); }
+  disconnectedCallback() { clearInterval(this._elapsedTimer); clearInterval(this._spkTimer); }
 
   connectedCallback() {
     this._pm = new (customElements.get('page-meetings'))();
@@ -37,6 +37,8 @@ class PageMeetingRun extends HTMLElement {
     const adjourned = journal.some(e => e.kind === 'adjournment');
     const inSession = calledToOrder && !adjourned && mt.status !== 'completed' && mt.status !== 'cancelled';
     clearInterval(this._elapsedTimer);
+    clearInterval(this._spkTimer);
+    this._spkTimer = null;
 
     this.innerHTML = `
       <div class="page-header" style="flex-wrap:wrap;gap:.75rem;align-items:flex-end">
@@ -55,7 +57,7 @@ class PageMeetingRun extends HTMLElement {
           <button class="btn-secondary" id="edit-btn">Edit details</button>
         </div>
       </div>
-      ${mt.agenda && canWrite() && !adjourned ? (() => {
+      ${mt.agenda && canWrite() && !adjourned && mt.status !== 'cancelled' ? (() => {
         // The agenda as a WORKLIST: each line is checkable, and checking it
         // journals "Taken up: …" — the minutes write themselves as the chair
         // works down the list. Already-journaled lines render done.
@@ -162,37 +164,54 @@ class PageMeetingRun extends HTMLElement {
       const logEl = this.querySelector('#spk-log');
       if (nameEl && clockEl && toggleEl && logEl) {
         let startedAt = 0;
-        let tick = null;
+        // Elapsed is CAPTURED at Stop: the journal records how long they
+        // spoke, not how long ago the chair got around to clicking Log.
+        let capturedMs = null;
+        let posting = false;
         const fmtClock = s2 => `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, '0')}`;
         toggleEl.addEventListener('click', () => {
-          if (tick) {
-            clearInterval(tick);
-            tick = null;
+          if (this._spkTimer) {
+            clearInterval(this._spkTimer);
+            this._spkTimer = null;
+            capturedMs = Date.now() - startedAt;
             toggleEl.textContent = 'Start';
             logEl.disabled = false;
           } else {
             startedAt = Date.now();
+            capturedMs = null;
             clockEl.textContent = '0:00';
-            tick = setInterval(() => {
+            // Instance-held interval: load() re-renders this card (call to
+            // order, editor close, …) and must be able to stop the old clock.
+            this._spkTimer = setInterval(() => {
               clockEl.textContent = fmtClock(Math.floor((Date.now() - startedAt) / 1000));
             }, 1000);
             toggleEl.textContent = 'Stop';
             logEl.disabled = true;
           }
         });
-        logEl.addEventListener('click', guardButton(logEl, async () => {
+        // Hand-rolled guard instead of guardButton: after a successful post
+        // the button must STAY disabled (one Stop = one journal line), and
+        // guardButton's finally would re-enable it.
+        logEl.addEventListener('click', async () => {
+          if (posting || capturedMs === null) return;
+          posting = true;
+          logEl.disabled = true;
           const who = nameEl.value.trim() || 'Speaker';
-          const mins = Math.max(Math.round((Date.now() - startedAt) / 60000), 1);
+          const mins = Math.max(Math.round(capturedMs / 60000), 1);
           try {
             await api('POST', `/meetings/${mt.id}/minutes`, {
               kind: 'discussion', body: `${who} spoke, ${mins} min.`,
             });
+            capturedMs = null;
             toast('Logged to the journal', 'success');
             nameEl.value = '';
             clockEl.textContent = '0:00';
             this._pm.renderMinutes(this, mt.id, mt);
-          } catch (err) { toast(err.error ?? 'Failed', 'error'); }
-        }));
+          } catch (err) {
+            toast(err.error ?? 'Failed', 'error');
+            logEl.disabled = false; // retry allowed — nothing was journaled
+          } finally { posting = false; }
+        });
       }
     }
 
@@ -220,6 +239,7 @@ class PageMeetingRun extends HTMLElement {
         await api('PATCH', `/meetings/${mt.id}`, { status: 'completed' });
         toast(journaled ? 'Adjourned' : 'Meeting marked completed (journal is finalized)', 'success');
         await this.load();
+        if (!this.isConnected) return; // load() hit an error and left the page
         // The natural next step, offered in the moment: adjournment is when
         // minutes get finalized, not "later" (which becomes never).
         if (journaled && await confirm('Finalize the minutes now? Review the journal first if anything is missing — finalizing freezes it into the official record.', 'Finalize minutes?')) {
