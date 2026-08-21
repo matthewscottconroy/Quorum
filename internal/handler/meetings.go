@@ -320,12 +320,17 @@ func (h *MeetingsHandler) SetRSVP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// RSVPs are pre-meeting intent: once the meeting is over (finalized
-	// minutes) or cancelled, the historical tally must stop drifting.
-	if mt, err := h.repo.Get(r.Context(), id); err == nil {
-		if mt.MinutesFinalizedAt != nil || mt.Status == "cancelled" || mt.Status == "completed" {
-			writeError(w, http.StatusConflict, "this meeting is over — RSVPs are closed", "conflict")
-			return
-		}
+	// minutes) or cancelled, the historical tally must stop drifting. The
+	// gate FAILS CLOSED: skipping it on a lookup blip would let the write
+	// through exactly when we can't tell whether it's allowed.
+	mt, err := h.repo.Get(r.Context(), id)
+	if err != nil {
+		writeRepoError(w, err, "meeting not found", "query error")
+		return
+	}
+	if mt.MinutesFinalizedAt != nil || mt.Status == "cancelled" || mt.Status == "completed" {
+		writeError(w, http.StatusConflict, "this meeting is over — RSVPs are closed", "conflict")
+		return
 	}
 	if err := h.repo.SetRSVP(r.Context(), id, memberID, body.Response); err != nil {
 		writeRepoError(w, err, "meeting not found", "save error")

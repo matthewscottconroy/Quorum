@@ -194,9 +194,24 @@ export function parseMoney(str, code) {
   // Right-pad the fraction to exactly `exp` digits, then concatenate.
   const padded = fracPart.padEnd(exp, '0');
   const digits = intPart + padded;
+  // 15 digits is the last length parseInt represents exactly (2^53 ≈ 9e15):
+  // beyond it the value silently ROUNDS and a wrong amount would submit.
+  if (digits.length > 15) return null;
   const minor = parseInt(digits, 10);
   if (!Number.isFinite(minor)) return null;
   return neg ? -minor : minor;
+}
+
+/**
+ * Returns the URL when its scheme is http(s), else null. Member-created
+ * resource URLs are untrusted: every window.open of one goes through here,
+ * or a stored javascript: URL is one browser quirk from member→member XSS.
+ */
+export function safeUrl(u) {
+  try {
+    const p = new URL(u);
+    return (p.protocol === 'https:' || p.protocol === 'http:') ? u : null;
+  } catch { return null; }
 }
 
 /**

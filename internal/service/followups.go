@@ -36,19 +36,21 @@ type memberNotifier interface {
 	TryNotifyMember(memberID, kind, title string, body, link *string) bool
 }
 
-// FollowupsService sends both nightly follow-up kinds. Both ride the standard
-// notification service (in-app + pref-honoring email); it needs no direct
-// email sender.
+// FollowupsService sends both nightly follow-up kinds. Notices ride the
+// standard notification service (in-app + pref-honoring email) for members
+// with accounts; roster-only assignees get a direct email — the notification
+// path can't reach someone with no login.
 type FollowupsService struct {
 	meetings followupMeetings
 	items    followupItems
 	notify   memberNotifier
+	email    emailSender
 	loc      func(ctx context.Context) *time.Location
 }
 
 // NewFollowupsService constructs the service; loc may be nil (server zone).
-func NewFollowupsService(m followupMeetings, i followupItems, n memberNotifier, loc func(ctx context.Context) *time.Location) *FollowupsService {
-	return &FollowupsService{meetings: m, items: i, notify: n, loc: loc}
+func NewFollowupsService(m followupMeetings, i followupItems, n memberNotifier, e emailSender, loc func(ctx context.Context) *time.Location) *FollowupsService {
+	return &FollowupsService{meetings: m, items: i, notify: n, email: e, loc: loc}
 }
 
 func (s *FollowupsService) location(ctx context.Context) *time.Location {
@@ -115,10 +117,23 @@ func (s *FollowupsService) ActionItemReminders(ctx context.Context) {
 	for _, it := range due {
 		body := fmt.Sprintf("Your action item %q is due (%s). You can update it on the Board.",
 			it.Title, it.DueDate.Format("2006-01-02"))
-		link := "#/board"
-		if !s.notify.TryNotifyMember(it.AssigneeID, "action_item.due", "Due today: "+it.Title, &body, &link) {
-			log.Printf("action-item reminder: queue refused %s; will retry", it.ID)
-			continue // not marked: retried tomorrow
+		if it.HasAccount {
+			link := "#/board"
+			if !s.notify.TryNotifyMember(it.AssigneeID, "action_item.due", "Due today: "+it.Title, &body, &link) {
+				log.Printf("action-item reminder: queue refused %s; will retry", it.ID)
+				continue // not marked: retried tomorrow
+			}
+		} else {
+			// Roster-only assignee: no login, so no in-app notice and no
+			// stored preference — the roster email is the only channel.
+			if s.email == nil || !s.email.configured() || it.AssigneeEmail == "" {
+				continue // unmarked: delivered when email is configured
+			}
+			if err := s.email.Send([]string{it.AssigneeEmail}, "Due today: "+it.Title,
+				fmt.Sprintf("Hello %s,\n\n%s\n", it.AssigneeName, body)); err != nil {
+				log.Printf("action-item reminder (%s): %v", it.ID, err)
+				continue // not marked: retried tomorrow
+			}
 		}
 		if err := s.items.MarkDueReminded(ctx, it.ID); err != nil {
 			log.Printf("action-item reminder mark (%s): %v", it.ID, err)

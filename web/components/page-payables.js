@@ -1,6 +1,6 @@
 import { api, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney, providerOptions, knownCurrencies, currencyDatalist, renderPager, loadFilters, saveFilters } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, providerOptions, knownCurrencies, currencyDatalist, renderPager, loadFilters, saveFilters, safeUrl } from '../utils.js';
 import { confirm } from './confirm-dialog.js';
 
 const PAGE = 50;
@@ -110,7 +110,7 @@ class PagePayables extends HTMLElement {
       try {
         const r0 = await api('GET', `/resources/${b.dataset.rid}`);
         if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
-        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+        else if (r0.url) { const u = safeUrl(r0.url); if (u) window.open(u, '_blank', 'noopener'); }
       } catch { toast("You don't have access to this document", 'error'); }
     }));
     box.querySelectorAll('.bl-pay').forEach(btn => btn.addEventListener('click', () =>

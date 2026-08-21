@@ -1,6 +1,6 @@
 import { api, getUser, currentMemberId, canWrite, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
+import { esc, openModal, guardButton, formatMoney, parseMoney, knownCurrencies, loadFilters, saveFilters, safeUrl } from '../utils.js';
 
 // Purchase statuses ride the shared badge system (dark-safe) instead of a
 // private hex-and-emoji palette.
@@ -158,7 +158,7 @@ class PageFunds extends HTMLElement {
       try {
         const r0 = await api('GET', `/resources/${b.dataset.rid}`);
         if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
-        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+        else if (r0.url) { const u = safeUrl(r0.url); if (u) window.open(u, '_blank', 'noopener'); }
       } catch { toast("You don't have access to this document", 'error'); }
     }));
     box.querySelectorAll('.pr-approve').forEach(b => b.addEventListener('click', () => this.signApproval(b.dataset.id)));

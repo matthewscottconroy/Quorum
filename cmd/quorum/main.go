@@ -367,7 +367,7 @@ func main() {
 	webhooksH.SetReceiptSender(receiptSender)
 	// Nightly follow-ups under the same leader lock: meeting reminders
 	// (~2 days out, with an RSVP nudge) and action-item due notices.
-	followups := service.NewFollowupsService(meetingsRepo, actionItemsRepo, notifySvc, func(ctx context.Context) *time.Location {
+	followups := service.NewFollowupsService(meetingsRepo, actionItemsRepo, notifySvc, emailSvc, func(ctx context.Context) *time.Location {
 		if all, err := orgSettingsRepo.All(ctx); err == nil {
 			if tz := all["timezone"]; tz != "" {
 				if loc, err := time.LoadLocation(tz); err == nil {

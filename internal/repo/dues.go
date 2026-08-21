@@ -809,6 +809,34 @@ func (r *DuesRepo) RecordWebhookRefund(ctx context.Context, eventID string, t *m
 		// same-total re-send): keep the claim, post nothing.
 		return false, tx.Commit(ctx)
 	}
+	// Same clamp the PayPal path has: never post a refund past the invoice's
+	// recorded net paid. If the original charge predates the webhook endpoint
+	// there may be NO payment on the books — an uncapped delta would drive
+	// paid negative and dunning would ask for more than face value.
+	var netPaid int64
+	if err := tx.QueryRow(ctx, `
+		SELECT coalesce(sum(amount), 0) FROM transactions
+		WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = $2`,
+		*t.InvoiceID, t.Currency).Scan(&netPaid); err != nil {
+		return false, err
+	}
+	if netPaid <= 0 {
+		// Nothing recorded to refund against: keep the claim (stop retries),
+		// surface for the operator.
+		if cerr := tx.Commit(ctx); cerr != nil {
+			return false, cerr
+		}
+		return false, ErrExceedsPaid
+	}
+	if delta > netPaid {
+		excess := delta - netPaid
+		delta = netPaid
+		n := fmt.Sprintf("refund clamped at net paid; %d minor units exceed recorded payments — enter manually", excess)
+		if t.Notes != nil {
+			n = *t.Notes + "; " + n
+		}
+		t.Notes = &n
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO transactions
 		    (invoice_id, member_id, amount, currency, provider, provider_reference_id,

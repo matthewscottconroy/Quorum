@@ -179,12 +179,46 @@ func (r *OrgFeaturesRepo) SetCommitteeMembers(ctx context.Context, id string, me
 
 // AddRecusal records a member recusing from a motion or purchase.
 func (r *OrgFeaturesRepo) AddRecusal(ctx context.Context, subjectType, subjectID, memberID, reason string) error {
-	_, err := r.db.Exec(ctx, `
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO recusals (subject_type, subject_id, member_id, reason)
 		VALUES ($1, $2::uuid, $3::uuid, nullif($4,''))
 		ON CONFLICT (subject_type, subject_id, member_id) DO UPDATE SET reason = EXCLUDED.reason`,
-		subjectType, subjectID, memberID, reason)
-	return err
+		subjectType, subjectID, memberID, reason); err != nil {
+		return err
+	}
+	if subjectType == "purchase" {
+		// A recusal changes the approval math (the recused signer is neither
+		// counted nor waited on) — and nothing else re-runs it. Without this,
+		// a named signer recusing AFTER others approved left the purchase
+		// stuck pending forever: further Approve calls hit "already approved"
+		// before ever reaching the recount.
+		if _, err := tx.Exec(ctx, `
+			UPDATE purchase_requests pr SET status = 'approved', decided_at = now()
+			FROM funds f
+			WHERE pr.id = $1::uuid AND pr.status = 'pending' AND f.id = pr.fund_id
+			  AND (SELECT count(*) FROM purchase_approvals pa
+			       WHERE pa.request_id = pr.id
+			         AND NOT EXISTS (SELECT 1 FROM recusals rc JOIN users u ON u.member_id = rc.member_id
+			                         WHERE rc.subject_type = 'purchase' AND rc.subject_id = pr.id
+			                           AND u.id = pa.approver_id)) >= f.approvals_required
+			  AND NOT EXISTS (
+			      SELECT 1 FROM fund_signers fs
+			      WHERE fs.fund_id = f.id
+			        AND NOT EXISTS (SELECT 1 FROM purchase_approvals pa2
+			                        WHERE pa2.request_id = pr.id AND pa2.approver_id = fs.user_id)
+			        AND NOT EXISTS (SELECT 1 FROM recusals rc2 JOIN users u2 ON u2.member_id = rc2.member_id
+			                        WHERE rc2.subject_type = 'purchase' AND rc2.subject_id = pr.id
+			                          AND u2.id = fs.user_id))`,
+			subjectID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ListRecusals returns who has recused from a subject.

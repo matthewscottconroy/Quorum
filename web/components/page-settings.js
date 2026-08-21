@@ -300,50 +300,15 @@ class PageSettings extends HTMLElement {
       btn.addEventListener('click', () => this.openAdminReset(btn.dataset.id, btn.dataset.email));
     });
 
+    this.wireUserTable();
     this.wireGovernanceSettings();
   }
 
-  /** Loads and saves the org-wide governance/quorum rules (admin only). */
-  async wireGovernanceSettings() {
-    const modeSel = this.querySelector('#g-mode');
-    if (!modeSel) return; // not an admin
-    const valueWrap  = this.querySelector('#g-value-wrap');
-    const valueLabel = this.querySelector('#g-value-label');
-    const valueInp   = this.querySelector('#g-value');
-
-    // The value field only applies to percent (1–100) and fixed (a count);
-    // majority derives its own threshold, so hide it there.
-    const syncValueField = () => {
-      const mode = modeSel.value;
-      valueWrap.style.display = mode === 'majority' ? 'none' : '';
-      valueLabel.textContent  = mode === 'percent' ? 'Percent (1–100)' : 'Member count';
-    };
-    modeSel.addEventListener('change', syncValueField);
-
-    try {
-      const s = await api('GET', '/governance/settings');
-      modeSel.value = s.quorum_mode;
-      valueInp.value = s.quorum_value;
-      this.querySelector('#g-threshold').value = s.default_threshold;
-      this.querySelector('#g-proxies').checked = s.proxies_count_toward_quorum;
-    } catch { /* leave defaults */ }
-    syncValueField();
-
-    const gSave = this.querySelector('#g-save');
-    gSave.addEventListener('click', guardButton(gSave, async () => {
-      const mode = modeSel.value;
-      const body = {
-        quorum_mode: mode,
-        quorum_value: mode === 'majority' ? 0 : (Number.parseInt(valueInp.value, 10) || 0),
-        default_threshold: this.querySelector('#g-threshold').value,
-        proxies_count_toward_quorum: this.querySelector('#g-proxies').checked,
-      };
-      try {
-        await api('PUT', '/governance/settings', body);
-        toast('Governance rules saved','success');
-      } catch (err) { toast(err.error ?? 'Save failed','error'); }
-    }));
-
+  /** Role/member-link/delete wiring for the user table. Deliberately NOT part
+   * of wireGovernanceSettings: that method awaits a fetch first, and these
+   * controls were dead until it resolved — changes made in the gap were
+   * silently lost. */
+  wireUserTable() {
     this.querySelectorAll('.role-sel').forEach(sel => {
       let original = sel.value;
       sel.addEventListener('change', async () => {
@@ -387,6 +352,49 @@ class PageSettings extends HTMLElement {
         });
       });
     });
+  }
+
+  /** Loads and saves the org-wide governance/quorum rules (admin only). */
+  async wireGovernanceSettings() {
+    const modeSel = this.querySelector('#g-mode');
+    if (!modeSel) return; // not an admin
+    const valueWrap  = this.querySelector('#g-value-wrap');
+    const valueLabel = this.querySelector('#g-value-label');
+    const valueInp   = this.querySelector('#g-value');
+
+    // The value field only applies to percent (1–100) and fixed (a count);
+    // majority derives its own threshold, so hide it there.
+    const syncValueField = () => {
+      const mode = modeSel.value;
+      valueWrap.style.display = mode === 'majority' ? 'none' : '';
+      valueLabel.textContent  = mode === 'percent' ? 'Percent (1–100)' : 'Member count';
+    };
+    modeSel.addEventListener('change', syncValueField);
+
+    try {
+      const s = await api('GET', '/governance/settings');
+      modeSel.value = s.quorum_mode;
+      valueInp.value = s.quorum_value;
+      this.querySelector('#g-threshold').value = s.default_threshold;
+      this.querySelector('#g-proxies').checked = s.proxies_count_toward_quorum;
+    } catch { /* leave defaults */ }
+    syncValueField();
+
+    const gSave = this.querySelector('#g-save');
+    gSave.addEventListener('click', guardButton(gSave, async () => {
+      const mode = modeSel.value;
+      const body = {
+        quorum_mode: mode,
+        quorum_value: mode === 'majority' ? 0 : (Number.parseInt(valueInp.value, 10) || 0),
+        default_threshold: this.querySelector('#g-threshold').value,
+        proxies_count_toward_quorum: this.querySelector('#g-proxies').checked,
+      };
+      try {
+        await api('PUT', '/governance/settings', body);
+        toast('Governance rules saved','success');
+      } catch (err) { toast(err.error ?? 'Save failed','error'); }
+    }));
+
   }
 
   openAddUserModal() {
@@ -802,8 +810,12 @@ customElements.define('page-settings', PageSettings);
       const { api } = await import('../app.js');
       const { toast } = await import('./toast-notification.js');
       const { esc, setOrgFlags } = await import('../utils.js');
+      const saveBtn0 = this.querySelector('#og-save');
+      if (saveBtn0) { saveBtn0.disabled = true; saveBtn0.title = 'Loading current settings…'; }
+      let loaded = null; // the server's map at populate time — the diff base
       try {
         const st = await api('GET', '/settings/org');
+        loaded = st;
         const set = (id, v) => { const el = this.querySelector(id); if (el && v != null) el.value = v; };
         set('#og-fy', st.fiscal_year_start_month); set('#og-pay', st.how_to_pay);
         set('#og-tz', st.timezone);
@@ -816,10 +828,17 @@ customElements.define('page-settings', PageSettings);
         if (this.querySelector('#og-hold')) this.querySelector('#og-hold').value = st.audit_legal_hold || 'off';
         if (this.querySelector('#og-arcade')) this.querySelector('#og-arcade').value = st.arcade_visible || 'on';
         set('#og-contacts', st.continuity_contacts);
-      } catch { /* defaults are fine */ }
+        if (saveBtn0) { saveBtn0.disabled = false; saveBtn0.title = ''; }
+      } catch {
+        // Saving over a failed load would overwrite LIVE settings with the
+        // form's HTML defaults (2FA off, legal hold lifted). Keep Save dead.
+        if (saveBtn0) saveBtn0.title = 'Could not load current settings — reload the page to edit';
+        toast('Could not load org settings — reload to edit them', 'error');
+        return;
+      }
       this.querySelector('#og-save')?.addEventListener('click', async () => {
         try {
-          const saved = await api('PUT', '/settings/org', {
+          const form = {
             fiscal_year_start_month: String(this.querySelector('#og-fy').value || '1'),
             timezone: this.querySelector('#og-tz').value.trim(),
             late_fee_minor: this.querySelector('#og-latefee').value.trim(),
@@ -836,7 +855,17 @@ customElements.define('page-settings', PageSettings);
             infrastructure_facts: this.querySelector('#og-infra').value,
             continuity_watch_days: String(this.querySelector('#og-watch').value || '0'),
             continuity_contacts: this.querySelector('#og-contacts').value,
-          });
+          };
+          // Send ONLY what this admin changed relative to what they loaded:
+          // the server merges per-key, so untouched keys can't clobber a
+          // colleague's concurrent edit.
+          const body = {};
+          for (const [k, v] of Object.entries(form)) {
+            if (String(loaded[k] ?? '') !== String(v)) body[k] = v;
+          }
+          if (!Object.keys(body).length) { toast('No changes to save', 'info'); return; }
+          const saved = await api('PUT', '/settings/org', body);
+          loaded = saved; // fresh diff base for the next save
           // The PUT echoes the fresh settings map; feed it to the shell so
           // flag-driven chrome (the Top Secret nav section) updates now, not
           // at the next full page load.

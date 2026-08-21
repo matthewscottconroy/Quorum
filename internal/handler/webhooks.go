@@ -87,7 +87,7 @@ func (h *WebhooksHandler) Stripe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch event.Type {
-	case "payment_intent.succeeded", "charge.succeeded":
+	case "payment_intent.succeeded", "charge.succeeded", "charge.captured":
 		if err := h.handleStripePayment(r, event.ID, event.Data); err != nil {
 			// Do not mark the event processed: returning 5xx makes Stripe
 			// retry, so a transient DB failure cannot silently drop a payment.
@@ -172,6 +172,10 @@ func (h *WebhooksHandler) handleStripeRefund(r *http.Request, eventID string, da
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		return h.dues.MarkEventProcessed(r.Context(), eventID)
 	}
+	if errors.Is(err, repo.ErrExceedsPaid) {
+		log.Printf("stripe: refund %s exceeds recorded payments on invoice %s — record manually", eventID, invoiceID)
+		return nil // the event claim committed with the refusal
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Valid-UUID metadata pointing at an invoice we don't have (another
 		// environment, hand-set metadata): a permanent condition, not a
@@ -197,6 +201,7 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 			// capture charges fire charge.succeeded at AUTHORIZATION, and a
 			// partial capture's `amount` overstates what was received.
 			AmountReceived *int64 `json:"amount_received"`
+			AmountCaptured *int64 `json:"amount_captured"`
 			Captured       *bool  `json:"captured"`
 			// PaymentIntent is set on charge objects and links a charge back to
 			// its payment intent; used to deduplicate the two events a single
@@ -227,7 +232,9 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 	// (what actually landed) when the object carries it.
 	amountMinor := obj.Object.Amount
 	if obj.Object.AmountReceived != nil {
-		amountMinor = *obj.Object.AmountReceived
+		amountMinor = *obj.Object.AmountReceived // payment intents: what landed
+	} else if obj.Object.AmountCaptured != nil {
+		amountMinor = *obj.Object.AmountCaptured // charges: partial captures overstate `amount`
 	}
 	if amountMinor <= 0 {
 		log.Printf("stripe: event %s has no received amount — skipping", eventID)

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -109,11 +110,22 @@ func (h *MemberImportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		}
 		line++
 		if err != nil {
+			var perr *csv.ParseError
+			if !errors.As(err, &perr) {
+				// Not a per-row parse problem but a persistent reader error
+				// (body cap hit, connection lost): csv.Reader will never
+				// reach EOF past it — continuing here spun forever.
+				rows = append(rows, importRow{Line: line, Problem: "input truncated: " + err.Error()})
+				badCount++
+				break
+			}
 			rows = append(rows, importRow{Line: line, Problem: "unreadable row"})
 			badCount++
 			continue
 		}
 		if len(rec) > 100000 {
+			rows = append(rows, importRow{Line: line, Problem: "row has too many fields"})
+			badCount++
 			continue
 		}
 		name := ""

@@ -49,18 +49,26 @@ type ItemReminderRow struct {
 	AssigneeID    string
 	AssigneeName  string
 	AssigneeEmail string
+	// HasAccount: the assignee has a login. Notices route through the
+	// notification service (in-app + pref-honoring email) when true, and
+	// fall back to a direct roster email when false — a roster-only member
+	// would otherwise "receive" a notice into a void.
+	HasAccount bool
 }
 
 // DueForReminder returns open items whose due date has arrived, not yet
 // reminded, whose assignee is an active member with an email on file.
 func (r *ActionItemsRepo) DueForReminder(ctx context.Context, today time.Time) ([]ItemReminderRow, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT ai.id::text, ai.title, ai.due_date, m.id::text, m.display_name, m.email
+		SELECT ai.id::text, ai.title, ai.due_date, m.id::text, m.display_name,
+		       coalesce(m.email, ''), (u.id IS NOT NULL)
 		FROM action_items ai
 		JOIN members m ON m.id = ai.assignee_id
+		LEFT JOIN users u ON u.member_id = m.id
 		WHERE ai.status IN ('open', 'in_progress') AND ai.due_date IS NOT NULL AND ai.due_date <= $1::date
 		  AND ai.due_reminded_at IS NULL
-		  AND m.status = 'active' AND m.email IS NOT NULL AND m.email <> ''
+		  AND m.status = 'active'
+		  AND (u.id IS NOT NULL OR (m.email IS NOT NULL AND m.email <> ''))
 		ORDER BY ai.due_date
 		LIMIT 500`, today)
 	if err != nil {
@@ -70,7 +78,7 @@ func (r *ActionItemsRepo) DueForReminder(ctx context.Context, today time.Time) (
 	var out []ItemReminderRow
 	for rows.Next() {
 		var it ItemReminderRow
-		if err := rows.Scan(&it.ID, &it.Title, &it.DueDate, &it.AssigneeID, &it.AssigneeName, &it.AssigneeEmail); err != nil {
+		if err := rows.Scan(&it.ID, &it.Title, &it.DueDate, &it.AssigneeID, &it.AssigneeName, &it.AssigneeEmail, &it.HasAccount); err != nil {
 			return nil, err
 		}
 		out = append(out, it)

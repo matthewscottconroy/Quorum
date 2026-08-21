@@ -218,9 +218,13 @@ func (m *Middleware) clientIP(r *http.Request) string {
 			return xr
 		}
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first, _, _ := strings.Cut(xff, ",")
-			if first = strings.TrimSpace(first); first != "" {
-				return first
+			// RIGHTMOST entry: that's the hop our own trusted proxy appended.
+			// The leftmost is client-claimed — trusting it hands every
+			// attacker a fresh login-rate-limit bucket per request, the exact
+			// bypass the RealIP avoidance note warns about.
+			parts := strings.Split(xff, ",")
+			if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+				return last
 			}
 		}
 	}
@@ -551,6 +555,13 @@ func MaxRequestBody(next http.Handler) http.Handler {
 		limit := int64(1 << 20)
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/file") {
 			limit = maxUploadBytes
+		}
+		// The roster import legitimately exceeds 1 MiB (a few thousand CSV
+		// rows); the global cap silently starved the handler's own 5 MiB
+		// limit — and a capped raw body never EOFs, spinning the import
+		// loop forever.
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/members/import") {
+			limit = 6 << 20
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)

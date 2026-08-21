@@ -114,7 +114,9 @@ class PageAccounting extends HTMLElement {
             <h3 style="margin:0 0 .5rem;font-size:.95rem">Posting rules</h3>
             <p style="font-size:.74rem;color:var(--color-text-muted);margin:0 0 .5rem">
               Where automatic postings land. Your accountant reconfigures these — future postings only; history never changes.
-              Add <code>cash.provider.&lt;name&gt;</code> rules to route any payment provider to its own account.</p>
+              Add <code>cash.provider.&lt;name&gt;</code> rules to route any payment provider to its own account.
+              Repointing <code>receivable</code> while A/R holds a balance leaves that balance in the old account —
+              post a manual transfer entry for the open amount or the reconciliation check will flag the difference.</p>
             ${(rules ?? []).map(r0 => `
               <div style="display:flex;gap:.4rem;align-items:center;font-size:.82rem;padding:.1rem 0">
                 <code style="flex:1">${esc(r0.key)}</code>

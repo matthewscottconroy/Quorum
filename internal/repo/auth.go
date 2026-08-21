@@ -326,8 +326,7 @@ func (r *AuthRepo) ReplaceRecoveryCodes(ctx context.Context, userID string, hash
 func (r *AuthRepo) ConsumeRecoveryCode(ctx context.Context, userID, hash string) (bool, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE mfa_recovery_codes SET used = TRUE
-		WHERE id = (SELECT id FROM mfa_recovery_codes
-		            WHERE user_id = $1::uuid AND code_hash = $2 AND used = FALSE LIMIT 1)`,
+		WHERE user_id = $1::uuid AND code_hash = $2 AND used = FALSE`,
 		userID, hash)
 	if err != nil {
 		return false, err

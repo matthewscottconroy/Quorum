@@ -194,7 +194,10 @@ class PageBoard extends HTMLElement {
     // "overdue" fires the moment the due day begins.
     const dueISO = i.due_date ? String(i.due_date).slice(0, 10) : null;
     const closed = i.status === 'done' || i.status === 'cancelled';
-    const todayISO = new Date().toISOString().slice(0, 10);
+    // LOCAL calendar day: toISOString() is UTC, which flips cards red on the
+    // evening of their due day for any viewer west of Greenwich.
+    const now = new Date();
+    const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const overdue = dueISO && !closed && dueISO < todayISO;
     const [tb, tc] = TYPE_BADGE[i.card_type] ?? TYPE_BADGE.task;
     // A closed card wears its resolution on the face: in a Done lane (or any

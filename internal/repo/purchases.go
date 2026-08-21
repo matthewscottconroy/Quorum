@@ -323,8 +323,14 @@ func (r *PurchasesRepo) Approve(ctx context.Context, requestID, approverID, ip s
 	}
 
 	var have, missingNamed int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM purchase_approvals WHERE request_id = $1::uuid`, requestID).Scan(&have); err != nil {
+	// Recused ink never counts toward the bar — approve-then-recuse must
+	// subtract, matching the missing-signers exclusion below.
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM purchase_approvals pa
+		WHERE pa.request_id = $1::uuid
+		  AND NOT EXISTS (SELECT 1 FROM recusals rc JOIN users u ON u.member_id = rc.member_id
+		                  WHERE rc.subject_type = 'purchase' AND rc.subject_id = $1::uuid
+		                    AND u.id = pa.approver_id)`, requestID).Scan(&have); err != nil {
 		return nil, err
 	}
 	if err := tx.QueryRow(ctx, `

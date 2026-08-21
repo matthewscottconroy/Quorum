@@ -7,6 +7,9 @@ const PUBLIC_PAGE_TAGS = {
   '#/forgot-password': 'forgot-password-page',
   '#/reset-password':  'reset-password-page',
   '#/ballot':          'ballot-page',
+  // The join-application form is the one public page a NON-member needs:
+  // omitting it here silently bounced every logged-out applicant to login.
+  '#/apply':           'page-apply',
 };
 
 class AppShell extends HTMLElement {

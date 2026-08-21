@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -72,25 +73,33 @@ func (h *ReportsHandler) location(ctx context.Context) *time.Location {
 // must be built from those bytes, never re-rendered from live rows, where a
 // member rename or motion edit would silently rewrite history the .md keeps
 // verbatim.
+var mdEmphasisRe = regexp.MustCompile(`_([^_]+)_`)
+
+// stripInlineMD flattens the snapshot's inline markdown (bold/italic markers)
+// for plain-text PDF lines; the structure markers are handled by the caller.
+func stripInlineMD(s string) string {
+	s = strings.ReplaceAll(s, "**", "")
+	return mdEmphasisRe.ReplaceAllString(s, "$1")
+}
+
 func pdfFromMinutesDoc(title, doc string) *pdf.Doc {
 	d := pdf.New(title)
 	for _, raw := range strings.Split(doc, "\n") {
 		line := strings.TrimRight(raw, " \t")
+		trimmed := strings.TrimLeft(line, " \t") // vote sub-lists indent with two spaces
 		switch {
 		case line == "":
 			d.Space()
 		case strings.HasPrefix(line, "# "):
-			d.Title(strings.TrimPrefix(line, "# "))
+			d.Title(stripInlineMD(strings.TrimPrefix(line, "# ")))
 		case strings.HasPrefix(line, "## "):
-			d.Heading(strings.TrimPrefix(line, "## "))
+			d.Heading(stripInlineMD(strings.TrimPrefix(line, "## ")))
 		case strings.HasPrefix(line, "### "):
-			d.Heading(strings.TrimPrefix(line, "### "))
-		case strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") && len(line) > 4:
-			d.Bold(strings.TrimSuffix(strings.TrimPrefix(line, "**"), "**"))
-		case strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* "):
-			d.Indented("• " + line[2:])
+			d.Heading(stripInlineMD(strings.TrimPrefix(line, "### ")))
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
+			d.Indented("• " + stripInlineMD(trimmed[2:]))
 		default:
-			d.Line(strings.ReplaceAll(line, "**", ""))
+			d.Line(stripInlineMD(trimmed))
 		}
 	}
 	return d

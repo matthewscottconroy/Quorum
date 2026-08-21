@@ -1,6 +1,6 @@
 import { api, getUser, isAdmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, safeUrl } from '../utils.js';
 import { openDocPreview } from './doc-preview.js';
 
 /**
@@ -85,14 +85,45 @@ class PageChat extends HTMLElement {
     } catch (err) { toast(err.error ?? 'Cannot open channel', 'error'); }
   }
 
+  /** Cheap change signature so the poll can tell "new content" from "tick". */
+  _msgSig() {
+    const sig = list => (list ?? []).map(m => m.id + ':' + (m.updated_at ?? '') + ':' + (m.reply_count ?? 0)).join('|');
+    return sig(this._messages) + '§' + (this._thread?.id ?? '') + '§' + sig(this._threadMsgs);
+  }
+
   async refreshMessages() {
     if (!this._current) return;
     try {
+      const before = this._msgSig();
       this._messages = await api('GET', `/channels/${this._current.id}/messages`) ?? [];
       if (this._thread) {
         this._threadMsgs = await api('GET', `/channels/${this._current.id}/messages?thread=${this._thread.id}`) ?? [];
       }
+      // A quiet 20s tick must not rebuild the DOM: rebuilding wipes the
+      // half-typed draft, drops the attachment chip, and yanks a reader
+      // scrolled up in history back to the bottom.
+      if (this._msgSig() === before) return;
+      const drafts = {};
+      for (const p of ['ch', 'th']) {
+        const inp = this.querySelector(`#${p}-input`);
+        if (inp) drafts[p] = { text: inp.value, focused: document.activeElement === inp };
+      }
+      const msgsEl = this.querySelector('#msgs');
+      const atBottom = !msgsEl || msgsEl.scrollTop + msgsEl.clientHeight >= msgsEl.scrollHeight - 40;
+      const scrollTop = msgsEl?.scrollTop ?? 0;
       this.renderMain();
+      for (const p of ['ch', 'th']) {
+        const inp = this.querySelector(`#${p}-input`);
+        if (inp && drafts[p]?.text) {
+          inp.value = drafts[p].text;
+          if (drafts[p].focused) {
+            inp.focus();
+            inp.setSelectionRange(inp.value.length, inp.value.length);
+          }
+        }
+      }
+      const msgs2 = this.querySelector('#msgs');
+      if (msgs2 && !atBottom) msgs2.scrollTop = scrollTop; // stay where the reader was
     } catch { /* transient */ }
   }
 
@@ -192,7 +223,7 @@ class PageChat extends HTMLElement {
         el.innerHTML = `<button class="btn-ghost doc-open" style="font-size:.78rem;border:1px solid var(--color-border);border-radius:6px;padding:.15rem .5rem">📄 ${esc(res.title)}${res.file_name ? ` · ${esc(res.file_name)}` : ''}</button>`;
         el.querySelector('.doc-open').addEventListener('click', () => {
           if (res.file_name) openDocPreview(res);
-          else if (res.url) window.open(res.url, '_blank', 'noopener');
+          else if (res.url) { const u = safeUrl(res.url); if (u) window.open(u, '_blank', 'noopener'); }
           else location.hash = '#/resources';
         });
       } else {
@@ -202,15 +233,17 @@ class PageChat extends HTMLElement {
   }
 
   wireComposer(prefix, parentID) {
-    let attached = null;
+    this._attached ??= {};
     const chip = this.querySelector(`#${prefix}-doc-chip`);
     const input = this.querySelector(`#${prefix}-input`);
     const renderChip = () => {
+      const attached = this._attached[prefix];
       chip.style.display = attached ? 'block' : 'none';
       chip.innerHTML = attached
         ? `<span class="badge badge-none">📄 ${esc(attached.title)} <button class="btn-ghost" id="${prefix}-unattach" aria-label="Remove attachment" title="Remove attachment" style="padding:0 .2rem">✕</button></span>` : '';
-      chip.querySelector(`#${prefix}-unattach`)?.addEventListener('click', () => { attached = null; renderChip(); });
+      chip.querySelector(`#${prefix}-unattach`)?.addEventListener('click', () => { this._attached[prefix] = null; renderChip(); });
     };
+    renderChip(); // restore a chip that survived a poll re-render
     this.querySelector(`#${prefix}-attach`)?.addEventListener('click', async () => {
       try {
         const page = await api('GET', '/resources?limit=200');
@@ -234,7 +267,7 @@ class PageChat extends HTMLElement {
                 ${(r.group_names ?? []).length ? '🔒' : ''}${r.visible_min_role ? '🛡' : ''}</button>`).join('')
             || '<div style="font-size:.8rem;color:var(--color-text-muted)">No match.</div>';
           listEl.querySelectorAll('.pick-row').forEach(b => b.addEventListener('click', () => {
-            attached = list.find(r => r.id === b.dataset.id);
+            this._attached[prefix] = list.find(r => r.id === b.dataset.id);
             renderChip(); close();
           }));
         };
@@ -248,9 +281,9 @@ class PageChat extends HTMLElement {
       if (!body) return;
       try {
         await api('POST', `/channels/${this._current.id}/messages`, {
-          body, parent_id: parentID ?? '', resource_id: attached?.id ?? '',
+          body, parent_id: parentID ?? '', resource_id: this._attached[prefix]?.id ?? '',
         });
-        input.value = ''; attached = null; renderChip();
+        input.value = ''; this._attached[prefix] = null; renderChip();
         await this.refreshMessages();
         this.loadChannels(); // counts changed
       } catch (err) { toast(err.error ?? 'Send failed', 'error'); }

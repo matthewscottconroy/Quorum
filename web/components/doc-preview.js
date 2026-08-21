@@ -132,10 +132,10 @@ function sanitizeHTML(html) {
   return doc.body.innerHTML;
 }
 
-async function renderInto(el, resource, blob) {
+async function renderInto(el, resource, blob, urls) {
   const name = resource.file_name ?? 'file';
   const ext = extOf(name);
-  const obj = () => URL.createObjectURL(blob);
+  const obj = () => { const u = URL.createObjectURL(blob); urls?.push(u); return u; };
 
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'svg'].includes(ext)) {
     el.innerHTML = `<img src="${obj()}" alt="${esc(name)}" style="max-width:100%;max-height:65vh;display:block;margin:0 auto">`;
@@ -223,8 +223,13 @@ export function openDocPreview(resource) {
   });
 
   const body = dialog.querySelector('#pv-body');
+  const objectURLs = [];
+  dialog.addEventListener('close', () => {
+    // The blob URLs pin the file bytes until revoked; the preview is gone.
+    objectURLs.forEach(u => URL.revokeObjectURL(u));
+  });
   apiBlob(`/resources/${resource.id}/preview`)
-    .then(blob => renderInto(body, resource, blob))
+    .then(blob => renderInto(body, resource, blob, objectURLs))
     .catch(err => {
       body.innerHTML = `<div class="empty-state"><p>${esc(err?.error ?? 'Preview failed')}</p></div>`;
     });

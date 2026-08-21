@@ -1,9 +1,9 @@
 import { api, apiUpload, apiDownload, canWrite, isAdmin, isSuperadmin } from '../app.js';
 import { toast } from './toast-notification.js';
-import { esc, openModal, guardButton, confirmDelete, renderPager, fmtDateTime } from '../utils.js';
+import { esc, openModal, guardButton, confirmDelete, renderPager, fmtDateTime, safeUrl } from '../utils.js';
 import { openDocPreview } from './doc-preview.js';
 
-function safeUrl(u) { try { const p = new URL(u); return (p.protocol==='https:'||p.protocol==='http:') ? u : null; } catch { return null; } }
+// safeUrl moved to utils.js so every doc-chip opener shares the same guard.
 
 function fmtBytes(n) {
   if (n == null) return '';

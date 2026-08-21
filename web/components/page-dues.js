@@ -1,7 +1,7 @@
 import { api, apiDownload, canWrite } from '../app.js';
 import { toast } from './toast-notification.js';
 import { confirm } from './confirm-dialog.js';
-import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, moneyExponent, renderPager, providerOptions, knownCurrencies, loadFilters, saveFilters } from '../utils.js';
+import { esc, fmtDate, openModal, guardButton, formatMoney, parseMoney, moneyExponent, renderPager, providerOptions, knownCurrencies, loadFilters, saveFilters, safeUrl } from '../utils.js';
 
 const STATUSES = ['','pending','overdue','paid','partial','waived'];
 
@@ -370,7 +370,7 @@ class PageDues extends HTMLElement {
       try {
         const r0 = await api('GET', `/resources/${b.dataset.rid}`);
         if (r0.file_name) (await import('./doc-preview.js')).openDocPreview(r0);
-        else if (r0.url) window.open(r0.url, '_blank', 'noopener');
+        else if (r0.url) { const u = safeUrl(r0.url); if (u) window.open(u, '_blank', 'noopener'); }
       } catch { toast("You don't have access to this document", 'error'); }
     }));
     dialog.querySelector('#refund-btn')?.addEventListener('click', () => {
