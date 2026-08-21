@@ -203,6 +203,14 @@ func (r *BillsRepo) Pay(ctx context.Context, id, fundID, provider string) (*mode
 			return nil, fmt.Errorf("%w: fund holds %d %s", ErrInsufficientFunds, bal, currency)
 		}
 	} else {
+		// Operating-cash draws take the same advisory lock fund transfers use
+		// for their overdraw check: without it, a transfer's balance read and
+		// this payment's posting interleave and the guard's promise is false.
+		// (No balance check here — a legitimately owed bill stays payable.)
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext('quorum.cash.operating'))`); err != nil {
+			return nil, err
+		}
 		if err := tx.QueryRow(ctx, `SELECT gl_cash_account($1)::text`, provider).Scan(&cashAcct); err != nil {
 			return nil, err
 		}

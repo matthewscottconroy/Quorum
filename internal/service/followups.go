@@ -23,28 +23,32 @@ type followupMeetings interface {
 
 // followupItems is the slice of *repo.ActionItemsRepo this service needs.
 type followupItems interface {
-	DueForReminder(ctx context.Context) ([]repo.ItemReminderRow, error)
+	DueForReminder(ctx context.Context, today time.Time) ([]repo.ItemReminderRow, error)
 	MarkDueReminded(ctx context.Context, id string) error
 }
 
-// memberNotifier fans a notification out to members honoring their email
-// preferences (the same path "meeting scheduled" notices use).
+// memberNotifier fans notifications out honoring email preferences (the same
+// path every other notice uses). The Try variants report queue acceptance:
+// these reminders record once-only "sent" markers, and marking after a
+// silent queue drop would lose the notice forever.
 type memberNotifier interface {
-	NotifyMembers(kind, title string, body, link *string)
+	TryNotifyMembers(kind, title string, body, link *string) bool
+	TryNotifyMember(memberID, kind, title string, body, link *string) bool
 }
 
-// FollowupsService sends both nightly follow-up kinds.
+// FollowupsService sends both nightly follow-up kinds. Both ride the standard
+// notification service (in-app + pref-honoring email); it needs no direct
+// email sender.
 type FollowupsService struct {
 	meetings followupMeetings
 	items    followupItems
 	notify   memberNotifier
-	email    emailSender
 	loc      func(ctx context.Context) *time.Location
 }
 
 // NewFollowupsService constructs the service; loc may be nil (server zone).
-func NewFollowupsService(m followupMeetings, i followupItems, n memberNotifier, e emailSender, loc func(ctx context.Context) *time.Location) *FollowupsService {
-	return &FollowupsService{meetings: m, items: i, notify: n, email: e, loc: loc}
+func NewFollowupsService(m followupMeetings, i followupItems, n memberNotifier, loc func(ctx context.Context) *time.Location) *FollowupsService {
+	return &FollowupsService{meetings: m, items: i, notify: n, loc: loc}
 }
 
 func (s *FollowupsService) location(ctx context.Context) *time.Location {
@@ -77,7 +81,11 @@ func (s *FollowupsService) MeetingReminders(ctx context.Context) {
 		}
 		body += " If you haven't RSVP'd yet, a quick yes/no helps the chair plan quorum."
 		link := "#/meetings?open=" + m.ID
-		s.notify.NotifyMembers("meeting.reminder", "Upcoming: "+m.Title, &body, &link)
+		if !s.notify.TryNotifyMembers("meeting.reminder", "Upcoming: "+m.Title, &body, &link) {
+			// Queue refused (full/closed): don't mark — tomorrow retries.
+			log.Printf("meeting reminders: queue refused %s; will retry", m.ID)
+			continue
+		}
 		if err := s.meetings.MarkMeetingReminded(ctx, m.ID); err != nil {
 			log.Printf("meeting reminders: mark %s: %v", m.ID, err)
 		}
@@ -87,25 +95,29 @@ func (s *FollowupsService) MeetingReminders(ctx context.Context) {
 	}
 }
 
-// ActionItemReminders emails each assignee whose open card just came due —
-// once per card. This is a direct personal notice about the member's own
-// task, sent to their member email.
+// ActionItemReminders notifies each assignee whose active card just came due —
+// once per card, through the standard notification path, so the member's
+// "assignments" email preference is honored and an in-app notice is recorded
+// (the old direct-email path did neither). "Today" is computed in the org's
+// timezone: the DB session runs UTC, which put the due day off by one for
+// orgs far from Greenwich.
 func (s *FollowupsService) ActionItemReminders(ctx context.Context) {
-	if s.items == nil || s.email == nil || !s.email.configured() {
+	if s.items == nil || s.notify == nil {
 		return
 	}
-	due, err := s.items.DueForReminder(ctx)
+	today := time.Now().In(s.location(ctx))
+	due, err := s.items.DueForReminder(ctx, today)
 	if err != nil {
 		log.Printf("action-item reminders: %v", err)
 		return
 	}
 	sent := 0
 	for _, it := range due {
-		body := fmt.Sprintf(
-			"Hello %s,\n\nYour action item is due:\n\n  %s\n  Due: %s\n\nYou can update it on the Board in Quorum.\n",
-			it.AssigneeName, it.Title, it.DueDate.Format("2006-01-02"))
-		if err := s.email.Send([]string{it.AssigneeEmail}, "Due today: "+it.Title, body); err != nil {
-			log.Printf("action-item reminder (%s): %v", it.ID, err)
+		body := fmt.Sprintf("Your action item %q is due (%s). You can update it on the Board.",
+			it.Title, it.DueDate.Format("2006-01-02"))
+		link := "#/board"
+		if !s.notify.TryNotifyMember(it.AssigneeID, "action_item.due", "Due today: "+it.Title, &body, &link) {
+			log.Printf("action-item reminder: queue refused %s; will retry", it.ID)
 			continue // not marked: retried tomorrow
 		}
 		if err := s.items.MarkDueReminded(ctx, it.ID); err != nil {

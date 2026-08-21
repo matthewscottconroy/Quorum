@@ -137,13 +137,19 @@ func (r *DuesRepo) GenerateInvoicesForSchedule(ctx context.Context, s model.Dues
 	// units (see migration 0006); model.DuesInvoice maps it to AmountMinor.
 	// ON CONFLICT on the (member_id, period_label) unique index (migration 0013)
 	// makes generation atomically idempotent even under concurrent runs.
+	// GREATEST(...): a member activated mid-period must get a due date in
+	// the FUTURE. Dating their first invoice at period-start + due_days
+	// (months in the past by summer) made one nightly run generate it, mark
+	// it overdue, jump dunning straight to "final notice", and — past the
+	// grace window — post a late fee, all before the member was ever told
+	// dues exist.
 	tag, err := r.db.Exec(ctx, `
 		INSERT INTO dues_invoices (member_id, amount, currency, period_label, due_date, status)
-		SELECT m.id, $1, $2, $3, $4, 'pending'
+		SELECT m.id, $1, $2, $3, GREATEST($4::date, CURRENT_DATE + $6::int), 'pending'
 		FROM members m
 		WHERE m.status = 'active' AND m.tier = $5
 		ON CONFLICT (member_id, period_label) DO NOTHING`,
-		s.AmountMinor, s.Currency, label, due, s.Tier)
+		s.AmountMinor, s.Currency, label, due, s.Tier, s.DueDays)
 	if err != nil {
 		return 0, err
 	}

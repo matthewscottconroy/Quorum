@@ -95,6 +95,13 @@ func (s *NotificationService) NotifyMembers(notifType, title string, body, link 
 	s.enqueue(notifyEvent{audience: audienceMembers, notifType: notifType, title: title, body: body, link: link})
 }
 
+// TryNotifyMembers is NotifyMembers reporting whether the event was accepted
+// into the queue. Callers that record a once-only "sent" marker must check:
+// marking after a silent drop loses the notice forever.
+func (s *NotificationService) TryNotifyMembers(notifType, title string, body, link *string) bool {
+	return s.enqueue(notifyEvent{audience: audienceMembers, notifType: notifType, title: title, body: body, link: link})
+}
+
 // NotifyMember notifies the user account linked to one member — for personal
 // events like being assigned an action item. Non-blocking; a no-op if the member
 // has no linked account.
@@ -105,7 +112,15 @@ func (s *NotificationService) NotifyMember(memberID, notifType, title string, bo
 	s.enqueue(notifyEvent{audience: audienceMember, memberID: memberID, notifType: notifType, title: title, body: body, link: link})
 }
 
-func (s *NotificationService) enqueue(e notifyEvent) {
+// TryNotifyMember is NotifyMember reporting queue acceptance (see TryNotifyMembers).
+func (s *NotificationService) TryNotifyMember(memberID, notifType, title string, body, link *string) bool {
+	if memberID == "" {
+		return false
+	}
+	return s.enqueue(notifyEvent{audience: audienceMember, memberID: memberID, notifType: notifType, title: title, body: body, link: link})
+}
+
+func (s *NotificationService) enqueue(e notifyEvent) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -113,15 +128,17 @@ func (s *NotificationService) enqueue(e notifyEvent) {
 		if s.onDrop != nil {
 			s.onDrop()
 		}
-		return
+		return false
 	}
 	select {
 	case s.jobs <- e:
+		return true
 	default:
 		slog.Warn("notifications: queue full, dropping event", "type", e.notifType)
 		if s.onDrop != nil {
 			s.onDrop()
 		}
+		return false
 	}
 }
 

@@ -129,11 +129,26 @@ func (r *GLRepo) Periods(ctx context.Context) ([]model.AccountingPeriod, error) 
 
 // ClosePeriod locks a month (YYYY-MM-01) for posting.
 func (r *GLRepo) ClosePeriod(ctx context.Context, month string, closedBy string) error {
-	_, err := r.db.Exec(ctx, `
+	// Exclusive side of the period-close handshake: journal_period_guard
+	// (BEFORE INSERT on journal_entries, 0058) takes this lock SHARED, so the
+	// close waits out in-flight postings and no entry can slip into a month
+	// between our insert and its commit.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('quorum.period_close'))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO accounting_periods (month, closed_by)
 		VALUES (date_trunc('month', $1::date)::date, $2::uuid)
-		ON CONFLICT (month) DO NOTHING`, month, closedBy)
-	return err
+		ON CONFLICT (month) DO NOTHING`, month, closedBy); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ReopenPeriod unlocks a month (admin correction workflow; audited upstream).

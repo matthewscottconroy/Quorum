@@ -62,7 +62,7 @@ func (h *ActionItemsHandler) List(w http.ResponseWriter, r *http.Request) {
 		Status:             q.Get("status"),
 		SprintID:           q.Get("sprint_id"),
 		CarryoverExcluding: q.Get("carryover_excluding"),
-		Limit:              clampLimit(q.Get("limit"), 100),
+		Limit:              clampLimitMax(q.Get("limit"), 100, 500), // the board renders ALL cards — no pager to hide a clamp behind
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
 		f.Offset = v

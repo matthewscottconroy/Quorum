@@ -462,6 +462,20 @@ func toStringSlice(v any) ([]string, bool) {
 }
 
 // clampLimit parses a positive limit bounded by maxPageSize, or returns def.
+// clampLimitMax is clampLimit with a caller-chosen ceiling, for endpoints
+// whose consumers legitimately need more than one UI page (the kanban board,
+// bulk selection). The repo layer still enforces its own hard cap.
+func clampLimitMax(raw string, def, max int) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
 func clampLimit(raw string, def int) int {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {

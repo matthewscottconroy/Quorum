@@ -1326,10 +1326,11 @@ are ignored (each event is processed once).
 - **Overpayments / different currency:** a payment in a different currency than
   the invoice does not count toward it (and manual entry of a mismatched currency
   is rejected). Keep each invoice in a single currency.
-- **Refunds & corrections:** Quorum records payments but does not itself reverse
-  them. Handle refunds in the payment provider; to reflect a correction in
-  Quorum, record an offsetting **manual** transaction or adjust the invoice
-  status (e.g. back to `pending`), and note the reason.
+- **Refunds & corrections:** open the invoice and use **Record refund** — it
+  shows the collected-to-date total and caps the refund at what was actually
+  paid. Refunds issued in Stripe or PayPal are also picked up automatically by
+  their webhooks (partial refunds post as deltas, never double-counted). The
+  invoice's status re-derives from the ledger either way.
 
 \newpage
 

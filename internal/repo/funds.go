@@ -16,6 +16,9 @@ var (
 	ErrInsufficientFunds = errors.New("insufficient fund balance")
 	ErrNotApprovable     = errors.New("request is not in an approvable state")
 	ErrAlreadyApproved   = errors.New("you have already approved this request")
+	// ErrRecusedApprover refuses a signature from someone who filed a
+	// conflict-of-interest recusal on this purchase.
+	ErrRecusedApprover = errors.New("you recused from this purchase")
 )
 
 // FundsRepo manages purpose-restricted funds and the purchase workflow

@@ -692,7 +692,7 @@ func (m *mockGovernanceRepo) CreateMotion(ctx context.Context, mo *model.Motion,
 func (m *mockGovernanceRepo) UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error) {
 	return m.UpdateMotionFn(ctx, id, title, detail, moverID, seconderID, threshold, business)
 }
-func (m *mockGovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
+func (m *mockGovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string, allowedFrom ...string) (*model.Motion, error) {
 	return m.SetMotionStatusFn(ctx, id, status, seconderID)
 }
 func (m *mockGovernanceRepo) DeleteMotion(ctx context.Context, id string) error {

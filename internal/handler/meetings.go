@@ -319,6 +319,14 @@ func (h *MeetingsHandler) SetRSVP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "response must be yes, no, or maybe", "bad_request")
 		return
 	}
+	// RSVPs are pre-meeting intent: once the meeting is over (finalized
+	// minutes) or cancelled, the historical tally must stop drifting.
+	if mt, err := h.repo.Get(r.Context(), id); err == nil {
+		if mt.MinutesFinalizedAt != nil || mt.Status == "cancelled" || mt.Status == "completed" {
+			writeError(w, http.StatusConflict, "this meeting is over — RSVPs are closed", "conflict")
+			return
+		}
+	}
 	if err := h.repo.SetRSVP(r.Context(), id, memberID, body.Response); err != nil {
 		writeRepoError(w, err, "meeting not found", "save error")
 		return

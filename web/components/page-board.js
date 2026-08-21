@@ -189,9 +189,13 @@ class PageBoard extends HTMLElement {
   }
 
   cardHTML(i, officer) {
-    const due = i.due_date ? new Date(i.due_date) : null;
+    // due_date is a calendar DATE arriving as midnight UTC: compare and
+    // display by the date STRING, or western timezones see yesterday and
+    // "overdue" fires the moment the due day begins.
+    const dueISO = i.due_date ? String(i.due_date).slice(0, 10) : null;
     const closed = i.status === 'done' || i.status === 'cancelled';
-    const overdue = due && !closed && due < new Date();
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const overdue = dueISO && !closed && dueISO < todayISO;
     const [tb, tc] = TYPE_BADGE[i.card_type] ?? TYPE_BADGE.task;
     // A closed card wears its resolution on the face: in a Done lane (or any
     // shared view) "completed" and "cancelled" must be distinguishable at a
@@ -215,7 +219,7 @@ class PageBoard extends HTMLElement {
         <div class="board-card-meta">
           ${i.assignee_name ? `<span>👤 ${esc(i.assignee_name)}${i.assignee_inactive ? ' <span style="color:var(--color-danger)" title="This member is no longer active — reassign the card">(inactive)</span>' : ''}</span>` : '<span style="opacity:.6">unassigned</span>'}
           ${(i.contributors ?? []).length ? `<span title="${esc(i.contributors.map(c => c.member_name).join(', '))}">👥 +${i.contributors.length}</span>` : ''}
-          ${due ? `<span style="${overdue ? 'color:var(--color-danger,#dc2626);font-weight:700' : ''}">📅 ${esc(due.toLocaleDateString())}</span>` : ''}
+          ${dueISO ? `<span style="${overdue ? 'color:var(--color-danger,#dc2626);font-weight:700' : ''}">📅 ${esc(new Date(dueISO + 'T12:00:00').toLocaleDateString())}</span>` : ''}
         </div>
         ${i.sprint_name && !this._scope ? `<div class="board-card-sprint">🏁 ${esc(i.sprint_name)}</div>` : ''}
         ${i.comment_count ? `<div class="board-card-sprint">💬 ${i.comment_count} comment${i.comment_count === 1 ? '' : 's'}</div>` : ''}
@@ -525,7 +529,7 @@ class PageBoard extends HTMLElement {
             ${item.reporter_name ? `<span title="Who created this card">✍ ${esc(item.reporter_name)}</span>` : ''}
             ${(item.contributors ?? []).length ? `<span>👥 ${esc(item.contributors.map(c => c.member_name).join(', '))}</span>` : ''}
             <span>Status: ${esc(item.status.replace('_', ' '))}</span>
-            ${item.due_date ? `<span>📅 ${esc(new Date(item.due_date).toLocaleDateString())}</span>` : ''}
+            ${item.due_date ? `<span>📅 ${esc(new Date(String(item.due_date).slice(0, 10) + 'T12:00:00').toLocaleDateString())}</span>` : ''}
             ${item.sprint_name ? `<span>🏁 ${esc(item.sprint_name)}</span>` : ''}
             ${item.parent_title ? `<span>◳ ${esc(item.parent_title)}</span>` : ''}
           </div>

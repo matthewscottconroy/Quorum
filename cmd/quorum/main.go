@@ -367,7 +367,7 @@ func main() {
 	webhooksH.SetReceiptSender(receiptSender)
 	// Nightly follow-ups under the same leader lock: meeting reminders
 	// (~2 days out, with an RSVP nudge) and action-item due notices.
-	followups := service.NewFollowupsService(meetingsRepo, actionItemsRepo, notifySvc, emailSvc, func(ctx context.Context) *time.Location {
+	followups := service.NewFollowupsService(meetingsRepo, actionItemsRepo, notifySvc, func(ctx context.Context) *time.Location {
 		if all, err := orgSettingsRepo.All(ctx); err == nil {
 			if tz := all["timezone"]; tz != "" {
 				if loc, err := time.LoadLocation(tz); err == nil {
@@ -383,7 +383,7 @@ func main() {
 	meetingsH.SetGovernanceSource(governanceRepo) // motions/votes for the minutes document
 	// The org's display timezone (minutes documents, meeting emails): read
 	// per use — it changes rarely and the reads are cheap key lookups.
-	meetingsH.SetTimezoneSource(func(ctx context.Context) *time.Location {
+	orgLocation := func(ctx context.Context) *time.Location {
 		if all, err := orgSettingsRepo.All(ctx); err == nil {
 			if tz := all["timezone"]; tz != "" {
 				if loc, err := time.LoadLocation(tz); err == nil {
@@ -392,7 +392,10 @@ func main() {
 			}
 		}
 		return time.Local
-	})
+	}
+	meetingsH.SetTimezoneSource(orgLocation)
+	// The minutes PDF must timestamp in the same zone as the .md document.
+	reportsH.SetTimezoneSource(orgLocation)
 	// Every export is recorded in the audit chain: who, what, when.
 	exportH.SetAuditLogger(auditRepo)
 	meetingsH.SetAuditLogger(auditRepo)

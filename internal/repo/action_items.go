@@ -46,22 +46,23 @@ type ItemReminderRow struct {
 	ID            string
 	Title         string
 	DueDate       time.Time
+	AssigneeID    string
 	AssigneeName  string
 	AssigneeEmail string
 }
 
 // DueForReminder returns open items whose due date has arrived, not yet
 // reminded, whose assignee is an active member with an email on file.
-func (r *ActionItemsRepo) DueForReminder(ctx context.Context) ([]ItemReminderRow, error) {
+func (r *ActionItemsRepo) DueForReminder(ctx context.Context, today time.Time) ([]ItemReminderRow, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT ai.id::text, ai.title, ai.due_date, m.display_name, m.email
+		SELECT ai.id::text, ai.title, ai.due_date, m.id::text, m.display_name, m.email
 		FROM action_items ai
 		JOIN members m ON m.id = ai.assignee_id
-		WHERE ai.status = 'open' AND ai.due_date IS NOT NULL AND ai.due_date <= CURRENT_DATE
+		WHERE ai.status IN ('open', 'in_progress') AND ai.due_date IS NOT NULL AND ai.due_date <= $1::date
 		  AND ai.due_reminded_at IS NULL
 		  AND m.status = 'active' AND m.email IS NOT NULL AND m.email <> ''
 		ORDER BY ai.due_date
-		LIMIT 500`)
+		LIMIT 500`, today)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +70,7 @@ func (r *ActionItemsRepo) DueForReminder(ctx context.Context) ([]ItemReminderRow
 	var out []ItemReminderRow
 	for rows.Next() {
 		var it ItemReminderRow
-		if err := rows.Scan(&it.ID, &it.Title, &it.DueDate, &it.AssigneeName, &it.AssigneeEmail); err != nil {
+		if err := rows.Scan(&it.ID, &it.Title, &it.DueDate, &it.AssigneeID, &it.AssigneeName, &it.AssigneeEmail); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -267,6 +268,12 @@ func (r *ActionItemsRepo) Update(ctx context.Context, id string, fields map[stri
 			sets = append(sets, fmt.Sprintf("%s = $%d::uuid", k, idx))
 		} else {
 			sets = append(sets, fmt.Sprintf("%s = $%d", k, idx))
+		}
+		if k == "due_date" {
+			// A new due date re-arms the due reminder; without this, an item
+			// postponed after its "due today" email never nudges again.
+			sets = append(sets, fmt.Sprintf(
+				"due_reminded_at = CASE WHEN $%d::date IS DISTINCT FROM due_date THEN NULL ELSE due_reminded_at END", idx))
 		}
 		args = append(args, v)
 		idx++

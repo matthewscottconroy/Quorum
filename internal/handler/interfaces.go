@@ -206,7 +206,7 @@ type governanceRepo interface {
 	GetMotion(ctx context.Context, id string) (*model.Motion, error)
 	CreateMotion(ctx context.Context, m *model.Motion, createdBy string) (*model.Motion, error)
 	UpdateMotion(ctx context.Context, id string, title, detail *string, moverID, seconderID *string, threshold, business, planID *string) (*model.Motion, error)
-	SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error)
+	SetMotionStatus(ctx context.Context, id, status string, seconderID *string, allowedFrom ...string) (*model.Motion, error)
 	CloseAndDecide(ctx context.Context, id, requested string) (*model.Motion, string, error)
 	MeetingMinutesFinalized(ctx context.Context, meetingID string) (bool, error)
 	DeleteMotion(ctx context.Context, id string) error

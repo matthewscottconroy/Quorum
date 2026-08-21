@@ -57,7 +57,10 @@ func (h *MembersHandler) List(w http.ResponseWriter, r *http.Request) {
 		Tier:   q.Get("tier"),
 		Limit:  50,
 	}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// Up to 500: the governance ballot/seconder/proxy dropdowns need the
+	// full active roll — a silent clamp here made members past #50
+	// unrecordable in roll-call votes.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
@@ -286,7 +289,10 @@ func (h *MembersHandler) GetDues(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	f := repo.InvoiceFilter{MemberID: id, Limit: 50}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// Up to 500: the governance ballot/seconder/proxy dropdowns need the
+	// full active roll — a silent clamp here made members past #50
+	// unrecordable in roll-call votes.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
@@ -311,7 +317,10 @@ func (h *MembersHandler) GetActionItems(w http.ResponseWriter, r *http.Request) 
 	}
 	q := r.URL.Query()
 	f := repo.ActionItemFilter{AssigneeID: id, Limit: 50}
-	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= maxPageSize {
+	// Up to 500: the governance ballot/seconder/proxy dropdowns need the
+	// full active roll — a silent clamp here made members past #50
+	// unrecordable in roll-call votes.
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 && v <= 500 {
 		f.Limit = v
 	}
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {

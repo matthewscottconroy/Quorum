@@ -326,6 +326,10 @@ func (h *FundsHandler) Approve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	updated, err := h.purchases.Approve(r.Context(), id, uid, h.ip(r))
+	if errors.Is(err, repo.ErrRecusedApprover) {
+		writeError(w, http.StatusConflict, "you recused from this purchase — your signature cannot be counted", "conflict")
+		return
+	}
 	if errors.Is(err, repo.ErrNotApprovable) || errors.Is(err, repo.ErrAlreadyApproved) {
 		writeError(w, http.StatusConflict, err.Error(), "conflict")
 		return

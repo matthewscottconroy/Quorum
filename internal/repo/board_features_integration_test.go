@@ -600,7 +600,7 @@ func TestIntegration_CardContributors(t *testing.T) {
 			t.Fatalf("bad contributor row: %+v", c)
 		}
 	}
-	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 200})
+	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 500})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestIntegration_CardReporter(t *testing.T) {
 	}
 
 	// Present identically on the list read path.
-	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 200})
+	listed, _, err := ai.List(ctx, repo.ActionItemFilter{Limit: 500})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

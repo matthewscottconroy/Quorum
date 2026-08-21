@@ -172,6 +172,14 @@ func (h *WebhooksHandler) handleStripeRefund(r *http.Request, eventID string, da
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		return h.dues.MarkEventProcessed(r.Context(), eventID)
 	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Valid-UUID metadata pointing at an invoice we don't have (another
+		// environment, hand-set metadata): a permanent condition, not a
+		// transient failure — 500ing makes the provider retry this poison
+		// event until it disables the endpoint.
+		log.Printf("stripe: refund %s names unknown invoice %s — record manually", eventID, invoiceID)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
 	return err
 }
 
@@ -184,6 +192,12 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 			ID       string `json:"id"`
 			Amount   int64  `json:"amount"`
 			Currency string `json:"currency"`
+			// AmountReceived (payment intents) and Captured (charges) guard
+			// against recording money that never actually landed: separate-
+			// capture charges fire charge.succeeded at AUTHORIZATION, and a
+			// partial capture's `amount` overstates what was received.
+			AmountReceived *int64 `json:"amount_received"`
+			Captured       *bool  `json:"captured"`
 			// PaymentIntent is set on charge objects and links a charge back to
 			// its payment intent; used to deduplicate the two events a single
 			// payment can emit.
@@ -201,11 +215,24 @@ func (h *WebhooksHandler) handleStripePayment(r *http.Request, eventID string, d
 		log.Printf("stripe: parse object error: %v", err)
 		return h.dues.MarkEventProcessed(r.Context(), eventID)
 	}
+	if obj.Object.Captured != nil && !*obj.Object.Captured {
+		// An authorization, not money: the capture (or expiry) comes later.
+		log.Printf("stripe: charge %s not captured yet — skipping", obj.Object.ID)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
 
 	currency := strings.ToUpper(obj.Object.Currency)
 	// Stripe amounts are already in the currency's minor units, which is exactly
-	// how Quorum stores money — no conversion needed.
+	// how Quorum stores money — no conversion needed. Prefer amount_received
+	// (what actually landed) when the object carries it.
 	amountMinor := obj.Object.Amount
+	if obj.Object.AmountReceived != nil {
+		amountMinor = *obj.Object.AmountReceived
+	}
+	if amountMinor <= 0 {
+		log.Printf("stripe: event %s has no received amount — skipping", eventID)
+		return h.dues.MarkEventProcessed(r.Context(), eventID)
+	}
 	providerID := obj.Object.ID
 	status := "succeeded"
 	pmType := obj.Object.PaymentMethodDetails.Type
@@ -395,6 +422,10 @@ func (h *WebhooksHandler) handlePayPalRefund(r *http.Request, eventID string, ra
 		ProviderStatus:      &status,
 		OccurredAt:          time.Now(),
 	})
+	if errors.Is(err, repo.ErrExceedsPaid) {
+		log.Printf("paypal: refund %s exceeds recorded payments on invoice %s — record manually (ref %s)", eventID, invoiceID, pid)
+		return nil
+	}
 	if errors.Is(err, repo.ErrInvoiceNotPayable) {
 		log.Printf("paypal: refund for waived invoice %s needs manual reconciliation (ref %s)", invoiceID, pid)
 		return nil

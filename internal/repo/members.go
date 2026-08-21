@@ -66,7 +66,9 @@ func (r *MembersRepo) List(ctx context.Context, f MemberFilter) ([]model.Member,
 	}
 
 	limit := f.Limit
-	if limit <= 0 || limit > 200 {
+	// 500 matches the governance dropdowns' need: an officer recording a
+	// roll-call vote must see EVERY active member, not the first page.
+	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
 

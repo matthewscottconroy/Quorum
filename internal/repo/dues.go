@@ -450,6 +450,10 @@ func (r *DuesRepo) ApplyLateFees(ctx context.Context, feeMinor int64, graceDays 
 		  AND di.late_fee_invoice_id IS NULL
 		  AND di.late_fee_for IS NULL
 		  AND di.member_id IS NOT NULL
+		  -- An agreed installment plan is a negotiated arrangement: the
+		  -- reminder step already treats plan-current members as current,
+		  -- and the fee step must not assert the opposite policy.
+		  AND NOT EXISTS (SELECT 1 FROM invoice_installments ii WHERE ii.invoice_id = di.id)
 		FOR UPDATE OF di SKIP LOCKED
 		LIMIT 500`, graceDays)
 	if err != nil {
@@ -668,9 +672,26 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 	if t.InvoiceID != nil {
 		var st string
 		var memberID *string
-		if err := tx.QueryRow(ctx,
+		err := tx.QueryRow(ctx,
 			`SELECT status, member_id::text FROM dues_invoices WHERE id = $1::uuid FOR UPDATE`,
-			*t.InvoiceID).Scan(&st, &memberID); err == nil {
+			*t.InvoiceID).Scan(&st, &memberID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Metadata names an invoice this database doesn't have (another
+			// environment's ID, hand-typed metadata). Record the money as an
+			// UNLINKED payment rather than hitting the FK: a 500 here makes
+			// the provider retry the same poison event until it disables the
+			// endpoint, and the payment never lands anywhere.
+			t.InvoiceID = nil
+			if t.Notes == nil {
+				n := "unmatched: invoice id from provider metadata not found"
+				t.Notes = &n
+			}
+		case err != nil:
+			// Real DB failure: the FOR UPDATE convention is load-bearing —
+			// never proceed without the lock.
+			return false, err
+		default:
 			if t.MemberID == nil {
 				t.MemberID = memberID
 			}
@@ -680,6 +701,41 @@ func (r *DuesRepo) RecordWebhookPayment(ctx context.Context, eventID string, t *
 				return false, cerr
 			}
 			return false, ErrInvoiceNotPayable
+		}
+	}
+	// Provider refunds arrive as negative amounts. Cap the posting at the
+	// invoice's recorded net paid: if the original charge was never recorded
+	// here (endpoint added later, outage), an uncapped refund drives paid
+	// NEGATIVE — statements show a bare minus line and dunning asks for more
+	// than face value. The bank already moved the full sum; the shortfall is
+	// logged in notes for a manual entry.
+	if t.AmountMinor < 0 && t.InvoiceID != nil {
+		var netPaid int64
+		if err := tx.QueryRow(ctx, `
+			SELECT coalesce(sum(amount), 0) FROM transactions
+			WHERE invoice_id = $1::uuid AND provider_status != 'failed' AND currency = $2`,
+			*t.InvoiceID, t.Currency).Scan(&netPaid); err != nil {
+			return false, err
+		}
+		if netPaid < 0 {
+			netPaid = 0
+		}
+		if -t.AmountMinor > netPaid {
+			excess := -t.AmountMinor - netPaid
+			t.AmountMinor = -netPaid
+			n := fmt.Sprintf("refund clamped at net paid; %d minor units exceed recorded payments — enter manually", excess)
+			if t.Notes != nil {
+				n = *t.Notes + "; " + n
+			}
+			t.Notes = &n
+		}
+		if t.AmountMinor == 0 {
+			// Nothing recorded to refund against: keep the claim (stop the
+			// retries) but surface it for the operator.
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return false, cerr
+			}
+			return false, ErrExceedsPaid
 		}
 	}
 

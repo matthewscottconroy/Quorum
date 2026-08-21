@@ -680,3 +680,89 @@ func TestIntegration_MeetingReminderWindow(t *testing.T) {
 		}
 	}
 }
+
+// A filed recusal is binding at every voting door, and the transition guard
+// refuses stale state changes.
+func TestIntegration_RecusalsAndTransitions(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	gov := repo.NewGovernanceRepo(pool)
+	mtRepo := repo.NewMeetingsRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+	ar := repo.NewAuthRepo(pool)
+	orgf := repo.NewOrgFeaturesRepo(pool)
+
+	uid := newUser(t, ar)
+	mt, err := mtRepo.Create(ctx, &model.Meeting{Title: uniq("Meeting"), ScheduledAt: time.Now(), Status: "scheduled"}, uid)
+	if err != nil {
+		t.Fatalf("meeting: %v", err)
+	}
+	mo, err := gov.CreateMotion(ctx, &model.Motion{MeetingID: mt.ID, Title: uniq("Motion"), Threshold: "majority", Status: "draft"}, uid)
+	if err != nil {
+		t.Fatalf("motion: %v", err)
+	}
+	// Transition guard: opening a draft directly with a from-guard of
+	// "seconded" must refuse — the state moved (or never was).
+	if _, err := gov.SetMotionStatus(ctx, mo.ID, "open", nil, "seconded"); !errors.Is(err, repo.ErrBadTransition) {
+		t.Fatalf("open guarded from seconded on a draft: err=%v, want ErrBadTransition", err)
+	}
+	if _, err := gov.SetMotionStatus(ctx, mo.ID, "open", nil); err != nil {
+		t.Fatalf("open unguarded: %v", err)
+	}
+
+	voter := newMember(t, mr, uniq("tier"), "active")
+	recused := newMember(t, mr, uniq("tier"), "active")
+	if err := orgf.AddRecusal(ctx, "motion", mo.ID, recused, "conflict"); err != nil {
+		t.Fatalf("recusal: %v", err)
+	}
+	// The recused member's ballot is refused; a normal member's counts.
+	if err := gov.CastVote(ctx, mo.ID, recused, "for", false, uid); !errors.Is(err, repo.ErrRecused) {
+		t.Fatalf("recused vote: err=%v, want ErrRecused", err)
+	}
+	if err := gov.CastVote(ctx, mo.ID, voter, "for", false, uid); err != nil {
+		t.Fatalf("normal vote: %v", err)
+	}
+	// And no ballot email goes to the recused member.
+	elig, err := gov.EligibleBallotMembers(ctx, mo.ID)
+	if err != nil {
+		t.Fatalf("eligible: %v", err)
+	}
+	for _, b := range elig {
+		if b.MemberID == recused {
+			t.Fatal("recused member still in the ballot mailing list")
+		}
+	}
+}
+
+// A schedule-generated invoice for a member activated mid-period is due in
+// the FUTURE — never instantly overdue with a same-night late fee.
+func TestIntegration_ScheduleDueDateFloor(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	dues := repo.NewDuesRepo(pool)
+	mr := repo.NewMembersRepo(pool)
+
+	tier := uniq("tier")
+	memberID := newMember(t, mr, tier, "active")
+	// Annual schedule: period start Jan 1, due_days 30 → naive due date is
+	// long past by the time a mid-year member joins.
+	label, _, due := repo.PeriodFor("annual", 30, time.Now())
+	n, err := dues.GenerateInvoicesForSchedule(ctx, model.DuesSchedule{
+		Tier: tier, AmountMinor: 5000, Currency: "USD", Cadence: "annual", DueDays: 30,
+	}, label, due)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("generated %d invoices, want 1", n)
+	}
+	var dueDate time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT due_date FROM dues_invoices WHERE member_id = $1::uuid AND period_label = $2`,
+		memberID, label).Scan(&dueDate); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if today := time.Now().Truncate(24 * time.Hour); dueDate.Before(today) {
+		t.Fatalf("mid-period member's invoice due %s — already overdue at birth", dueDate.Format("2006-01-02"))
+	}
+}

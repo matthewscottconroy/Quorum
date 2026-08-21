@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -48,6 +49,51 @@ type ReportsHandler struct {
 	verifier chainVerifier
 	audit    auditRepo
 	users    exporterLookup
+	tzSource func(ctx context.Context) *time.Location
+}
+
+// SetTimezoneSource attaches the org display-timezone resolver (same source
+// the minutes .md uses), so the PDF's timestamps agree with the document.
+func (h *ReportsHandler) SetTimezoneSource(fn func(ctx context.Context) *time.Location) {
+	h.tzSource = fn
+}
+
+func (h *ReportsHandler) location(ctx context.Context) *time.Location {
+	if h.tzSource != nil {
+		if loc := h.tzSource(ctx); loc != nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
+// pdfFromMinutesDoc typesets the finalized minutes MARKDOWN SNAPSHOT into a
+// PDF. Finality (0054) means the snapshot IS the official record: the PDF
+// must be built from those bytes, never re-rendered from live rows, where a
+// member rename or motion edit would silently rewrite history the .md keeps
+// verbatim.
+func pdfFromMinutesDoc(title, doc string) *pdf.Doc {
+	d := pdf.New(title)
+	for _, raw := range strings.Split(doc, "\n") {
+		line := strings.TrimRight(raw, " \t")
+		switch {
+		case line == "":
+			d.Space()
+		case strings.HasPrefix(line, "# "):
+			d.Title(strings.TrimPrefix(line, "# "))
+		case strings.HasPrefix(line, "## "):
+			d.Heading(strings.TrimPrefix(line, "## "))
+		case strings.HasPrefix(line, "### "):
+			d.Heading(strings.TrimPrefix(line, "### "))
+		case strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") && len(line) > 4:
+			d.Bold(strings.TrimSuffix(strings.TrimPrefix(line, "**"), "**"))
+		case strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* "):
+			d.Indented("• " + line[2:])
+		default:
+			d.Line(strings.ReplaceAll(line, "**", ""))
+		}
+	}
+	return d
 }
 
 // NewReportsHandler constructs a ReportsHandler.
@@ -191,6 +237,34 @@ func (h *ReportsHandler) MinutesPDF(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "meeting not found", "not_found")
 		return
 	}
+	loc := h.location(r.Context())
+	// Finalized minutes: the PDF is typeset from the frozen snapshot — the
+	// same bytes the .md serves — with the append-only corrections beneath.
+	// A live re-render here would let a member rename rewrite the "official
+	// record" and would hide filed errata entirely.
+	if mt.MinutesFinalizedAt != nil {
+		if snap, serr := h.meetings.GetMinutesSnapshot(r.Context(), id); serr == nil && snap != "" {
+			d := pdfFromMinutesDoc("Minutes - "+mt.Title, snap)
+			if corrs, cerr := h.meetings.ListCorrections(r.Context(), id); cerr == nil && len(corrs) > 0 {
+				d.Space()
+				d.Heading("Corrections (errata)")
+				d.Line("Filed after finalization; the approved document above is unchanged.")
+				for _, c := range corrs {
+					who := c.AuthorName
+					if who == "" {
+						who = "unknown"
+					}
+					d.Indented(fmt.Sprintf("%s — %s (%s)", c.CreatedAt.In(loc).Format("2006-01-02"), c.Body, who))
+				}
+			}
+			data, digest := h.stamp(r, d)
+			auditExport(r, h.audit, "meetings/"+id+"/minutes.pdf",
+				map[string]any{"meeting": mt.Title, "source": "snapshot", "sha256": digest})
+			servePDF(w, data, digest, "minutes-"+mt.ScheduledAt.In(loc).Format("2006-01-02")+".pdf")
+			return
+		}
+		log.Printf("minutes pdf %s: finalized but no snapshot — serving a live render", id)
+	}
 	entries, err := h.meetings.ListMinutes(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query error", "internal_error")
@@ -217,9 +291,9 @@ func (h *ReportsHandler) MinutesPDF(w http.ResponseWriter, r *http.Request) {
 	if mt.MinutesFinalizedAt == nil {
 		d.Bold("DRAFT - these minutes have not been finalized.")
 	} else {
-		d.Line("Finalized " + mt.MinutesFinalizedAt.Format("2006-01-02 15:04 MST"))
+		d.Line("Finalized " + mt.MinutesFinalizedAt.In(loc).Format("2006-01-02 15:04 MST"))
 	}
-	d.Line("Date: " + mt.ScheduledAt.Format("Monday, 2 January 2006, 15:04 MST"))
+	d.Line("Date: " + mt.ScheduledAt.In(loc).Format("Monday, 2 January 2006, 15:04 MST"))
 	if mt.Location != nil && *mt.Location != "" {
 		d.Line("Location: " + *mt.Location)
 	}
@@ -297,7 +371,7 @@ func (h *ReportsHandler) MinutesPDF(w http.ResponseWriter, r *http.Request) {
 	}
 	data, digest := h.stamp(r, d)
 	auditExport(r, h.audit, "meetings/"+id+"/minutes.pdf", map[string]any{"meeting": mt.Title, "sha256": digest})
-	servePDF(w, data, digest, "minutes-"+mt.ScheduledAt.Format("2006-01-02")+".pdf")
+	servePDF(w, data, digest, "minutes-"+mt.ScheduledAt.In(loc).Format("2006-01-02")+".pdf")
 }
 
 // AuditPDF renders the recent audit log with the chain status (admin+).

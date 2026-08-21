@@ -153,6 +153,11 @@ func (r *MeetingsRepo) Update(ctx context.Context, id string, title *string, sch
 	_, err := r.db.Exec(ctx, `
 		UPDATE meetings SET
 			title        = coalesce($1, title),
+			-- A reschedule re-arms the reminder: the marker refers to the OLD
+			-- date, and keeping it means the moved meeting never gets one.
+			reminder_sent_at = CASE WHEN $2::timestamptz IS NOT NULL
+			                         AND $2::timestamptz IS DISTINCT FROM scheduled_at
+			                        THEN NULL ELSE reminder_sent_at END,
 			scheduled_at = coalesce($2, scheduled_at),
 			ends_at      = CASE WHEN $3 THEN NULL ELSE coalesce($4, ends_at) END,
 			location     = CASE WHEN $5::text IS NULL THEN location ELSE nullif($5, '') END,

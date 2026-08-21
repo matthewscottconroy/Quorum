@@ -96,6 +96,8 @@ func (r *PurchasesRepo) loadEvidence(ctx context.Context, p *model.PurchaseReque
 		WHERE fs.fund_id = $1::uuid
 		  AND NOT EXISTS (SELECT 1 FROM purchase_approvals pa
 		                  WHERE pa.request_id = $2::uuid AND pa.approver_id = fs.user_id)
+		  AND NOT EXISTS (SELECT 1 FROM recusals rc JOIN users u2 ON u2.member_id = rc.member_id
+		                  WHERE rc.subject_type = 'purchase' AND rc.subject_id = $2::uuid AND u2.id = fs.user_id)
 		ORDER BY 1`, p.FundID, p.ID)
 	if err != nil {
 		return err
@@ -224,6 +226,8 @@ func (r *PurchasesRepo) loadEvidenceBatch(ctx context.Context, out []model.Purch
 		WHERE pr.id = ANY($1::uuid[])
 		  AND NOT EXISTS (SELECT 1 FROM purchase_approvals pa
 		                  WHERE pa.request_id = pr.id AND pa.approver_id = fs.user_id)
+		  AND NOT EXISTS (SELECT 1 FROM recusals rc JOIN users u2 ON u2.member_id = rc.member_id
+		                  WHERE rc.subject_type = 'purchase' AND rc.subject_id = pr.id AND u2.id = fs.user_id)
 		ORDER BY 2`, ids)
 	if err != nil {
 		return err
@@ -296,6 +300,18 @@ func (r *PurchasesRepo) Approve(ctx context.Context, requestID, approverID, ip s
 	if status != "pending" {
 		return nil, ErrNotApprovable
 	}
+	// A recorded conflict-of-interest recusal is binding, not decorative:
+	// the recused signer's ink must not count toward the bar.
+	var recused bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM recusals rc JOIN users u ON u.member_id = rc.member_id
+		               WHERE rc.subject_type = 'purchase' AND rc.subject_id = $1::uuid AND u.id = $2::uuid)`,
+		requestID, approverID).Scan(&recused); err != nil {
+		return nil, err
+	}
+	if recused {
+		return nil, ErrRecusedApprover
+	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO purchase_approvals (request_id, approver_id, ip)
 		VALUES ($1::uuid, $2::uuid, $3) ON CONFLICT DO NOTHING`, requestID, approverID, ip)
@@ -315,7 +331,9 @@ func (r *PurchasesRepo) Approve(ctx context.Context, requestID, approverID, ip s
 		SELECT count(*) FROM fund_signers fs
 		WHERE fs.fund_id = $1::uuid
 		  AND NOT EXISTS (SELECT 1 FROM purchase_approvals pa
-		                  WHERE pa.request_id = $2::uuid AND pa.approver_id = fs.user_id)`,
+		                  WHERE pa.request_id = $2::uuid AND pa.approver_id = fs.user_id)
+		  AND NOT EXISTS (SELECT 1 FROM recusals rc JOIN users u2 ON u2.member_id = rc.member_id
+		                  WHERE rc.subject_type = 'purchase' AND rc.subject_id = $2::uuid AND u2.id = fs.user_id)`,
 		fundID, requestID).Scan(&missingNamed); err != nil {
 		return nil, err
 	}

@@ -365,8 +365,12 @@ func (h *GovernanceHandler) SecondMotion(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sid := body.SeconderID
-	m, err := h.repo.SetMotionStatus(r.Context(), id, "seconded", &sid)
+	m, err := h.repo.SetMotionStatus(r.Context(), id, "seconded", &sid, "draft", "seconded")
 	if err != nil {
+		if errors.Is(err, repo.ErrBadTransition) {
+			writeError(w, http.StatusConflict, "the motion changed state — refresh and retry", "conflict")
+			return
+		}
 		if isFKViolation(err) {
 			writeError(w, http.StatusBadRequest, "seconder does not exist", "bad_request")
 			return
@@ -409,8 +413,12 @@ func (h *GovernanceHandler) OpenMotion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "this meeting's minutes are finalized: its record is closed to new votes", "conflict")
 		return
 	}
-	out, err := h.repo.SetMotionStatus(r.Context(), id, "open", nil)
+	out, err := h.repo.SetMotionStatus(r.Context(), id, "open", nil, "seconded")
 	if err != nil {
+		if errors.Is(err, repo.ErrBadTransition) {
+			writeError(w, http.StatusConflict, "the motion changed state — refresh and retry", "conflict")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update error", "internal_error")
 		return
 	}
@@ -548,6 +556,10 @@ func (h *GovernanceHandler) CastVote(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
 			return
 		}
+		if errors.Is(err, repo.ErrRecused) {
+			writeError(w, http.StatusConflict, "you recused from this motion — your ballot cannot be counted", "conflict")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not record vote", "internal_error")
 		return
 	}
@@ -592,6 +604,10 @@ func (h *GovernanceHandler) RecordVote(w http.ResponseWriter, r *http.Request) {
 	if err := h.repo.CastVote(r.Context(), id, body.MemberID, body.Choice, body.IsProxy, userIDFromCtx(r)); err != nil {
 		if errors.Is(err, repo.ErrMotionNotOpen) {
 			writeError(w, http.StatusConflict, "voting is not open on this motion", "conflict")
+			return
+		}
+		if errors.Is(err, repo.ErrRecused) {
+			writeError(w, http.StatusConflict, "that member recused from this motion — the ballot cannot be recorded", "conflict")
 			return
 		}
 		if isFKViolation(err) {
@@ -785,6 +801,8 @@ func (h *GovernanceHandler) SubmitBallot(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, repo.ErrMotionNotOpen):
 			writeError(w, http.StatusConflict, "voting on this motion has closed", "conflict")
+		case errors.Is(err, repo.ErrRecused):
+			writeError(w, http.StatusConflict, "you recused from this motion — your ballot cannot be counted", "conflict")
 		case errors.Is(err, pgx.ErrNoRows):
 			writeError(w, http.StatusBadRequest, "this ballot link is invalid, expired, or already used", "bad_request")
 		default:

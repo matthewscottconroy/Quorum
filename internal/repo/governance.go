@@ -20,6 +20,20 @@ var ErrMotionNotOpen = errors.New("motion is not open for voting")
 // terminal state.
 var ErrMotionDecided = errors.New("motion is already decided")
 
+// ErrRecused refuses a ballot from a member who filed a conflict-of-interest
+// recusal on the motion: minutes must never print "Recused: X" and X's vote
+// under the same motion.
+var ErrRecused = errors.New("member has recused from this motion")
+
+// ErrBadTransition refuses a motion status change whose from-state no longer
+// holds — e.g. opening a motion another officer tabled a moment ago.
+var ErrBadTransition = errors.New("motion changed state; refresh and retry")
+
+// recusedSQL is the shared guard, keyed by member.
+const recusedSQL = `SELECT EXISTS (
+	SELECT 1 FROM recusals rc
+	WHERE rc.subject_type = 'motion' AND rc.subject_id = $1::uuid AND rc.member_id = $2::uuid)`
+
 // GovernanceRepo provides PostgreSQL data access for quorum settings, motions,
 // ballots, and meeting proxies.
 type GovernanceRepo struct {
@@ -373,7 +387,10 @@ func (r *GovernanceRepo) UpdateMotion(ctx context.Context, id string, title, det
 
 // SetMotionStatus transitions a motion's status, stamping opened_at when it goes
 // to "open" and closed_at when it reaches a terminal state. Returns the motion.
-func (r *GovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string) (*model.Motion, error) {
+func (r *GovernanceRepo) SetMotionStatus(ctx context.Context, id, status string, seconderID *string, allowedFrom ...string) (*model.Motion, error) {
+	// The from-state guard lives IN the UPDATE: the handlers' pre-reads are
+	// not transactional, so without it two officers racing (one tabling, one
+	// opening) could flip a just-closed motion back to open.
 	tag, err := r.db.Exec(ctx, `
 		UPDATE motions SET
 			status      = $1,
@@ -381,11 +398,21 @@ func (r *GovernanceRepo) SetMotionStatus(ctx context.Context, id, status string,
 			opened_at   = CASE WHEN $1 = 'open' AND opened_at IS NULL THEN now() ELSE opened_at END,
 			closed_at   = CASE WHEN $1 IN ('carried','failed','tabled','withdrawn') THEN now() ELSE closed_at END,
 			updated_at  = now()
-		WHERE id = $3::uuid`, status, seconderID, id)
+		WHERE id = $3::uuid AND ($4::text[] IS NULL OR cardinality($4::text[]) = 0 OR status = ANY($4::text[]))`,
+		status, seconderID, id, allowedFrom)
 	if err != nil {
 		return nil, err
 	}
 	if tag.RowsAffected() == 0 {
+		// Distinguish "no such motion" from "state moved underneath you".
+		var exists bool
+		if err := r.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM motions WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, ErrBadTransition
+		}
 		return nil, pgx.ErrNoRows
 	}
 	return r.GetMotion(ctx, id)
@@ -457,6 +484,13 @@ func (r *GovernanceRepo) CastVote(ctx context.Context, motionID, memberID, choic
 	}
 	if status != "open" {
 		return ErrMotionNotOpen
+	}
+	var recused bool
+	if err := tx.QueryRow(ctx, recusedSQL, motionID, memberID).Scan(&recused); err != nil {
+		return err
+	}
+	if recused {
+		return ErrRecused
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO motion_votes (motion_id, member_id, choice, is_proxy, cast_by)
@@ -665,6 +699,8 @@ func (r *GovernanceRepo) EligibleBallotMembers(ctx context.Context, motionID str
 		FROM members m
 		WHERE m.status = 'active' AND m.email IS NOT NULL AND m.email <> ''
 		  AND NOT EXISTS (SELECT 1 FROM motion_votes v WHERE v.motion_id = $1::uuid AND v.member_id = m.id)
+		  AND NOT EXISTS (SELECT 1 FROM recusals rc
+		                  WHERE rc.subject_type = 'motion' AND rc.subject_id = $1::uuid AND rc.member_id = m.id)
 		ORDER BY m.display_name`, motionID)
 	if err != nil {
 		return nil, err
@@ -745,6 +781,13 @@ func (r *GovernanceRepo) ConsumeBallotAndVote(ctx context.Context, hash, choice 
 	}
 	if status != "open" {
 		return "", ErrMotionNotOpen // Rollback leaves the token unconsumed
+	}
+	var recused bool
+	if err = tx.QueryRow(ctx, recusedSQL, motionID, memberID).Scan(&recused); err != nil {
+		return "", err
+	}
+	if recused {
+		return "", ErrRecused // token stays unconsumed; the recusal stands
 	}
 	if _, err = tx.Exec(ctx,
 		`UPDATE ballot_tokens SET used = TRUE WHERE token_hash = $1`, hash); err != nil {
